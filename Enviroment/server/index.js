@@ -102,7 +102,7 @@ const games = new Map();
 const playerSockets = new Map();
 
 // Connection limits for free tier hosting (Render, Heroku, etc.)
-const MAX_CONCURRENT_GAMES = 50;
+const MAX_CONCURRENT_GAMES = 1;
 const MAX_TOTAL_PLAYERS = 200;
 let totalConnectedPlayers = 0;
 
