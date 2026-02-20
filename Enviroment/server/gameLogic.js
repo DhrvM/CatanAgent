@@ -1975,81 +1975,24 @@ function deductResources(player, costs) {
 // LONGEST ROAD CALCULATION
 // ============================================================================
 
-/** 
- * Calculate a player's longest continuous road using Depth-First Search
- * 
- * Key rules:
- * - Roads must be connected to count
- * - Opponent settlements break road continuity at that vertex
- * - Own settlements do NOT break continuity
- * - Can traverse circular paths but each road segment only counts once per path
- * 
- * @returns The length of the longest continuous road for this player
- */
-function calculateRoadLength(game, playerIndex) {
-  const playerEdges = Object.entries(game.edges)
-    .filter(([_, edge]) => edge.road && edge.owner === playerIndex)
-    .map(([key, _]) => key);
-  
-  if (playerEdges.length === 0) return 0;
-  
-  let maxLength = 0;
-  const visited = new Set();
-  
-  // Helper to get canonical edge key for visited tracking
-  function getCanonicalEdgeKey(eKey) {
-    const match = eKey.match(/e_(-?\d+)_(-?\d+)_(\d+)/);
-    if (!match) return eKey;
-    const equivs = getEquivalentEdges(parseInt(match[1]), parseInt(match[2]), parseInt(match[3]));
-    // Use the edge key with smallest coordinates as canonical
-    equivs.sort((a, b) => a.q - b.q || a.r - b.r || a.dir - b.dir);
-    return edgeKey(equivs[0].q, equivs[0].r, equivs[0].dir);
-  }
-  
-  function dfs(edgeKey, length) {
-    const canonical = getCanonicalEdgeKey(edgeKey);
-    if (visited.has(canonical)) return;
-    visited.add(canonical);
-    maxLength = Math.max(maxLength, length);
-    
-    // Get vertices of this edge
-    const match = edgeKey.match(/e_(-?\d+)_(-?\d+)_(\d+)/);
-    if (!match) return;
-    
-    const vertices = getEdgeVertices(parseInt(match[1]), parseInt(match[2]), parseInt(match[3]));
-    
-    for (const vKey of vertices) {
-      // Check if opponent has a settlement here (breaks road) - check all equivalent vertices
-      if (hasOpponentBuildingAtVertex(game, vKey, playerIndex)) continue;
-      
-      // Get adjacent edges and check for player's roads (checking all equivalents)
-      const adjEdges = getVertexEdges(vKey);
-      for (const adjEdge of adjEdges) {
-        const adjCanonical = getCanonicalEdgeKey(adjEdge);
-        if (!visited.has(adjCanonical) && hasPlayerRoadAtEdge(game, adjEdge, playerIndex)) {
-          dfs(adjEdge, length + 1);
-        }
-      }
-    }
-    
-    visited.delete(canonical);
-  }
-  
-  for (const startEdge of playerEdges) {
-    dfs(startEdge, 1);
-  }
-  
-  return maxLength;
+// Helper to get all edges owned by a player
+function getPlayerRoadEdges(game, playerId) {
+  return Object.entries(game.edges)
+    .filter(([_, edge]) => edge.road && edge.owner === playerId)
+    .map(([key, edge]) => ({ key, ...edge }));
 }
 
-/** Check if an opponent has a building at a vertex (breaks road continuity) */
+// Helper to get all vertices adjacent to an edge
+function getEdgeVerticesByEdge(edge) {
+  return [edge.v1, edge.v2];
+}
+
+// Check if an opponent has a building at a vertex (breaks road continuity)
 function hasOpponentBuildingAtVertex(game, vKey, playerIndex) {
   const match = vKey.match(/v_(-?\d+)_(-?\d+)_(\d+)/);
   if (!match) return false;
-  
   const q = parseInt(match[1]), r = parseInt(match[2]), dir = parseInt(match[3]);
   const equivalents = getEquivalentVertices(q, r, dir);
-  
   for (const eq of equivalents) {
     const eqKey = vertexKey(eq.q, eq.r, eq.dir);
     const vertex = game.vertices[eqKey];
@@ -2060,85 +2003,87 @@ function hasOpponentBuildingAtVertex(game, vKey, playerIndex) {
   return false;
 }
 
-/** 
- * Update the Longest Road holder after any road placement
- * 
- * Rules:
- * - Need at least 5 roads to claim Longest Road
- * - Current holder keeps it on ties
- * - If current holder loses longest and there's a tie, nobody gets it
- * - Worth 2 Victory Points
- */
+// DFS to find the longest connected road for a player
+function getLongestConnectedRoad(game, playerId) {
+  const playerIndex = game.players.findIndex(p => p.id === playerId);
+  const playerEdges = Object.entries(game.edges)
+    .filter(([_, edge]) => edge.road && edge.owner === playerIndex)
+    .map(([key, _]) => key);
+  if (playerEdges.length === 0) return 0;
+  let maxLength = 0;
+  const visitedEdges = new Set();
+  // Track visited vertices to prevent cycles
+  function dfs(edgeKey, prevVertex, length) {
+    visitedEdges.add(edgeKey);
+    const match = edgeKey.match(/e_(-?\d+)_(-?\d+)_(\d+)/);
+    if (!match) return;
+    const vertices = getEdgeVertices(parseInt(match[1]), parseInt(match[2]), parseInt(match[3]));
+    for (const vKey of vertices) {
+      // Only continue from the vertex that was not the previous one
+      if (prevVertex && vKey === prevVertex) continue;
+      // If opponent building at this vertex, stop traversal
+      if (hasOpponentBuildingAtVertex(game, vKey, playerIndex)) continue;
+      // Find adjacent edges from this vertex
+      const adjEdges = getVertexEdges(vKey);
+      for (const adjEdge of adjEdges) {
+        if (adjEdge === edgeKey) continue;
+        if (!visitedEdges.has(adjEdge) && hasPlayerRoadAtEdge(game, adjEdge, playerIndex)) {
+          dfs(adjEdge, vKey, length + 1);
+        }
+      }
+    }
+    maxLength = Math.max(maxLength, length);
+    visitedEdges.delete(edgeKey);
+  }
+  // Try DFS from both ends of each edge
+  for (const startEdge of playerEdges) {
+    const match = startEdge.match(/e_(-?\d+)_(-?\d+)_(\d+)/);
+    if (!match) continue;
+    const vertices = getEdgeVertices(parseInt(match[1]), parseInt(match[2]), parseInt(match[3]));
+    for (const vKey of vertices) {
+      if (!hasOpponentBuildingAtVertex(game, vKey, playerIndex)) {
+        dfs(startEdge, vKey, 1);
+      }
+    }
+  }
+  return maxLength;
+}
+
 export function updateLongestRoad(game) {
-  // Calculate road lengths for all players
-  const roadLengths = game.players.map((player, idx) => {
-    const length = calculateRoadLength(game, idx);
+  let bestPlayer = null;
+  let bestLength = 0;
+  let prevHolder = game.longestRoadPlayer;
+  let prevLength = game.longestRoadLength;
+  game.players.forEach((player, idx) => {
+    const length = getLongestConnectedRoad(game, player.id);
     player.roadLength = length;
-    return { playerIndex: idx, length };
+    if (length > bestLength) {
+      bestPlayer = idx;
+      bestLength = length;
+    }
   });
-  
-  // Find the maximum road length among all players
-  const maxLength = Math.max(...roadLengths.map(r => r.length));
-  
-  // Must have at least 5 roads to claim longest road
-  if (maxLength < 5) {
-    // If current holder's road dropped below 5, they lose it
-    if (game.longestRoadPlayer !== null) {
-      game.players[game.longestRoadPlayer].hasLongestRoad = false;
-      game.players[game.longestRoadPlayer].victoryPoints -= 2;
-      game.longestRoadPlayer = null;
-      game.longestRoadLength = 4;
-      checkWinner(game);
+  // Award longest road only if bestLength >= 5 and strictly greater than previous
+  if (bestLength >= 5 && bestLength > prevLength) {
+    if (prevHolder !== null && prevHolder !== bestPlayer) {
+      game.players[prevHolder].hasLongestRoad = false;
+      game.players[prevHolder].victoryPoints -= 2;
     }
-    return;
-  }
-  
-  // Find all players with the maximum length
-  const playersWithMax = roadLengths.filter(r => r.length === maxLength);
-  
-  // Current holder's road length
-  const currentHolderLength = game.longestRoadPlayer !== null 
-    ? game.players[game.longestRoadPlayer].roadLength 
-    : 0;
-  
-  // Check if current holder still has the max length (they keep it on ties)
-  const currentHolderHasMax = game.longestRoadPlayer !== null && 
-    game.players[game.longestRoadPlayer].roadLength === maxLength;
-  
-  if (currentHolderHasMax) {
-    // Current holder keeps it, but update the stored length
-    game.longestRoadLength = maxLength;
-    return;
-  }
-  
-  // If there's a tie and no current holder has max, check if only one player has max
-  if (playersWithMax.length === 1) {
-    const newHolder = playersWithMax[0].playerIndex;
-    
-    // New player takes longest road
-    if (game.longestRoadPlayer !== null) {
-      game.players[game.longestRoadPlayer].hasLongestRoad = false;
-      game.players[game.longestRoadPlayer].victoryPoints -= 2;
-    }
-    
-    game.longestRoadPlayer = newHolder;
-    game.longestRoadLength = maxLength;
-    game.players[newHolder].hasLongestRoad = true;
-    game.players[newHolder].victoryPoints += 2;
-    
-    checkWinner(game);
-  } else if (playersWithMax.length > 1 && game.longestRoadPlayer !== null && 
-             !currentHolderHasMax) {
-    // Tie between multiple players and current holder is NOT one of them
-    // Current holder loses it, but no one gets it (disputed)
-    game.players[game.longestRoadPlayer].hasLongestRoad = false;
-    game.players[game.longestRoadPlayer].victoryPoints -= 2;
+    game.longestRoadPlayer = bestPlayer;
+    game.longestRoadLength = bestLength;
+    game.players.forEach((player, idx) => {
+      player.hasLongestRoad = idx === bestPlayer;
+    });
+    game.players[bestPlayer].victoryPoints += 2;
+  } else if (prevHolder !== null && (bestLength < prevLength || game.players[prevHolder].roadLength < prevLength)) {
+    // Remove longest road if no one exceeds previous length, or previous holder's road is cut
+    game.players[prevHolder].hasLongestRoad = false;
+    game.players[prevHolder].victoryPoints -= 2;
     game.longestRoadPlayer = null;
-    game.longestRoadLength = maxLength; // Keep tracking the max for future reference
-    
-    checkWinner(game);
+    game.longestRoadLength = 4;
+    game.players.forEach(player => {
+      player.hasLongestRoad = false;
+    });
   }
-  // If tie and no current holder, no one gets it (stays null)
 }
 
 // ============================================================================
@@ -2321,4 +2266,3 @@ export function getPlayersOnHex(game, hKey, excludePlayer = null) {
   
   return Array.from(players);
 }
-
