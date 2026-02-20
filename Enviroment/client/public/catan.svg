@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="hexGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#d4a942"/>
+      <stop offset="100%" style="stop-color:#c45a2c"/>
+    </linearGradient>
+  </defs>
+  <polygon points="50,5 90,27.5 90,72.5 50,95 10,72.5 10,27.5" fill="url(#hexGrad)" stroke="#2d5a27" stroke-width="3"/>
+  <text x="50" y="58" font-family="serif" font-size="24" font-weight="bold" fill="#2d5a27" text-anchor="middle">C</text>
+</svg>
+

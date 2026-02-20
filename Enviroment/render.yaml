@@ -1,0 +1,26 @@
+# Render Blueprint - deploy both services together
+# https://render.com/docs/blueprint-spec
+
+services:
+  # Backend API Server
+  - type: web
+    name: catan-server
+    runtime: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: node index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+  # Frontend Static Site
+  - type: web
+    name: catan-client
+    runtime: static
+    rootDir: client
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_SERVER_URL
+        sync: false  # You'll need to set this after deploying the server
+
