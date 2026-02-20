@@ -483,7 +483,7 @@ function HexBoard({
                 <g className="robber">
                   <ellipse 
                     cx={pos.x} 
-                    cy={pos.y} 
+                    cy={pos.y - 24} 
                     rx="10" 
                     ry="14" 
                     fill="#1a1a1a" 
@@ -492,7 +492,7 @@ function HexBoard({
                   />
                   <circle 
                     cx={pos.x} 
-                    cy={pos.y - 16} 
+                    cy={pos.y - 40} 
                     r="8" 
                     fill="#1a1a1a" 
                     stroke="#333" 
