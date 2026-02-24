@@ -12,23 +12,38 @@ const RESOURCE_ICONS = {
 
 function TradeModal({ socket, gameState, myPlayer, isMyTurn, onClose, addNotification }) {
   const [tradeType, setTradeType] = useState('player'); // 'player' or 'bank'
+  const [selectedPlayerId, setSelectedPlayerId] = useState(null);
+  const [broadcastToAll, setBroadcastToAll] = useState(false);
   const [offer, setOffer] = useState({ brick: 0, lumber: 0, wool: 0, grain: 0, ore: 0 });
   const [request, setRequest] = useState({ brick: 0, lumber: 0, wool: 0, grain: 0, ore: 0 });
   const [bankGive, setBankGive] = useState(null);
   const [bankGet, setBankGet] = useState(null);
+  const [showCounterForm, setShowCounterForm] = useState(false);
+  const [counterOffer, setCounterOffer] = useState({ brick: 0, lumber: 0, wool: 0, grain: 0, ore: 0 });
+  const [counterRequest, setCounterRequest] = useState({ brick: 0, lumber: 0, wool: 0, grain: 0, ore: 0 });
 
   const pendingTrade = gameState.tradeOffer;
   const isTradeFromMe = pendingTrade?.from === gameState.myIndex;
+  const otherPlayers = gameState.players.filter((_, idx) => idx !== gameState.myIndex);
 
-  // Close modal when pending trade is completed/cancelled (for the proposer)
+  // Close panel when pending trade is completed/cancelled (for the proposer)
   useEffect(() => {
-    // If we were waiting for a response and the trade offer disappeared, close
     if (!pendingTrade && tradeType === 'player') {
-      // Reset the offer/request state for next time
       setOffer({ brick: 0, lumber: 0, wool: 0, grain: 0, ore: 0 });
       setRequest({ brick: 0, lumber: 0, wool: 0, grain: 0, ore: 0 });
+      setSelectedPlayerId(null);
+      setBroadcastToAll(false);
     }
   }, [pendingTrade, tradeType]);
+
+  // Reset counter form when incoming trade is no longer for us
+  useEffect(() => {
+    if (!pendingTrade || pendingTrade.from === gameState.myIndex) {
+      setShowCounterForm(false);
+      setCounterOffer({ brick: 0, lumber: 0, wool: 0, grain: 0, ore: 0 });
+      setCounterRequest({ brick: 0, lumber: 0, wool: 0, grain: 0, ore: 0 });
+    }
+  }, [pendingTrade, gameState.myIndex]);
 
   const updateOffer = (resource, delta) => {
     const newAmount = Math.max(0, Math.min(myPlayer.resources[resource], offer[resource] + delta));
@@ -41,19 +56,27 @@ function TradeModal({ socket, gameState, myPlayer, isMyTurn, onClose, addNotific
   };
 
   const handleProposeTrade = () => {
+    if (!broadcastToAll && !selectedPlayerId) {
+      addNotification('Select a player or broadcast to all');
+      return;
+    }
     const hasOffer = Object.values(offer).some(v => v > 0);
     const hasRequest = Object.values(request).some(v => v > 0);
-    
     if (!hasOffer || !hasRequest) {
       addNotification('Must offer and request at least one resource');
       return;
     }
-
-    socket.emit('proposeTrade', { offer, request }, (response) => {
+    const targetPlayerId = broadcastToAll ? undefined : selectedPlayerId;
+    socket.emit('proposeTrade', { offer, request, targetPlayerId }, (response) => {
       if (!response.success) {
         addNotification(response.error);
       } else {
-        addNotification('Trade proposed!');
+        if (broadcastToAll) {
+          addNotification('Trade broadcast to all players!');
+        } else {
+          const target = gameState.players.find(p => p.id === selectedPlayerId);
+          addNotification(target ? `Trade proposed to ${target.name}!` : 'Trade proposed!');
+        }
       }
     });
   };
@@ -89,6 +112,41 @@ function TradeModal({ socket, gameState, myPlayer, isMyTurn, onClose, addNotific
     });
   };
 
+  const updateCounterOffer = (resource, delta) => {
+    const newAmount = Math.max(0, Math.min(myPlayer.resources[resource], counterOffer[resource] + delta));
+    setCounterOffer({ ...counterOffer, [resource]: newAmount });
+  };
+
+  const updateCounterRequest = (resource, delta) => {
+    const newAmount = Math.max(0, counterRequest[resource] + delta);
+    setCounterRequest({ ...counterRequest, [resource]: newAmount });
+  };
+
+  const canSendCounter =
+    Object.values(counterOffer).some(v => v > 0) &&
+    Object.values(counterRequest).some(v => v > 0);
+
+  const handleCounterTrade = () => {
+    if (!canSendCounter) {
+      addNotification('Add at least one resource to offer and one to request');
+      return;
+    }
+    socket.emit('counterTrade', { offer: counterOffer, request: counterRequest }, (response) => {
+      if (!response) {
+        addNotification('No response from server');
+        return;
+      }
+      if (!response.success) {
+        addNotification(response.error || 'Counter offer failed');
+        return;
+      }
+      addNotification('Counter offer sent!');
+      setShowCounterForm(false);
+      setCounterOffer({ brick: 0, lumber: 0, wool: 0, grain: 0, ore: 0 });
+      setCounterRequest({ brick: 0, lumber: 0, wool: 0, grain: 0, ore: 0 });
+    });
+  };
+
   const handleBankTrade = () => {
     if (!bankGive || !bankGet || bankGive === bankGet) {
       addNotification('Select different resources to give and receive');
@@ -115,14 +173,73 @@ function TradeModal({ socket, gameState, myPlayer, isMyTurn, onClose, addNotific
   // If there's a pending trade from another player
   if (pendingTrade && !isTradeFromMe) {
     const trader = gameState.players[pendingTrade.from];
-    
+
+    if (showCounterForm) {
+      return (
+        <div className="trade-panel">
+          <div className="trade-modal">
+            <button className="close-btn" onClick={onClose}>×</button>
+            <h2>Counter offer to {trader.name}</h2>
+            <p className="counter-offer-hint">Propose a different trade back to {trader.name}</p>
+            <div className="trade-builder">
+              <div className="trade-section">
+                <h4>You Offer:</h4>
+                <div className="resource-selectors">
+                  {RESOURCES.map(r => (
+                    <div key={r} className="resource-selector">
+                      <span className="icon">{RESOURCE_ICONS[r]}</span>
+                      <div className="selector-controls">
+                        <button onClick={() => updateCounterOffer(r, -1)} disabled={counterOffer[r] === 0}>−</button>
+                        <span className="amount">{counterOffer[r]}</span>
+                        <button onClick={() => updateCounterOffer(r, 1)} disabled={counterOffer[r] >= myPlayer.resources[r]}>+</button>
+                      </div>
+                      <span className="available">({myPlayer.resources[r]})</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="trade-section">
+                <h4>You Request:</h4>
+                <div className="resource-selectors">
+                  {RESOURCES.map(r => (
+                    <div key={r} className="resource-selector">
+                      <span className="icon">{RESOURCE_ICONS[r]}</span>
+                      <div className="selector-controls">
+                        <button onClick={() => updateCounterRequest(r, -1)} disabled={counterRequest[r] === 0}>−</button>
+                        <span className="amount">{counterRequest[r]}</span>
+                        <button onClick={() => updateCounterRequest(r, 1)}>+</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="trade-actions trade-actions-counter">
+              <button type="button" className="counter-back-btn" onClick={() => setShowCounterForm(false)}>
+                ← Back
+              </button>
+              {!canSendCounter && (
+                <p className="counter-validation-hint">Add at least one resource under &quot;You Offer&quot; and one under &quot;You Request&quot; to send.</p>
+              )}
+              <button
+                type="button"
+                className="propose-btn counter-send-btn"
+                onClick={handleCounterTrade}
+                disabled={!canSendCounter}
+              >
+                📤 Send counter offer
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     return (
-      <div className="modal-overlay" onClick={onClose}>
-        <div className="trade-modal" onClick={e => e.stopPropagation()}>
+      <div className="trade-panel">
+        <div className="trade-modal">
           <button className="close-btn" onClick={onClose}>×</button>
-          
           <h2>Trade Offer from {trader.name}</h2>
-          
           <div className="trade-display">
             <div className="trade-side">
               <h4>They Offer:</h4>
@@ -135,9 +252,7 @@ function TradeModal({ socket, gameState, myPlayer, isMyTurn, onClose, addNotific
                 ))}
               </div>
             </div>
-            
             <div className="trade-arrow">⇄</div>
-            
             <div className="trade-side">
               <h4>They Request:</h4>
               <div className="resource-list">
@@ -150,14 +265,14 @@ function TradeModal({ socket, gameState, myPlayer, isMyTurn, onClose, addNotific
               </div>
             </div>
           </div>
-          
           <div className="trade-actions">
-            <button className="accept-btn" onClick={handleAcceptTrade}>
-              ✓ Accept
-            </button>
-            <button className="decline-btn" onClick={handleDeclineTrade}>
-              ✗ Decline
-            </button>
+            <button className="accept-btn" onClick={handleAcceptTrade}>✓ Accept</button>
+            <button className="decline-btn" onClick={handleDeclineTrade}>✗ Decline</button>
+            {pendingTrade.to === gameState.myIndex && (
+              <button type="button" className="counter-offer-btn" onClick={() => setShowCounterForm(true)}>
+                ↩ Counter offer
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -165,40 +280,58 @@ function TradeModal({ socket, gameState, myPlayer, isMyTurn, onClose, addNotific
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="trade-modal" onClick={e => e.stopPropagation()}>
+    <div className="trade-panel">
+      <div className="trade-modal">
         <button className="close-btn" onClick={onClose}>×</button>
-        
         <h2>Trade</h2>
-        
-        {/* Trade type tabs */}
         <div className="trade-tabs">
-          <button 
-            className={tradeType === 'player' ? 'active' : ''}
-            onClick={() => setTradeType('player')}
-          >
+          <button className={tradeType === 'player' ? 'active' : ''} onClick={() => setTradeType('player')}>
             🤝 With Players
           </button>
-          <button 
-            className={tradeType === 'bank' ? 'active' : ''}
-            onClick={() => setTradeType('bank')}
-          >
+          <button className={tradeType === 'bank' ? 'active' : ''} onClick={() => setTradeType('bank')}>
             🏦 With Bank/Ports
           </button>
         </div>
 
         {tradeType === 'player' ? (
           <>
-            {/* Pending trade status */}
             {pendingTrade && isTradeFromMe && (
               <div className="pending-trade">
-                <p>Waiting for responses...</p>
+                <p>
+                  {pendingTrade.to !== undefined && gameState.players[pendingTrade.to]
+                    ? `Waiting for ${gameState.players[pendingTrade.to].name} to respond...`
+                    : 'Waiting for responses...'}
+                </p>
                 <button onClick={handleCancelTrade}>Cancel Trade</button>
               </div>
             )}
 
             {!pendingTrade && (
               <>
+                <div className="trade-section trade-target-section">
+                  <h4>Trade with:</h4>
+                  <div className="player-selector">
+                    <button
+                      type="button"
+                      className={`player-select-btn broadcast-btn ${broadcastToAll ? 'selected' : ''}`}
+                      onClick={() => { setBroadcastToAll(true); setSelectedPlayerId(null); }}
+                    >
+                      📢 Broadcast to all
+                    </button>
+                    {otherPlayers.map((player) => (
+                      <button
+                        key={player.id}
+                        type="button"
+                        className={`player-select-btn ${selectedPlayerId === player.id ? 'selected' : ''}`}
+                        style={{ borderColor: selectedPlayerId === player.id ? player.color : undefined }}
+                        onClick={() => { setSelectedPlayerId(player.id); setBroadcastToAll(false); }}
+                      >
+                        <span className="player-select-color" style={{ backgroundColor: player.color }} />
+                        {player.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <div className="trade-builder">
                   {/* Your offer */}
                   <div className="trade-section">
@@ -236,12 +369,12 @@ function TradeModal({ socket, gameState, myPlayer, isMyTurn, onClose, addNotific
                   </div>
                 </div>
 
-                <button 
+                <button
                   className="propose-btn"
                   onClick={handleProposeTrade}
-                  disabled={!isMyTurn}
+                  disabled={!isMyTurn || (!broadcastToAll && !selectedPlayerId)}
                 >
-                  📢 Propose Trade
+                  {broadcastToAll ? '📢 Propose Trade to all' : selectedPlayerId ? `📢 Propose Trade to ${gameState.players.find(p => p.id === selectedPlayerId)?.name}` : '📢 Propose Trade'}
                 </button>
               </>
             )}

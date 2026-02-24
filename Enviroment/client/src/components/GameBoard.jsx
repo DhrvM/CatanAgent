@@ -554,6 +554,20 @@ function GameBoard({ socket, gameState, playerId, gameCode, chatMessages, onLeav
           )}
         </div>
 
+        {/* Trade panel - left of actions, doesn't block chat */}
+        {showTradeModal && (
+          <div className="trade-panel-container">
+            <TradeModal 
+              socket={socket}
+              gameState={gameState}
+              myPlayer={myPlayer}
+              isMyTurn={isMyTurn}
+              onClose={() => setShowTradeModal(false)}
+              addNotification={addNotification}
+            />
+          </div>
+        )}
+
         {/* Right sidebar - Actions */}
         <div className="sidebar right-sidebar">
           {gameState.phase === 'playing' && (
@@ -664,17 +678,6 @@ function GameBoard({ socket, gameState, playerId, gameCode, chatMessages, onLeav
       )}
 
       {/* Modals */}
-      {showTradeModal && (
-        <TradeModal 
-          socket={socket}
-          gameState={gameState}
-          myPlayer={myPlayer}
-          isMyTurn={isMyTurn}
-          onClose={() => setShowTradeModal(false)}
-          addNotification={addNotification}
-        />
-      )}
-
       {showDevCardModal && (
         <DevCardModal 
           socket={socket}

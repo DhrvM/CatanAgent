@@ -1688,8 +1688,8 @@ export function bankTrade(game, playerId, giveResource, giveAmount, getResource)
   return { success: true };
 }
 
-/** Propose a trade offer to other players */
-export function proposeTrade(game, playerId, offer, request) {
+/** Propose a trade offer to other players. Optional targetPlayerId = propose to one player; omit = propose to all. */
+export function proposeTrade(game, playerId, offer, request, targetPlayerId = null) {
   const playerIndex = game.players.findIndex(p => p.id === playerId);
   if (playerIndex === -1) {
     return { success: false, error: 'Player not found' };
@@ -1712,8 +1712,20 @@ export function proposeTrade(game, playerId, offer, request) {
     }
   }
   
+  let toIndex = undefined;
+  if (targetPlayerId) {
+    toIndex = game.players.findIndex(p => p.id === targetPlayerId);
+    if (toIndex === -1) {
+      return { success: false, error: 'Target player not found' };
+    }
+    if (toIndex === playerIndex) {
+      return { success: false, error: 'Cannot trade with yourself' };
+    }
+  }
+  
   game.tradeOffer = {
     from: playerIndex,
+    to: toIndex, // undefined = all other players can respond
     offer,
     request,
     responses: {} // playerId -> 'accept' | 'decline'
@@ -1735,6 +1747,11 @@ export function respondToTrade(game, playerId, accept) {
   
   if (playerIndex === game.tradeOffer.from) {
     return { success: false, error: 'Cannot respond to your own trade' };
+  }
+  
+  // If trade was targeted at one player, only that player can respond
+  if (game.tradeOffer.to !== undefined && game.tradeOffer.to !== playerIndex) {
+    return { success: false, error: 'This trade was not proposed to you' };
   }
   
   const player = game.players[playerIndex];
@@ -1765,9 +1782,12 @@ export function respondToTrade(game, playerId, accept) {
   } else {
     game.tradeOffer.responses[playerId] = 'decline';
     
-    // Check if all players declined
+    // If targeted trade, one decline clears the offer; otherwise wait for all to decline
     const otherPlayers = game.players.filter((_, i) => i !== game.tradeOffer.from);
-    const allDeclined = otherPlayers.every(p => game.tradeOffer.responses[p.id] === 'decline');
+    const eligibleResponders = game.tradeOffer.to !== undefined
+      ? [game.players[game.tradeOffer.to]]
+      : otherPlayers;
+    const allDeclined = eligibleResponders.every(p => game.tradeOffer.responses[p.id] === 'decline');
     
     if (allDeclined) {
       game.tradeOffer = null;
@@ -1789,6 +1809,46 @@ export function cancelTrade(game, playerId) {
   }
   
   game.tradeOffer = null;
+  return { success: true };
+}
+
+/** Counter-offer: recipient proposes a different trade back to the original proposer */
+export function counterTrade(game, playerId, offer, request) {
+  if (!game.tradeOffer) {
+    return { success: false, error: 'No trade offer to counter' };
+  }
+  
+  const playerIndex = game.players.findIndex(p => p.id === playerId);
+  if (playerIndex === -1) {
+    return { success: false, error: 'Player not found' };
+  }
+  
+  // Only the recipient (target) can counter
+  if (game.tradeOffer.to === undefined || game.tradeOffer.to !== playerIndex) {
+    return { success: false, error: 'Only the recipient can counter this offer' };
+  }
+  
+  if (game.turnPhase !== 'main') {
+    return { success: false, error: 'Cannot trade now' };
+  }
+  
+  const player = game.players[playerIndex];
+  
+  for (const [resource, amount] of Object.entries(offer)) {
+    if (player.resources[resource] < amount) {
+      return { success: false, error: `Not enough ${resource}` };
+    }
+  }
+  
+  const originalFrom = game.tradeOffer.from;
+  game.tradeOffer = {
+    from: playerIndex,
+    to: originalFrom,
+    offer,
+    request,
+    responses: {}
+  };
+  
   return { success: true };
 }
 
@@ -2208,8 +2268,17 @@ export function getPlayerView(game, playerId) {
   // After game ends, all information is public
   const isGameOver = game.phase === 'finished';
   
+  // When a trade is targeted at one player, only the proposer and target see the offer
+  let tradeOffer = game.tradeOffer;
+  if (game.tradeOffer && game.tradeOffer.to !== undefined) {
+    if (playerIndex !== game.tradeOffer.from && playerIndex !== game.tradeOffer.to) {
+      tradeOffer = null;
+    }
+  }
+  
   return {
     ...game,
+    tradeOffer,
     players: game.players.map((p, idx) => ({
       ...p,
       // After game over, show everyone's dev cards; during game, only show own cards
