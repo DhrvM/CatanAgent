@@ -127,6 +127,11 @@
   flex-shrink: 0;
 }
 
+.broadcast-btn.selected {
+  border-color: var(--accent-gold);
+  background: rgba(212, 169, 66, 0.15);
+}
+
 .resource-selectors {
   display: flex;
   flex-wrap: wrap;

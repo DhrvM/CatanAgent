@@ -13,6 +13,7 @@ const RESOURCE_ICONS = {
 function TradeModal({ socket, gameState, myPlayer, isMyTurn, onClose, addNotification }) {
   const [tradeType, setTradeType] = useState('player'); // 'player' or 'bank'
   const [selectedPlayerId, setSelectedPlayerId] = useState(null);
+  const [broadcastToAll, setBroadcastToAll] = useState(false);
   const [offer, setOffer] = useState({ brick: 0, lumber: 0, wool: 0, grain: 0, ore: 0 });
   const [request, setRequest] = useState({ brick: 0, lumber: 0, wool: 0, grain: 0, ore: 0 });
   const [bankGive, setBankGive] = useState(null);
@@ -31,6 +32,7 @@ function TradeModal({ socket, gameState, myPlayer, isMyTurn, onClose, addNotific
       setOffer({ brick: 0, lumber: 0, wool: 0, grain: 0, ore: 0 });
       setRequest({ brick: 0, lumber: 0, wool: 0, grain: 0, ore: 0 });
       setSelectedPlayerId(null);
+      setBroadcastToAll(false);
     }
   }, [pendingTrade, tradeType]);
 
@@ -54,8 +56,8 @@ function TradeModal({ socket, gameState, myPlayer, isMyTurn, onClose, addNotific
   };
 
   const handleProposeTrade = () => {
-    if (!selectedPlayerId) {
-      addNotification('Select a player to trade with');
+    if (!broadcastToAll && !selectedPlayerId) {
+      addNotification('Select a player or broadcast to all');
       return;
     }
     const hasOffer = Object.values(offer).some(v => v > 0);
@@ -64,12 +66,17 @@ function TradeModal({ socket, gameState, myPlayer, isMyTurn, onClose, addNotific
       addNotification('Must offer and request at least one resource');
       return;
     }
-    socket.emit('proposeTrade', { offer, request, targetPlayerId: selectedPlayerId }, (response) => {
+    const targetPlayerId = broadcastToAll ? undefined : selectedPlayerId;
+    socket.emit('proposeTrade', { offer, request, targetPlayerId }, (response) => {
       if (!response.success) {
         addNotification(response.error);
       } else {
-        const target = gameState.players.find(p => p.id === selectedPlayerId);
-        addNotification(target ? `Trade proposed to ${target.name}!` : 'Trade proposed!');
+        if (broadcastToAll) {
+          addNotification('Trade broadcast to all players!');
+        } else {
+          const target = gameState.players.find(p => p.id === selectedPlayerId);
+          addNotification(target ? `Trade proposed to ${target.name}!` : 'Trade proposed!');
+        }
       }
     });
   };
@@ -261,9 +268,11 @@ function TradeModal({ socket, gameState, myPlayer, isMyTurn, onClose, addNotific
           <div className="trade-actions">
             <button className="accept-btn" onClick={handleAcceptTrade}>✓ Accept</button>
             <button className="decline-btn" onClick={handleDeclineTrade}>✗ Decline</button>
-            <button type="button" className="counter-offer-btn" onClick={() => setShowCounterForm(true)}>
-              ↩ Counter offer
-            </button>
+            {pendingTrade.to === gameState.myIndex && (
+              <button type="button" className="counter-offer-btn" onClick={() => setShowCounterForm(true)}>
+                ↩ Counter offer
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -302,13 +311,20 @@ function TradeModal({ socket, gameState, myPlayer, isMyTurn, onClose, addNotific
                 <div className="trade-section trade-target-section">
                   <h4>Trade with:</h4>
                   <div className="player-selector">
+                    <button
+                      type="button"
+                      className={`player-select-btn broadcast-btn ${broadcastToAll ? 'selected' : ''}`}
+                      onClick={() => { setBroadcastToAll(true); setSelectedPlayerId(null); }}
+                    >
+                      📢 Broadcast to all
+                    </button>
                     {otherPlayers.map((player) => (
                       <button
                         key={player.id}
                         type="button"
                         className={`player-select-btn ${selectedPlayerId === player.id ? 'selected' : ''}`}
                         style={{ borderColor: selectedPlayerId === player.id ? player.color : undefined }}
-                        onClick={() => setSelectedPlayerId(player.id)}
+                        onClick={() => { setSelectedPlayerId(player.id); setBroadcastToAll(false); }}
                       >
                         <span className="player-select-color" style={{ backgroundColor: player.color }} />
                         {player.name}
@@ -356,9 +372,9 @@ function TradeModal({ socket, gameState, myPlayer, isMyTurn, onClose, addNotific
                 <button
                   className="propose-btn"
                   onClick={handleProposeTrade}
-                  disabled={!isMyTurn || !selectedPlayerId}
+                  disabled={!isMyTurn || (!broadcastToAll && !selectedPlayerId)}
                 >
-                  📢 Propose Trade {selectedPlayerId ? `to ${gameState.players.find(p => p.id === selectedPlayerId)?.name}` : ''}
+                  {broadcastToAll ? '📢 Propose Trade to all' : selectedPlayerId ? `📢 Propose Trade to ${gameState.players.find(p => p.id === selectedPlayerId)?.name}` : '📢 Propose Trade'}
                 </button>
               </>
             )}
