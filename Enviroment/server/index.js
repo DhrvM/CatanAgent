@@ -622,8 +622,8 @@ io.on('connection', (socket) => {
     callback(result);
   });
   
-  /** Propose a trade to other players */
-  socket.on('proposeTrade', ({ offer, request }, callback) => {
+  /** Propose a trade to other players (optional targetPlayerId = propose to one player) */
+  socket.on('proposeTrade', ({ offer, request, targetPlayerId }, callback) => {
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) {
       callback({ success: false, error: 'Not in a game' });
@@ -631,10 +631,10 @@ io.on('connection', (socket) => {
     }
     
     const game = games.get(playerInfo.gameId);
-    const result = GameLogic.proposeTrade(game, playerInfo.playerId, offer, request);
+    const result = GameLogic.proposeTrade(game, playerInfo.playerId, offer, request, targetPlayerId || null);
     
     if (result.success) {
-      broadcastToGame(playerInfo.gameId, 'tradeProposed', { 
+      broadcastToGame(playerInfo.gameId, 'tradeProposed', {
         from: playerInfo.playerId,
         offer,
         request
@@ -689,6 +689,37 @@ io.on('connection', (socket) => {
     }
     
     callback(result);
+  });
+  
+  /** Counter-offer: recipient proposes a different trade back to the proposer */
+  socket.on('counterTrade', (payload, callback) => {
+    if (typeof callback !== 'function') return;
+    const playerInfo = playerSockets.get(socket.id);
+    if (!playerInfo) {
+      callback({ success: false, error: 'Not in a game' });
+      return;
+    }
+    const { offer, request } = payload || {};
+    if (!offer || typeof offer !== 'object' || !request || typeof request !== 'object') {
+      callback({ success: false, error: 'Invalid offer or request' });
+      return;
+    }
+    try {
+      const game = games.get(playerInfo.gameId);
+      const result = GameLogic.counterTrade(game, playerInfo.playerId, offer, request);
+      if (result.success) {
+        broadcastToGame(playerInfo.gameId, 'tradeProposed', {
+          from: playerInfo.playerId,
+          offer,
+          request
+        });
+        broadcastGameState(playerInfo.gameId);
+      }
+      callback(result);
+    } catch (err) {
+      console.error('counterTrade error:', err);
+      callback({ success: false, error: err.message || 'Counter offer failed' });
+    }
   });
   
   // --------------------------------------------------------------------
