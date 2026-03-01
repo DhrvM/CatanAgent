@@ -15,3 +15,9 @@ def send_chat(message: str, player: ENUM_PLAYERS) -> bool:
     """
     return False
 
+
+def getSelfResources() -> dict:
+    """
+    Get the resources of the agent and return dict of {type: count}
+    """
+    return {}
