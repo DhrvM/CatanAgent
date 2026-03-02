@@ -1,9 +1,9 @@
 import time
 from SocketClient import CatanSocketClient
-from Tools import GetPlayerResourcesAll
+from Tools import GetPlayerResourcesAll, GetPlayerDevCardsAll
 
 SERVER_URL = "http://localhost:3001"
-GAME_CODE = "4A59WH"  # <-- change
+GAME_CODE = "NWM33K"  # <-- change
 
 def is_my_setup_turn(state) -> bool:
     if not state:
@@ -132,6 +132,7 @@ if __name__ == "__main__":
 
     print("Initial resources snapshot:")
     print(GetPlayerResourcesAll(client))
+    print(GetPlayerDevCardsAll(client))
 
     print("Now just staying connected (no more moves).")
     while True:

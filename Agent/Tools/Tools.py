@@ -112,3 +112,92 @@ def GetPlayerResourcesById(client: CatanSocketClient, player_id: str) -> Dict[st
         "isSelf": False,
         "totalResources": total,
     }
+
+
+def _count_dev_cards(dev_cards: Any) -> int:
+    # dev_cards might be list, dict, or int depending on masking
+    if dev_cards is None:
+        return 0
+    if isinstance(dev_cards, int):
+        return dev_cards
+    if isinstance(dev_cards, list):
+        return len(dev_cards)
+    if isinstance(dev_cards, dict):
+        # if stored as {"knight":2,...}
+        return sum(int(v) for v in dev_cards.values())
+    return 0
+
+def _dev_breakdown_for_self(dev_cards: Any) -> Dict[str, int]:
+    """
+    Normalize self dev cards into a {type: count} dict.
+    Handles common shapes:
+      - list of strings: ["knight","victoryPoint",...]
+      - list of objects: [{"type":"knight"}, ...]
+      - dict already: {"knight":2,...}
+    """
+    if dev_cards is None:
+        return {}
+
+    if isinstance(dev_cards, dict):
+        return {str(k): int(v) for k, v in dev_cards.items()}
+
+    counts: Dict[str, int] = {}
+    if isinstance(dev_cards, list):
+        for item in dev_cards:
+            if isinstance(item, str):
+                t = item
+            elif isinstance(item, dict):
+                # common keys
+                t = item.get("type") or item.get("card") or item.get("name")
+                if t is None:
+                    t = "unknown"
+            else:
+                t = "unknown"
+            counts[t] = counts.get(t, 0) + 1
+    else:
+        # unexpected shape
+        counts["unknown"] = _count_dev_cards(dev_cards)
+
+    return counts
+
+def GetPlayerDevCardsAll(client: CatanSocketClient) -> Dict[str, Any]:
+    """
+    Fair view:
+      - self: dev breakdown + total
+      - others: total only
+    """
+    state = client.latest_state() or client.wait_for_state(timeout_s=5.0)
+    players = state.get("players")
+    my_index = state.get("myIndex")
+
+    if not isinstance(players, list):
+        raise ValueError("gameState missing players list")
+    if not isinstance(my_index, int):
+        raise ValueError("gameState missing myIndex")
+
+    out: List[Dict[str, Any]] = []
+    for idx, p in enumerate(players):
+        pid = p.get("id")
+        name = p.get("name")
+        dev = p.get("developmentCards")
+
+        if idx == my_index:
+            breakdown = _dev_breakdown_for_self(dev)
+            total = sum(breakdown.values())
+            out.append({
+                "playerId": pid,
+                "name": name,
+                "isSelf": True,
+                "devCards": breakdown,
+                "totalDevCards": total,
+            })
+        else:
+            # masked: usually an int count
+            out.append({
+                "playerId": pid,
+                "name": name,
+                "isSelf": False,
+                "totalDevCards": _count_dev_cards(dev),
+            })
+
+    return {"ok": True, "players": out}
