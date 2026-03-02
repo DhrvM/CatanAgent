@@ -1,4 +1,3 @@
-# catan_socket_client.py
 import threading
 import time
 from typing import Any, Dict, Optional

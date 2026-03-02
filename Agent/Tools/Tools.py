@@ -1,8 +1,6 @@
 from typing import Any, Dict, List
 from SocketClient import CatanSocketClient
 
-
-
 def GetPlayerResourcesAll(client: CatanSocketClient) -> Dict[str, Any]:
     """
     Fair view:
