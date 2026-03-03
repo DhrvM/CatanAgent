@@ -1,4 +1,4 @@
-# Agent/Tools/catan_action_menu.py
+# Agent/Tools/GeneralTools.py
 from __future__ import annotations
 
 from dataclasses import dataclass
