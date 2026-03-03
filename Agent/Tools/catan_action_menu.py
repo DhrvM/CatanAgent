@@ -103,6 +103,70 @@ def _all_edge_keys_from_state(state: Dict[str, Any]) -> List[str]:
 
 
 # ---------------------------------------------------------------------
+# Discard helper
+# ---------------------------------------------------------------------
+
+def _build_discard_action(state: Dict[str, Any]) -> List[Action]:
+    """
+    When a 7 is rolled, some players must discard exactly half (floor).
+    Your server enforces exact discard count.
+
+    State (from getPlayerView) includes:
+      - state["discardingPlayers"]: [{playerIndex, cardsToDiscard}, ...]
+      - state["myIndex"]
+      - state["players"][myIndex]["resources"] (full dict for me)
+
+    We generate ONE discardCards action with a deterministic greedy policy:
+      discard from largest piles first until exact count.
+    """
+    discarding = state.get("discardingPlayers")
+    myi = state.get("myIndex")
+
+    if not isinstance(discarding, list) or not isinstance(myi, int):
+        return []
+
+    entry = next(
+        (d for d in discarding if isinstance(d, dict) and d.get("playerIndex") == myi),
+        None,
+    )
+    if not entry:
+        return []  # I'm not discarding
+
+    k = entry.get("cardsToDiscard")
+    if not isinstance(k, int) or k <= 0:
+        return []
+
+    players = state.get("players")
+    if not isinstance(players, list) or myi < 0 or myi >= len(players):
+        return []
+
+    me = players[myi] if isinstance(players[myi], dict) else {}
+    res = me.get("resources")
+    if not isinstance(res, dict):
+        return []
+
+    resources = ["brick", "lumber", "wool", "grain", "ore"]
+    piles = [(r, int(res.get(r, 0) or 0)) for r in resources]
+    piles.sort(key=lambda x: x[1], reverse=True)
+
+    to_discard = {r: 0 for r in resources}
+    remaining = k
+    for r, amt in piles:
+        if remaining <= 0:
+            break
+        take = min(amt, remaining)
+        if take > 0:
+            to_discard[r] = take
+            remaining -= take
+
+    # If we somehow can't discard exactly (shouldn't happen), emit no actions
+    if remaining != 0:
+        return []
+
+    return [Action("discardCards", {"resources": to_discard}, score=1.0)]
+
+
+# ---------------------------------------------------------------------
 # Action menu
 # ---------------------------------------------------------------------
 
@@ -117,10 +181,10 @@ def build_action_menu(state: Dict[str, Any], last_setup_settlement: Optional[str
 
     Playing turn phases (your server):
       - turnPhase == 'roll' -> rollDice
-      - turnPhase == 'discard' -> discardCards (placeholder: discard 0 if forced? we avoid if possible)
+      - turnPhase == 'discard' -> discardCards (exact count required)
       - turnPhase == 'robber' -> moveRobber(hexKey, stealFromPlayerId=None)
-      - turnPhase == 'main' -> endTurn
-      - turnPhase == 'specialBuild' -> endSpecialBuild (minimal; otherwise you'd add build actions here)
+      - turnPhase == 'main' -> endTurn  (minimal baseline)
+      - turnPhase == 'specialBuild' -> endSpecialBuild (minimal baseline)
     """
     if not isinstance(state, dict) or not is_my_turn(state):
         return []
@@ -137,11 +201,13 @@ def build_action_menu(state: Dict[str, Any], last_setup_settlement: Optional[str
         # Place settlement first
         if not last_setup_settlement:
             for vkey in _all_vertex_keys_from_state(state):
-                actions.append(Action(
-                    "placeSettlement",
-                    {"vertexKey": vkey, "isSetup": True},
-                    score=1.0
-                ))
+                actions.append(
+                    Action(
+                        "placeSettlement",
+                        {"vertexKey": vkey, "isSetup": True},
+                        score=1.0,
+                    )
+                )
             # safety fallback (shouldn't happen)
             if not actions:
                 actions.append(Action("advanceSetup", {}, score=0.0))
@@ -149,38 +215,42 @@ def build_action_menu(state: Dict[str, Any], last_setup_settlement: Optional[str
 
         # Then place road connected to that settlement, then advance setup
         for ekey in _all_edge_keys_from_state(state):
-            actions.append(Action(
-                "placeRoad",
-                {"edgeKey": ekey, "isSetup": True, "lastSettlement": last_setup_settlement},
-                score=1.0
-            ))
+            actions.append(
+                Action(
+                    "placeRoad",
+                    {
+                        "edgeKey": ekey,
+                        "isSetup": True,
+                        "lastSettlement": last_setup_settlement,
+                    },
+                    score=1.0,
+                )
+            )
         actions.append(Action("advanceSetup", {}, score=0.1))
         return actions
 
     # -----------------------
     # PLAYING
     # -----------------------
-    # Discard phase happens if someone has >7 cards after a 7 roll.
-    # Your server requires exact discard counts; without computing amounts,
-    # we cannot safely discard. So we return [] and let your agent wait
-    # unless you want to implement discard logic.
+
+    # Discard phase (must discard exactly cardsToDiscard)
     if turn_phase == "discard":
-        # If YOU want a naive policy later: compute required discard count from state["discardingPlayers"].
-        return []
+        return _build_discard_action(state)
 
     # Robber phase: must move robber to a different hex (and optionally steal).
     if turn_phase == "robber":
-        current_robber = state.get("robber")  # should be "q,r"
+        current_robber = state.get("robber")  # "q,r"
         actions: List[Action] = []
         for hk in _all_hex_keys_from_state(state):
             if hk == current_robber:
                 continue
-            actions.append(Action(
-                "moveRobber",
-                {"hexKey": hk, "stealFromPlayerId": None},
-                score=1.0
-            ))
-        # If we couldn't enumerate, at least don't endTurn incorrectly
+            actions.append(
+                Action(
+                    "moveRobber",
+                    {"hexKey": hk, "stealFromPlayerId": None},
+                    score=1.0,
+                )
+            )
         return actions
 
     # Special building phase (5-6 player rule). Minimal: just endSpecialBuild.
@@ -190,7 +260,10 @@ def build_action_menu(state: Dict[str, Any], last_setup_settlement: Optional[str
     # Normal phases
     if turn_phase == "roll":
         return [Action("rollDice", {}, score=1.0)]
+
     if turn_phase == "main":
+        # Minimal baseline: end turn.
+        # (You can later add: buyDevCard, build road/settlement/city, bankTrade, proposeTrade, playDevCard, etc.)
         return [Action("endTurn", {}, score=1.0)]
 
     return []

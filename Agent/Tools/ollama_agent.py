@@ -226,7 +226,7 @@ def handle_robber_turn(
 # ----------------------------
 def main() -> None:
     SERVER_URL = "http://localhost:3001"
-    GAME_CODE = "L8LJNY"  # change if you want
+    GAME_CODE = "6H7XUQ"  # change if you want
     PLAYER_NAME = "OllamaBot"
 
     client = CatanSocketClient(SERVER_URL)
