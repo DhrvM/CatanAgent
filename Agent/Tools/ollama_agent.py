@@ -5,20 +5,31 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from SocketClient import CatanSocketClient
-from catan_action_menu import Action, build_action_menu
+from GeneralTools import Action, build_action_menu
 from ollama_client import OllamaChat, OllamaConfig
 
-SYSTEM_PROMPT = """You are a Catan-playing bot.
+SYSTEM_PROMPT = """You are a strong Settlers of Catan bot.
 
-You must choose EXACTLY ONE action from the provided action list.
-Return ONLY valid JSON using this schema:
+You are given a JSON object with:
+- a compact view of the game state from your perspective
+- an array "actions", where each item has:
+  { "type": <string>, "payload": <object>, "score": <number> }.
+
+Your job is to choose EXACTLY ONE action index to execute now.
+Higher "score" generally means a stronger action according to a rules-based heuristic
+(e.g. good city spots, useful dev-card buys, sensible trades).
+
+You must return ONLY valid JSON using this exact schema:
 
 {"index": <integer>}
 
 Rules:
-- index must be a valid index into the actions array (0..len(actions)-1)
-- do not output any extra keys or text
-- if unsure, choose the safest option (often endTurn, or in setup choose index 0)
+- index must be an integer between 0 and len(actions)-1
+- do not output any extra keys, comments, or text
+- prefer higher-scoring actions when they clearly improve winning chances
+- value building strong production (settlements/cities), good trades, and dev cards
+- avoid obviously bad trades that give away value without helping your plans
+- if all options look bad or unclear, pick the safest one (often endTurn)
 """
 
 
@@ -45,7 +56,7 @@ def compact_state(state: Dict[str, Any]) -> Dict[str, Any]:
             "name": (me or {}).get("name"),
             "resources": (me or {}).get("resources"),
             "victoryPoints": (me or {}).get("victoryPoints"),
-            "tradeRatios": (me or {}).get("tradeRatios"),
+            "tradeRatios": state.get("tradeRatios"),
             "devCards": (me or {}).get("developmentCards"),
             "newDevCards": (me or {}).get("newDevCards"),
         },
@@ -54,6 +65,66 @@ def compact_state(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def actions_to_json(actions: List[Action]) -> List[Dict[str, Any]]:
     return [{"type": a.type, "payload": a.payload, "score": round(float(a.score), 3)} for a in actions]
+
+
+def _pick_by_heuristic(actions: List[Action]) -> int:
+    """
+    Fast, deterministic fallback that never blocks.
+    Chooses highest score, with a light type preference to break ties.
+    """
+    if not actions:
+        return -1
+
+    type_bonus = {
+        # building / points
+        "upgradeToCity": 5.0,
+        "placeSettlement": 4.0,
+        "placeRoad": 2.0,
+        "buyDevCard": 1.5,
+        # turn flow
+        "rollDice": 10.0,
+        "discardCards": 10.0,
+        "moveRobber": 3.0,
+        "endSpecialBuild": 2.0,
+        # trades
+        "respondToTrade": 1.0,
+        "bankTrade": 0.5,
+        # safe fallback
+        "endTurn": -1.0,
+    }
+
+    best_i = 0
+    best_val = float("-inf")
+    for i, a in enumerate(actions):
+        try:
+            s = float(a.score)
+        except Exception:
+            s = 0.0
+        val = s + type_bonus.get(a.type, 0.0)
+        if val > best_val:
+            best_val = val
+            best_i = i
+    return best_i
+
+
+def _should_use_ollama(actions: List[Action]) -> bool:
+    """
+    Use Ollama only when it adds value and won't risk stalling the agent loop.
+
+    Small menus are better handled deterministically.
+    Trade menus are also handled deterministically to avoid model stalls.
+    """
+    if not actions:
+        return False
+
+    if len(actions) <= 6:
+        return False
+
+    types = {a.type for a in actions}
+    if any(t in types for t in ("bankTrade", "respondToTrade", "counterTrade", "cancelTrade")):
+        return False
+
+    return True
 
 
 def safe_call(
@@ -135,22 +206,34 @@ def pick_action_index(ollama: OllamaChat, state: Dict[str, Any], actions: List[A
     if len(actions) == 1:
         return 0
 
+    # IMPORTANT: when bank trades appear, the menu can get large.
+    # Some local models stall on long JSON lists. In that case, do not call the model.
+    if len(actions) >= 25:
+        return _pick_by_heuristic(actions)
+
+    if not _should_use_ollama(actions):
+        return _pick_by_heuristic(actions)
+
     msg = {"state": compact_state(state), "actions": actions_to_json(actions)}
-    out = ollama.chat(
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": json.dumps(msg)},
-        ],
-        json_only=True,
-    )
+    try:
+        out = ollama.chat(
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": json.dumps(msg)},
+            ],
+            json_only=True,
+        )
+    except Exception:
+        # Never freeze the agent on LLM issues.
+        return _pick_by_heuristic(actions)
 
     obj = OllamaChat.safe_json_loads(out)
     if not isinstance(obj, dict) or not isinstance(obj.get("index"), int):
-        return 0
+        return _pick_by_heuristic(actions)
 
     idx = int(obj["index"])
     if idx < 0 or idx >= len(actions):
-        return 0
+        return _pick_by_heuristic(actions)
     return idx
 
 
@@ -226,14 +309,15 @@ def handle_robber_turn(
 # ----------------------------
 def main() -> None:
     SERVER_URL = "http://localhost:3001"
-    GAME_CODE = "6H7XUQ"  # change if you want
+    GAME_CODE = "E73987"  # change if you want
     PLAYER_NAME = "OllamaBot"
 
     client = CatanSocketClient(SERVER_URL)
     client.connect()
     client.join_game(GAME_CODE, PLAYER_NAME)
 
-    ollama = OllamaChat(OllamaConfig(model="qwen3:8b"))
+    # Keep LLM responsive: don't let a slow generation stall the whole agent loop.
+    ollama = OllamaChat(OllamaConfig(model="qwen3:8b", timeout_s=12, num_ctx=3072))
 
     last_setup_settlement: Optional[str] = None
 
@@ -317,6 +401,11 @@ def main() -> None:
 
         resp = safe_call(client, chosen.type, chosen.payload, timeout=10)
         print("ACTION", chosen.type, chosen.payload, "=>", resp)
+
+        # If an aggressive action (like a trade) keeps failing, avoid getting stuck:
+        # fall back to endTurn next loop rather than spamming invalid moves.
+        if not resp.get("success") and chosen.type != "endTurn":
+            print("Last action failed; will bias toward ending turn next cycle.")
 
         time.sleep(0.15)
 
