@@ -51,8 +51,8 @@ app.get('/', (req, res) => {
 
 /** Detailed health check with server stats */
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
+  res.json({
+    status: 'ok',
     uptime: process.uptime(),
     activeGames: games.size,
     maxGames: MAX_CONCURRENT_GAMES,
@@ -72,6 +72,47 @@ app.get('/status', (req, res) => {
     games: games.size,
     maxGames: MAX_CONCURRENT_GAMES
   });
+});
+
+/** List all active games (admin/debug) — no sensitive data exposed */
+app.get('/games', (req, res) => {
+  const gameList = [];
+  games.forEach((game, code) => {
+    gameList.push({
+      code,
+      playerCount: game.players.length,
+      phase: game.phase,
+      createdAt: game.createdAt ? new Date(game.createdAt).toISOString() : null
+    });
+  });
+  res.json({ games: gameList });
+});
+
+/** Delete a game via HTTP (admin/API tooling) — requires host's playerId in body */
+app.delete('/games/:gameCode', (req, res) => {
+  const { gameCode } = req.params;
+  const { playerId } = req.body || {};
+  const game = games.get(gameCode);
+
+  if (!game) {
+    return res.status(404).json({ error: 'Game not found' });
+  }
+  if (!playerId || game.players[0]?.id !== playerId) {
+    return res.status(403).json({ error: 'Only the host can delete the game' });
+  }
+
+  // Notify all connected players
+  game.players.forEach(player => {
+    const socketEntry = [...playerSockets.entries()]
+      .find(([_, v]) => v.gameId === gameCode && v.playerId === player.id);
+    if (socketEntry) {
+      io.to(socketEntry[0]).emit('gameDeleted', { message: 'The host has deleted this game.' });
+      playerSockets.delete(socketEntry[0]);
+    }
+  });
+  games.delete(gameCode);
+  console.log(`Game ${gameCode} deleted via HTTP by host ${playerId}`);
+  res.json({ success: true });
 });
 
 /** Lightweight keep-alive ping (prevents Render free tier from sleeping) */
@@ -102,7 +143,7 @@ const games = new Map();
 const playerSockets = new Map();
 
 // Connection limits for free tier hosting (Render, Heroku, etc.)
-const MAX_CONCURRENT_GAMES = 1;
+const MAX_CONCURRENT_GAMES = 10;
 const MAX_TOTAL_PLAYERS = 200;
 let totalConnectedPlayers = 0;
 
@@ -143,11 +184,11 @@ function generateGameCode() {
 function broadcastGameState(gameId) {
   const game = games.get(gameId);
   if (!game) return;
-  
+
   game.players.forEach(player => {
     const socketId = [...playerSockets.entries()]
       .find(([_, v]) => v.gameId === gameId && v.playerId === player.id)?.[0];
-    
+
     if (socketId) {
       const playerView = GameLogic.getPlayerView(game, player.id);
       io.to(socketId).emit('gameState', playerView);
@@ -159,11 +200,11 @@ function broadcastGameState(gameId) {
 function broadcastToGame(gameId, event, data) {
   const game = games.get(gameId);
   if (!game) return;
-  
+
   game.players.forEach(player => {
     const socketId = [...playerSockets.entries()]
       .find(([_, v]) => v.gameId === gameId && v.playerId === player.id)?.[0];
-    
+
     if (socketId) {
       io.to(socketId).emit(event, data);
     }
@@ -178,11 +219,11 @@ io.on('connection', (socket) => {
   // --------------------------------------------------------------------
   // CONNECTION MANAGEMENT
   // --------------------------------------------------------------------
-  
+
   // Check if server is at capacity
   if (totalConnectedPlayers >= MAX_TOTAL_PLAYERS) {
     console.log('Server at capacity, rejecting connection:', socket.id);
-    socket.emit('serverFull', { 
+    socket.emit('serverFull', {
       message: 'Server is at maximum capacity. Please try again in a few minutes.',
       players: totalConnectedPlayers,
       maxPlayers: MAX_TOTAL_PLAYERS
@@ -190,42 +231,42 @@ io.on('connection', (socket) => {
     socket.disconnect(true);
     return;
   }
-  
+
   totalConnectedPlayers++;
   console.log(`Player connected: ${socket.id} (Total: ${totalConnectedPlayers}/${MAX_TOTAL_PLAYERS})`);
-  
+
   // --------------------------------------------------------------------
   // GAME CREATION AND JOINING
   // --------------------------------------------------------------------
-  
+
   /** Create a new game room as the host */
   socket.on('createGame', ({ playerName, isExtended = false, enableSpecialBuild = true }, callback) => {
     // Check game limit
     if (games.size >= MAX_CONCURRENT_GAMES) {
-      callback({ 
-        success: false, 
-        error: 'Server has reached maximum number of games. Please try again later.' 
+      callback({
+        success: false,
+        error: 'Server has reached maximum number of games. Please try again later.'
       });
       return;
     }
-    
+
     const gameCode = generateGameCode();
     const playerId = uuidv4();
-    
+
     const game = GameLogic.createGame(gameCode, {
       id: playerId,
       name: playerName
     }, isExtended, enableSpecialBuild);
-    
+
     // Add timestamp for cleanup
     game.createdAt = Date.now();
-    
+
     games.set(gameCode, game);
     playerSockets.set(socket.id, { gameId: gameCode, playerId });
     socket.join(gameCode);
-    
+
     console.log(`Game ${gameCode} created by ${playerName}`);
-    
+
     callback({
       success: true,
       gameCode,
@@ -233,45 +274,45 @@ io.on('connection', (socket) => {
       gameState: GameLogic.getPlayerView(game, playerId)
     });
   });
-  
+
   /** Join an existing game room using a game code */
   socket.on('joinGame', ({ gameCode, playerName }, callback) => {
     const game = games.get(gameCode.toUpperCase());
-    
+
     if (!game) {
       callback({ success: false, error: 'Game not found' });
       return;
     }
-    
+
     const playerId = uuidv4();
     const result = GameLogic.addPlayer(game, { id: playerId, name: playerName });
-    
+
     if (!result.success) {
       callback({ success: false, error: result.error });
       return;
     }
-    
+
     playerSockets.set(socket.id, { gameId: gameCode.toUpperCase(), playerId });
     socket.join(gameCode.toUpperCase());
-    
+
     console.log(`${playerName} joined game ${gameCode}`);
-    
+
     callback({
       success: true,
       gameCode: gameCode.toUpperCase(),
       playerId,
       gameState: GameLogic.getPlayerView(game, playerId)
     });
-    
+
     // Notify all players
     broadcastToGame(gameCode.toUpperCase(), 'playerJoined', { playerName });
     broadcastGameState(gameCode.toUpperCase());
   });
-  
+
   // --------------------------------------------------------------------
   // GAME FLOW CONTROLS
   // --------------------------------------------------------------------
-  
+
   /** Start the game (host only) - randomizes player order and begins setup */
   socket.on('startGame', (callback) => {
     const playerInfo = playerSockets.get(socket.id);
@@ -279,31 +320,31 @@ io.on('connection', (socket) => {
       callback({ success: false, error: 'Not in a game' });
       return;
     }
-    
+
     const game = games.get(playerInfo.gameId);
     if (!game) {
       callback({ success: false, error: 'Game not found' });
       return;
     }
-    
+
     // Only host can start
     if (game.players[0].id !== playerInfo.playerId) {
       callback({ success: false, error: 'Only host can start the game' });
       return;
     }
-    
+
     const result = GameLogic.startGame(game);
-    
+
     if (result.success) {
-      broadcastToGame(playerInfo.gameId, 'gameStarted', { 
-        turnOrder: result.turnOrder 
+      broadcastToGame(playerInfo.gameId, 'gameStarted', {
+        turnOrder: result.turnOrder
       });
       broadcastGameState(playerInfo.gameId);
     }
-    
+
     callback(result);
   });
-  
+
   /** Shuffle the board layout (host only, before game starts) */
   socket.on('shuffleBoard', (callback) => {
     const playerInfo = playerSockets.get(socket.id);
@@ -311,33 +352,33 @@ io.on('connection', (socket) => {
       callback({ success: false, error: 'Not in a game' });
       return;
     }
-    
+
     const game = games.get(playerInfo.gameId);
     if (!game) {
       callback({ success: false, error: 'Game not found' });
       return;
     }
-    
+
     // Only host can shuffle
     if (game.players[0].id !== playerInfo.playerId) {
       callback({ success: false, error: 'Only host can shuffle the board' });
       return;
     }
-    
+
     const result = GameLogic.shuffleBoard(game);
-    
+
     if (result.success) {
       broadcastToGame(playerInfo.gameId, 'boardShuffled', {});
       broadcastGameState(playerInfo.gameId);
     }
-    
+
     callback(result);
   });
-  
+
   // --------------------------------------------------------------------
   // TURN ACTIONS
   // --------------------------------------------------------------------
-  
+
   /** Roll dice at start of turn - distributes resources or triggers robber */
   socket.on('rollDice', (callback) => {
     const playerInfo = playerSockets.get(socket.id);
@@ -345,16 +386,16 @@ io.on('connection', (socket) => {
       callback({ success: false, error: 'Not in a game' });
       return;
     }
-    
+
     const game = games.get(playerInfo.gameId);
     const result = GameLogic.rollDice(game, playerInfo.playerId);
-    
+
     if (result.success) {
-      broadcastToGame(playerInfo.gameId, 'diceRolled', { 
+      broadcastToGame(playerInfo.gameId, 'diceRolled', {
         roll: result.roll,
-        playerId: playerInfo.playerId 
+        playerId: playerInfo.playerId
       });
-      
+
       // Broadcast resource gains to all players (resource gains are public in Catan)
       if (result.resourceGains) {
         // Collect all gains for broadcast
@@ -371,7 +412,7 @@ io.on('connection', (socket) => {
             });
           }
         });
-        
+
         // Broadcast all resource gains to everyone in the game
         if (allGains.length > 0) {
           broadcastToGame(playerInfo.gameId, 'resourcesDistributed', {
@@ -379,7 +420,7 @@ io.on('connection', (socket) => {
             allGains
           });
         }
-        
+
         // Also send personal notification to each player who received resources
         game.players.forEach((player, idx) => {
           const gains = result.resourceGains[idx];
@@ -388,7 +429,7 @@ io.on('connection', (socket) => {
             const socketEntry = [...playerSockets.entries()]
               .find(([_, v]) => v.gameId === playerInfo.gameId && v.playerId === player.id);
             if (socketEntry) {
-              io.to(socketEntry[0]).emit('resourcesReceived', { 
+              io.to(socketEntry[0]).emit('resourcesReceived', {
                 gains,
                 fromRoll: result.roll.total
               });
@@ -396,13 +437,13 @@ io.on('connection', (socket) => {
           }
         });
       }
-      
+
       broadcastGameState(playerInfo.gameId);
     }
-    
+
     callback(result);
   });
-  
+
   /** Discard cards when a 7 is rolled (for players with >7 cards) */
   socket.on('discardCards', ({ resources }, callback) => {
     const playerInfo = playerSockets.get(socket.id);
@@ -410,17 +451,17 @@ io.on('connection', (socket) => {
       callback({ success: false, error: 'Not in a game' });
       return;
     }
-    
+
     const game = games.get(playerInfo.gameId);
     const result = GameLogic.discardCards(game, playerInfo.playerId, resources);
-    
+
     if (result.success) {
       broadcastGameState(playerInfo.gameId);
     }
-    
+
     callback(result);
   });
-  
+
   /** Move robber and optionally steal from a player */
   socket.on('moveRobber', ({ hexKey, stealFromPlayerId }, callback) => {
     const playerInfo = playerSockets.get(socket.id);
@@ -428,50 +469,50 @@ io.on('connection', (socket) => {
       callback({ success: false, error: 'Not in a game' });
       return;
     }
-    
+
     const game = games.get(playerInfo.gameId);
     const result = GameLogic.moveRobber(game, playerInfo.playerId, hexKey, stealFromPlayerId);
-    
+
     if (result.success) {
       broadcastToGame(playerInfo.gameId, 'robberMoved', { hexKey });
-      
+
       // Send steal notifications to both players
       if (result.stolenInfo) {
         const { resource, thief, thiefName, victim, victimName } = result.stolenInfo;
-        
+
         // Notify the thief what they stole
         const thiefSocket = [...playerSockets.entries()]
           .find(([_, v]) => v.gameId === playerInfo.gameId && v.playerId === thief)?.[0];
         if (thiefSocket) {
-          io.to(thiefSocket).emit('stealResult', { 
+          io.to(thiefSocket).emit('stealResult', {
             type: 'stole',
             resource,
             otherPlayer: victimName
           });
         }
-        
+
         // Notify the victim what was stolen from them
         const victimSocket = [...playerSockets.entries()]
           .find(([_, v]) => v.gameId === playerInfo.gameId && v.playerId === victim)?.[0];
         if (victimSocket) {
-          io.to(victimSocket).emit('stealResult', { 
+          io.to(victimSocket).emit('stealResult', {
             type: 'stolen',
             resource,
             otherPlayer: thiefName
           });
         }
       }
-      
+
       broadcastGameState(playerInfo.gameId);
     }
-    
+
     callback(result);
   });
-  
+
   // --------------------------------------------------------------------
   // BUILDING ACTIONS
   // --------------------------------------------------------------------
-  
+
   /** Place a settlement on a vertex */
   socket.on('placeSettlement', ({ vertexKey, isSetup }, callback) => {
     const playerInfo = playerSockets.get(socket.id);
@@ -479,21 +520,21 @@ io.on('connection', (socket) => {
       callback({ success: false, error: 'Not in a game' });
       return;
     }
-    
+
     const game = games.get(playerInfo.gameId);
     const result = GameLogic.placeSettlement(game, playerInfo.playerId, vertexKey);
-    
+
     if (result.success) {
-      broadcastToGame(playerInfo.gameId, 'settlementPlaced', { 
-        vertexKey, 
-        playerId: playerInfo.playerId 
+      broadcastToGame(playerInfo.gameId, 'settlementPlaced', {
+        vertexKey,
+        playerId: playerInfo.playerId
       });
       broadcastGameState(playerInfo.gameId);
     }
-    
+
     callback(result);
   });
-  
+
   /** Place a road on an edge */
   socket.on('placeRoad', ({ edgeKey, isSetup, lastSettlement }, callback) => {
     const playerInfo = playerSockets.get(socket.id);
@@ -501,21 +542,21 @@ io.on('connection', (socket) => {
       callback({ success: false, error: 'Not in a game' });
       return;
     }
-    
+
     const game = games.get(playerInfo.gameId);
     const result = GameLogic.placeRoad(game, playerInfo.playerId, edgeKey, isSetup, lastSettlement);
-    
+
     if (result.success) {
-      broadcastToGame(playerInfo.gameId, 'roadPlaced', { 
-        edgeKey, 
-        playerId: playerInfo.playerId 
+      broadcastToGame(playerInfo.gameId, 'roadPlaced', {
+        edgeKey,
+        playerId: playerInfo.playerId
       });
       broadcastGameState(playerInfo.gameId);
     }
-    
+
     callback(result);
   });
-  
+
   /** Upgrade an existing settlement to a city */
   socket.on('upgradeToCity', ({ vertexKey }, callback) => {
     const playerInfo = playerSockets.get(socket.id);
@@ -523,25 +564,25 @@ io.on('connection', (socket) => {
       callback({ success: false, error: 'Not in a game' });
       return;
     }
-    
+
     const game = games.get(playerInfo.gameId);
     const result = GameLogic.upgradeToCity(game, playerInfo.playerId, vertexKey);
-    
+
     if (result.success) {
-      broadcastToGame(playerInfo.gameId, 'cityBuilt', { 
-        vertexKey, 
-        playerId: playerInfo.playerId 
+      broadcastToGame(playerInfo.gameId, 'cityBuilt', {
+        vertexKey,
+        playerId: playerInfo.playerId
       });
       broadcastGameState(playerInfo.gameId);
     }
-    
+
     callback(result);
   });
-  
+
   // --------------------------------------------------------------------
   // DEVELOPMENT CARDS
   // --------------------------------------------------------------------
-  
+
   /** Buy a development card from the deck */
   socket.on('buyDevCard', (callback) => {
     const playerInfo = playerSockets.get(socket.id);
@@ -549,17 +590,17 @@ io.on('connection', (socket) => {
       callback({ success: false, error: 'Not in a game' });
       return;
     }
-    
+
     const game = games.get(playerInfo.gameId);
     const result = GameLogic.buyDevCard(game, playerInfo.playerId);
-    
+
     if (result.success) {
       broadcastGameState(playerInfo.gameId);
     }
-    
+
     callback(result);
   });
-  
+
   /** Play a development card */
   socket.on('playDevCard', ({ cardType, params }, callback) => {
     const playerInfo = playerSockets.get(socket.id);
@@ -567,21 +608,21 @@ io.on('connection', (socket) => {
       callback({ success: false, error: 'Not in a game' });
       return;
     }
-    
+
     const game = games.get(playerInfo.gameId);
     const result = GameLogic.playDevCard(game, playerInfo.playerId, cardType, params);
-    
+
     if (result.success) {
-      broadcastToGame(playerInfo.gameId, 'devCardPlayed', { 
-        cardType, 
-        playerId: playerInfo.playerId 
+      broadcastToGame(playerInfo.gameId, 'devCardPlayed', {
+        cardType,
+        playerId: playerInfo.playerId
       });
       broadcastGameState(playerInfo.gameId);
     }
-    
+
     callback(result);
   });
-  
+
   /** Pick a resource for Year of Plenty card */
   socket.on('yearOfPlentyPick', ({ resource }, callback) => {
     const playerInfo = playerSockets.get(socket.id);
@@ -589,21 +630,21 @@ io.on('connection', (socket) => {
       callback({ success: false, error: 'Not in a game' });
       return;
     }
-    
+
     const game = games.get(playerInfo.gameId);
     const result = GameLogic.yearOfPlentyPick(game, playerInfo.playerId, resource);
-    
+
     if (result.success) {
       broadcastGameState(playerInfo.gameId);
     }
-    
+
     callback(result);
   });
-  
+
   // --------------------------------------------------------------------
   // TRADING
   // --------------------------------------------------------------------
-  
+
   /** Trade with the bank (uses port ratios if available) */
   socket.on('bankTrade', ({ giveResource, giveAmount, getResource }, callback) => {
     const playerInfo = playerSockets.get(socket.id);
@@ -611,17 +652,17 @@ io.on('connection', (socket) => {
       callback({ success: false, error: 'Not in a game' });
       return;
     }
-    
+
     const game = games.get(playerInfo.gameId);
     const result = GameLogic.bankTrade(game, playerInfo.playerId, giveResource, giveAmount, getResource);
-    
+
     if (result.success) {
       broadcastGameState(playerInfo.gameId);
     }
-    
+
     callback(result);
   });
-  
+
   /** Propose a trade to other players (optional targetPlayerId = propose to one player) */
   socket.on('proposeTrade', ({ offer, request, targetPlayerId }, callback) => {
     const playerInfo = playerSockets.get(socket.id);
@@ -629,10 +670,10 @@ io.on('connection', (socket) => {
       callback({ success: false, error: 'Not in a game' });
       return;
     }
-    
+
     const game = games.get(playerInfo.gameId);
     const result = GameLogic.proposeTrade(game, playerInfo.playerId, offer, request, targetPlayerId || null);
-    
+
     if (result.success) {
       broadcastToGame(playerInfo.gameId, 'tradeProposed', {
         from: playerInfo.playerId,
@@ -641,10 +682,10 @@ io.on('connection', (socket) => {
       });
       broadcastGameState(playerInfo.gameId);
     }
-    
+
     callback(result);
   });
-  
+
   /** Accept or decline a trade offer */
   socket.on('respondToTrade', ({ accept }, callback) => {
     const playerInfo = playerSockets.get(socket.id);
@@ -652,26 +693,26 @@ io.on('connection', (socket) => {
       callback({ success: false, error: 'Not in a game' });
       return;
     }
-    
+
     const game = games.get(playerInfo.gameId);
     const result = GameLogic.respondToTrade(game, playerInfo.playerId, accept);
-    
+
     if (result.success) {
       if (result.traded) {
-        broadcastToGame(playerInfo.gameId, 'tradeAccepted', { 
-          by: playerInfo.playerId 
+        broadcastToGame(playerInfo.gameId, 'tradeAccepted', {
+          by: playerInfo.playerId
         });
       } else {
-        broadcastToGame(playerInfo.gameId, 'tradeDeclined', { 
-          by: playerInfo.playerId 
+        broadcastToGame(playerInfo.gameId, 'tradeDeclined', {
+          by: playerInfo.playerId
         });
       }
       broadcastGameState(playerInfo.gameId);
     }
-    
+
     callback(result);
   });
-  
+
   /** Cancel an active trade offer */
   socket.on('cancelTrade', (callback) => {
     const playerInfo = playerSockets.get(socket.id);
@@ -679,18 +720,18 @@ io.on('connection', (socket) => {
       callback({ success: false, error: 'Not in a game' });
       return;
     }
-    
+
     const game = games.get(playerInfo.gameId);
     const result = GameLogic.cancelTrade(game, playerInfo.playerId);
-    
+
     if (result.success) {
       broadcastToGame(playerInfo.gameId, 'tradeCancelled', {});
       broadcastGameState(playerInfo.gameId);
     }
-    
+
     callback(result);
   });
-  
+
   /** Counter-offer: recipient proposes a different trade back to the proposer */
   socket.on('counterTrade', (payload, callback) => {
     if (typeof callback !== 'function') return;
@@ -721,11 +762,11 @@ io.on('connection', (socket) => {
       callback({ success: false, error: err.message || 'Counter offer failed' });
     }
   });
-  
+
   // --------------------------------------------------------------------
   // TURN MANAGEMENT
   // --------------------------------------------------------------------
-  
+
   /** Advance to next player during setup phase */
   socket.on('advanceSetup', (callback) => {
     const playerInfo = playerSockets.get(socket.id);
@@ -733,17 +774,17 @@ io.on('connection', (socket) => {
       callback({ success: false, error: 'Not in a game' });
       return;
     }
-    
+
     const game = games.get(playerInfo.gameId);
     const result = GameLogic.advanceSetup(game, playerInfo.playerId);
-    
+
     if (result.success) {
       broadcastGameState(playerInfo.gameId);
     }
-    
+
     callback(result);
   });
-  
+
   /** End the current player's turn */
   socket.on('endTurn', (callback) => {
     const playerInfo = playerSockets.get(socket.id);
@@ -751,13 +792,13 @@ io.on('connection', (socket) => {
       callback({ success: false, error: 'Not in a game' });
       return;
     }
-    
+
     const game = games.get(playerInfo.gameId);
     const result = GameLogic.endTurn(game, playerInfo.playerId);
-    
+
     if (result.success) {
       if (result.specialBuildingPhase) {
-        broadcastToGame(playerInfo.gameId, 'specialBuildingPhaseStarted', { 
+        broadcastToGame(playerInfo.gameId, 'specialBuildingPhaseStarted', {
           playerId: playerInfo.playerId,
           currentBuilder: game.players[game.specialBuildIndex]?.id
         });
@@ -766,10 +807,10 @@ io.on('connection', (socket) => {
       }
       broadcastGameState(playerInfo.gameId);
     }
-    
+
     callback(result);
   });
-  
+
   /** End special building phase for current player (5-6 player games) */
   socket.on('endSpecialBuild', (callback) => {
     const playerInfo = playerSockets.get(socket.id);
@@ -777,29 +818,29 @@ io.on('connection', (socket) => {
       callback({ success: false, error: 'Not in a game' });
       return;
     }
-    
+
     const game = games.get(playerInfo.gameId);
     const result = GameLogic.endSpecialBuild(game, playerInfo.playerId);
-    
+
     if (result.success) {
       if (result.specialBuildingPhaseEnded) {
         broadcastToGame(playerInfo.gameId, 'specialBuildingPhaseEnded', {});
         broadcastToGame(playerInfo.gameId, 'turnEnded', { playerId: playerInfo.playerId });
       } else {
-        broadcastToGame(playerInfo.gameId, 'specialBuildNext', { 
-          currentBuilder: game.players[game.specialBuildIndex]?.id 
+        broadcastToGame(playerInfo.gameId, 'specialBuildNext', {
+          currentBuilder: game.players[game.specialBuildIndex]?.id
         });
       }
       broadcastGameState(playerInfo.gameId);
     }
-    
+
     callback(result);
   });
-  
+
   // --------------------------------------------------------------------
   // UTILITY QUERIES
   // --------------------------------------------------------------------
-  
+
   /** Get list of players with buildings on a hex (for robber stealing) */
   socket.on('getPlayersOnHex', ({ hexKey }, callback) => {
     const playerInfo = playerSockets.get(socket.id);
@@ -807,35 +848,35 @@ io.on('connection', (socket) => {
       callback({ success: false, error: 'Not in a game' });
       return;
     }
-    
+
     const game = games.get(playerInfo.gameId);
     const playerIdx = game.players.findIndex(p => p.id === playerInfo.playerId);
     const playerIndices = GameLogic.getPlayersOnHex(game, hexKey, playerIdx);
-    
+
     const players = playerIndices.map(idx => ({
       id: game.players[idx].id,
       name: game.players[idx].name,
       hasResources: Object.values(game.players[idx].resources).reduce((a, b) => a + b, 0) > 0
     }));
-    
+
     callback({ success: true, players });
   });
-  
+
   // --------------------------------------------------------------------
   // CHAT
   // --------------------------------------------------------------------
-  
+
   /** Broadcast a chat message to all players in the game */
   socket.on('chatMessage', ({ message }) => {
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) return;
-    
+
     const game = games.get(playerInfo.gameId);
     if (!game) return;
-    
+
     const player = game.players.find(p => p.id === playerInfo.playerId);
     if (!player) return;
-    
+
     broadcastToGame(playerInfo.gameId, 'chatMessage', {
       playerName: player.name,
       playerColor: player.color,
@@ -843,49 +884,95 @@ io.on('connection', (socket) => {
       timestamp: Date.now()
     });
   });
-  
+
+  // --------------------------------------------------------------------
+  // GAME DELETION
+  // --------------------------------------------------------------------
+
+  /** Delete a game (host only) — kicks all players back to lobby */
+  socket.on('deleteGame', (callback) => {
+    if (typeof callback !== 'function') return;
+    const playerInfo = playerSockets.get(socket.id);
+    if (!playerInfo) {
+      callback({ success: false, error: 'Not in a game' });
+      return;
+    }
+
+    const game = games.get(playerInfo.gameId);
+    if (!game) {
+      callback({ success: false, error: 'Game not found' });
+      return;
+    }
+
+    // Only host (first player) can delete
+    if (game.players[0].id !== playerInfo.playerId) {
+      callback({ success: false, error: 'Only the host can delete the game' });
+      return;
+    }
+
+    const gameId = playerInfo.gameId;
+
+    // Notify all players in the game that it's being deleted
+    game.players.forEach(player => {
+      const socketEntry = [...playerSockets.entries()]
+        .find(([_, v]) => v.gameId === gameId && v.playerId === player.id);
+      if (socketEntry) {
+        // Don't send to the host themselves — they'll get the callback
+        if (socketEntry[0] !== socket.id) {
+          io.to(socketEntry[0]).emit('gameDeleted', { message: 'The host has deleted this game.' });
+        }
+        playerSockets.delete(socketEntry[0]);
+      }
+    });
+
+    games.delete(gameId);
+    console.log(`Game ${gameId} deleted by host ${playerInfo.playerId}`);
+
+    callback({ success: true });
+  });
+
   // --------------------------------------------------------------------
   // CONNECTION LIFECYCLE
   // --------------------------------------------------------------------
-  
+
   /** Handle player disconnection */
   socket.on('disconnect', () => {
     totalConnectedPlayers = Math.max(0, totalConnectedPlayers - 1);
-    
+
     const playerInfo = playerSockets.get(socket.id);
-    
+
     if (playerInfo) {
       const game = games.get(playerInfo.gameId);
       if (game) {
         const player = game.players.find(p => p.id === playerInfo.playerId);
         if (player) {
-          broadcastToGame(playerInfo.gameId, 'playerDisconnected', { 
-            playerName: player.name 
+          broadcastToGame(playerInfo.gameId, 'playerDisconnected', {
+            playerName: player.name
           });
         }
       }
-      
+
       playerSockets.delete(socket.id);
     }
-    
+
     console.log(`Player disconnected: ${socket.id} (Total: ${totalConnectedPlayers}/${MAX_TOTAL_PLAYERS})`);
   });
-  
+
   /** Reconnect to an existing game (e.g., after page refresh) */
   socket.on('reconnect', ({ gameCode, playerId }, callback) => {
     const game = games.get(gameCode);
-    
+
     if (!game) {
       callback({ success: false, error: 'Game not found' });
       return;
     }
-    
+
     const player = game.players.find(p => p.id === playerId);
     if (!player) {
       callback({ success: false, error: 'Player not found in game' });
       return;
     }
-    
+
     // Remove old socket mapping if exists
     for (const [socketId, info] of playerSockets.entries()) {
       if (info.gameId === gameCode && info.playerId === playerId) {
@@ -893,15 +980,15 @@ io.on('connection', (socket) => {
         break;
       }
     }
-    
+
     playerSockets.set(socket.id, { gameId: gameCode, playerId });
     socket.join(gameCode);
-    
+
     callback({
       success: true,
       gameState: GameLogic.getPlayerView(game, playerId)
     });
-    
+
     broadcastToGame(gameCode, 'playerReconnected', { playerName: player.name });
   });
 });

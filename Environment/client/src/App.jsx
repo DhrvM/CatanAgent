@@ -29,7 +29,7 @@ function App() {
   // ============================================================================
   // STATE MANAGEMENT
   // ============================================================================
-  
+
   const [socket, setSocket] = useState(null);           // Socket.io connection
   const [connected, setConnected] = useState(false);     // Connection status
   const [gameState, setGameState] = useState(null);      // Current game state from server
@@ -43,15 +43,15 @@ function App() {
   // ============================================================================
   // SOCKET CONNECTION & EVENT HANDLERS
   // ============================================================================
-  
+
   useEffect(() => {
     const newSocket = io(SERVER_URL);
-    
+
     newSocket.on('connect', () => {
       console.log('Connected to server');
       setConnected(true);
       setServerFull(false);
-      
+
       // Try to reconnect to existing game
       const savedGame = localStorage.getItem('catanGame');
       if (savedGame) {
@@ -67,60 +67,69 @@ function App() {
         });
       }
     });
-    
+
     newSocket.on('disconnect', () => {
       console.log('Disconnected from server');
       setConnected(false);
     });
-    
+
     newSocket.on('serverFull', ({ message }) => {
       console.log('Server is full:', message);
       setServerFull(true);
       setConnected(false);
     });
-    
+
     newSocket.on('gameState', (state) => {
       setGameState(state);
     });
-    
+
     newSocket.on('playerJoined', ({ playerName }) => {
       addNotification(`${playerName} joined the game`);
     });
-    
+
     newSocket.on('playerDisconnected', ({ playerName }) => {
       addNotification(`${playerName} disconnected`);
     });
-    
+
     newSocket.on('playerReconnected', ({ playerName }) => {
       addNotification(`${playerName} reconnected`);
     });
-    
+
     newSocket.on('gameStarted', () => {
       addNotification('Game started! Place your first settlement.');
     });
-    
+
     newSocket.on('diceRolled', ({ roll, playerId: rollerId }) => {
       // Notification handled in GameBoard
     });
-    
+
     newSocket.on('chatMessage', (msg) => {
       setChatMessages(prev => [...prev, msg]);
     });
-    
+
     newSocket.on('tradeProposed', ({ from, offer, request }) => {
       // Handled in GameBoard
     });
-    
+
     newSocket.on('tradeAccepted', ({ by }) => {
       addNotification('Trade completed!');
     });
-    
+
     newSocket.on('tradeCancelled', () => {
       addNotification('Trade cancelled');
     });
-    
+
+    newSocket.on('gameDeleted', ({ message }) => {
+      addNotification(message || 'The game has been deleted by the host.');
+      setGameState(null);
+      setGameCode(null);
+      setPlayerId(null);
+      setChatMessages([]);
+      localStorage.removeItem('catanGame');
+    });
+
     setSocket(newSocket);
-    
+
     return () => {
       newSocket.close();
     };
@@ -129,7 +138,7 @@ function App() {
   // ============================================================================
   // KEEP-ALIVE PING (prevents Render free tier from sleeping)
   // ============================================================================
-  
+
   useEffect(() => {
     const pingServer = async () => {
       try {
@@ -152,7 +161,7 @@ function App() {
   // ============================================================================
   // NOTIFICATION HELPERS
   // ============================================================================
-  
+
   /** Add a toast notification that auto-dismisses after 4 seconds */
   const addNotification = useCallback((message) => {
     const id = Date.now();
@@ -165,11 +174,11 @@ function App() {
   // ============================================================================
   // GAME ACTIONS
   // ============================================================================
-  
+
   /** Create a new game room as the host */
   const handleCreateGame = useCallback((playerName, isExtended = false, enableSpecialBuild = true) => {
     if (!socket) return;
-    
+
     socket.emit('createGame', { playerName, isExtended, enableSpecialBuild }, (response) => {
       if (response.success) {
         setGameCode(response.gameCode);
@@ -188,7 +197,7 @@ function App() {
   /** Join an existing game room using a code */
   const handleJoinGame = useCallback((code, playerName) => {
     if (!socket) return;
-    
+
     socket.emit('joinGame', { gameCode: code, playerName }, (response) => {
       if (response.success) {
         setGameCode(response.gameCode);
@@ -213,10 +222,28 @@ function App() {
     localStorage.removeItem('catanGame');
   }, []);
 
+  /** Delete the current game (host only) */
+  const handleDeleteGame = useCallback(() => {
+    if (!socket) return;
+
+    socket.emit('deleteGame', (response) => {
+      if (response.success) {
+        setGameState(null);
+        setGameCode(null);
+        setPlayerId(null);
+        setChatMessages([]);
+        localStorage.removeItem('catanGame');
+        addNotification('Game deleted successfully.');
+      } else {
+        addNotification(response.error || 'Failed to delete game.');
+      }
+    });
+  }, [socket, addNotification]);
+
   // ============================================================================
   // RENDER
   // ============================================================================
-  
+
   // Server at capacity - show retry screen
   if (serverFull) {
     return (
@@ -227,7 +254,7 @@ function App() {
           <h2>Server at Capacity</h2>
           <p>Too many players are currently online!</p>
           <p className="server-full-hint">Please try again in a few minutes.</p>
-          <button 
+          <button
             className="retry-btn"
             onClick={() => window.location.reload()}
           >
@@ -254,7 +281,7 @@ function App() {
   // No active game - show lobby for creating/joining games
   if (!gameState) {
     return (
-      <Lobby 
+      <Lobby
         onCreateGame={handleCreateGame}
         onJoinGame={handleJoinGame}
         error={error}
@@ -267,17 +294,18 @@ function App() {
   return (
     <>
       <div className="app">
-        <GameBoard 
+        <GameBoard
           socket={socket}
           gameState={gameState}
           playerId={playerId}
           gameCode={gameCode}
           chatMessages={chatMessages}
           onLeaveGame={handleLeaveGame}
+          onDeleteGame={handleDeleteGame}
           addNotification={addNotification}
         />
       </div>
-      
+
       {/* Toast notifications - rendered via Portal to document.body for proper z-index */}
       {createPortal(
         <div className="notifications">
