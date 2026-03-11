@@ -1,5 +1,5 @@
 from typing import Any, Dict, List
-from SocketClient import CatanSocketClient
+from Agent.utils.socket_client import CatanSocketClient
 
 def GetPlayerResourcesAll(client: CatanSocketClient) -> Dict[str, Any]:
     """
