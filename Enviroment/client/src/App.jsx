@@ -17,6 +17,7 @@ import { createPortal } from 'react-dom';
 import { io } from 'socket.io-client';
 import Lobby from './components/Lobby';
 import GameBoard from './components/GameBoard';
+import ObservationDeck from './components/ObservationDeck';
 import './App.css';
 
 // Server URL from environment variable, falls back to localhost for development
@@ -39,12 +40,27 @@ function App() {
   const [chatMessages, setChatMessages] = useState([]);  // Chat message history
   const [notifications, setNotifications] = useState([]); // Toast notifications
   const [serverFull, setServerFull] = useState(false);   // Server capacity flag
+  const [viewMode, setViewMode] = useState(window.location.hash === '#observation-deck' ? 'deck' : 'game');
+
+  useEffect(() => {
+    const syncViewMode = () => {
+      setViewMode(window.location.hash === '#observation-deck' ? 'deck' : 'game');
+    };
+
+    window.addEventListener('hashchange', syncViewMode);
+    return () => window.removeEventListener('hashchange', syncViewMode);
+  }, []);
 
   // ============================================================================
   // SOCKET CONNECTION & EVENT HANDLERS
   // ============================================================================
   
   useEffect(() => {
+    if (viewMode === 'deck') {
+      setConnected(true);
+      return undefined;
+    }
+
     const newSocket = io(SERVER_URL);
     
     newSocket.on('connect', () => {
@@ -124,7 +140,7 @@ function App() {
     return () => {
       newSocket.close();
     };
-  }, []);
+  }, [viewMode]);
 
   // ============================================================================
   // KEEP-ALIVE PING (prevents Render free tier from sleeping)
@@ -167,10 +183,10 @@ function App() {
   // ============================================================================
   
   /** Create a new game room as the host */
-  const handleCreateGame = useCallback((playerName, isExtended = false, enableSpecialBuild = true) => {
+  const handleCreateGame = useCallback((playerName, isExtended = false, enableSpecialBuild = true, benchmark = null) => {
     if (!socket) return;
     
-    socket.emit('createGame', { playerName, isExtended, enableSpecialBuild }, (response) => {
+    socket.emit('createGame', { playerName, isExtended, enableSpecialBuild, benchmark }, (response) => {
       if (response.success) {
         setGameCode(response.gameCode);
         setPlayerId(response.playerId);
@@ -186,10 +202,10 @@ function App() {
   }, [socket]);
 
   /** Join an existing game room using a code */
-  const handleJoinGame = useCallback((code, playerName) => {
+  const handleJoinGame = useCallback((code, playerName, benchmark = null) => {
     if (!socket) return;
     
-    socket.emit('joinGame', { gameCode: code, playerName }, (response) => {
+    socket.emit('joinGame', { gameCode: code, playerName, benchmark }, (response) => {
       if (response.success) {
         setGameCode(response.gameCode);
         setPlayerId(response.playerId);
@@ -213,10 +229,26 @@ function App() {
     localStorage.removeItem('catanGame');
   }, []);
 
+  const openObservationDeck = useCallback(() => {
+    window.location.hash = 'observation-deck';
+  }, []);
+
+  const closeObservationDeck = useCallback(() => {
+    window.location.hash = '';
+  }, []);
+
   // ============================================================================
   // RENDER
   // ============================================================================
   
+  if (viewMode === 'deck') {
+    return (
+      <div className="app">
+        <ObservationDeck serverUrl={SERVER_URL} onBack={closeObservationDeck} />
+      </div>
+    );
+  }
+
   // Server at capacity - show retry screen
   if (serverFull) {
     return (
@@ -259,6 +291,7 @@ function App() {
         onJoinGame={handleJoinGame}
         error={error}
         setError={setError}
+        onOpenObservationDeck={openObservationDeck}
       />
     );
   }

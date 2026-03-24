@@ -314,6 +314,25 @@
   line-height: 1.3;
 }
 
+.benchmark-section {
+  margin-bottom: 1rem;
+}
+
+.benchmark-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+  margin-bottom: 1.5rem;
+}
+
+.benchmark-grid .form-group {
+  margin-bottom: 0;
+}
+
+.benchmark-checkbox-row {
+  grid-column: 1 / -1;
+}
+
 .lobby-footer {
   margin-top: 3rem;
   color: var(--text-muted);
@@ -345,5 +364,9 @@
     right: 1rem;
     padding: 0.5rem 0.8rem;
     font-size: 0.9rem;
+  }
+
+  .benchmark-grid {
+    grid-template-columns: 1fr;
   }
 }

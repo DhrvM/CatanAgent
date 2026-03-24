@@ -22,6 +22,15 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 import { v4 as uuidv4 } from 'uuid';
 import * as GameLogic from './gameLogic.js';
+import { benchmarkStore } from './benchmarkStore.js';
+import {
+  BENCHMARK_TASKS,
+  BENCHMARK_WEIGHTS,
+  METRIC_DIRECTIONS,
+  TASK_CATEGORIES,
+} from './benchmarkDefinitions.js';
+
+await benchmarkStore.init();
 
 // ============================================================================
 // EXPRESS APP SETUP
@@ -79,6 +88,88 @@ app.get('/ping', (req, res) => {
   res.send('pong');
 });
 
+function parseBenchmarkFilters(query = {}) {
+  return {
+    benchmarkId: query.benchmarkId || null,
+    taskCategory: query.taskCategory || null,
+    baselineAgentId: query.baselineAgentId || null,
+    mapLayoutId: query.mapLayoutId || null,
+    startingSeat: query.startingSeat || null,
+    opponentPolicySet: query.opponentPolicySet || null,
+    runId: query.runId || null,
+    search: query.search || null,
+  };
+}
+
+app.get('/api/benchmark/definitions', (req, res) => {
+  res.json({
+    tasks: BENCHMARK_TASKS,
+    taskCategories: TASK_CATEGORIES,
+    metricDirections: METRIC_DIRECTIONS,
+    metricWeights: BENCHMARK_WEIGHTS,
+  });
+});
+
+app.get('/api/benchmark/overview', (req, res) => {
+  res.json(benchmarkStore.getOverview());
+});
+
+app.get('/api/benchmark/leaderboard', (req, res) => {
+  const entityType = req.query.entityType === 'player' ? 'player' : 'agent';
+  res.json(benchmarkStore.getLeaderboard(entityType, parseBenchmarkFilters(req.query)));
+});
+
+app.get('/api/benchmark/agents/:entityKey', (req, res) => {
+  const detail = benchmarkStore.getEntityDetail('agent', req.params.entityKey, parseBenchmarkFilters(req.query));
+  if (!detail) {
+    return res.status(404).json({ error: 'Agent not found' });
+  }
+  res.json(detail);
+});
+
+app.get('/api/benchmark/players/:entityKey', (req, res) => {
+  const detail = benchmarkStore.getEntityDetail('player', req.params.entityKey, parseBenchmarkFilters(req.query));
+  if (!detail) {
+    return res.status(404).json({ error: 'Player not found' });
+  }
+  res.json(detail);
+});
+
+app.get('/api/benchmark/runs/:runId', (req, res) => {
+  const detail = benchmarkStore.getRunDetail(req.params.runId);
+  if (!detail) {
+    return res.status(404).json({ error: 'Run not found' });
+  }
+  res.json(detail);
+});
+
+app.get('/api/benchmark/slices', (req, res) => {
+  res.json({
+    filters: parseBenchmarkFilters(req.query),
+    slices: benchmarkStore.getSliceComparisons(parseBenchmarkFilters(req.query)),
+  });
+});
+
+app.post('/api/benchmark/runs', async (req, res) => {
+  try {
+    const run = await benchmarkStore.upsertRun(req.body || {});
+    res.status(201).json(run);
+  } catch (error) {
+    console.error('Failed to store benchmark run', error);
+    res.status(500).json({ error: error.message || 'Failed to store benchmark run' });
+  }
+});
+
+app.post('/api/benchmark/tasks', async (req, res) => {
+  try {
+    const taskResult = await benchmarkStore.recordTaskResult(req.body || {});
+    res.status(201).json(taskResult);
+  } catch (error) {
+    console.error('Failed to store task result', error);
+    res.status(500).json({ error: error.message || 'Failed to store task result' });
+  }
+});
+
 // ============================================================================
 // SOCKET.IO SETUP
 // ============================================================================
@@ -102,7 +193,7 @@ const games = new Map();
 const playerSockets = new Map();
 
 // Connection limits for free tier hosting (Render, Heroku, etc.)
-const MAX_CONCURRENT_GAMES = 1;
+const MAX_CONCURRENT_GAMES = 10;
 const MAX_TOTAL_PLAYERS = 200;
 let totalConnectedPlayers = 0;
 
@@ -170,6 +261,48 @@ function broadcastToGame(gameId, event, data) {
   });
 }
 
+function mergeBenchmarkPlayer(basePlayer, benchmarkPlayer = {}, fallbackSeat = 0) {
+  const agentId = benchmarkPlayer.agentId || basePlayer.name;
+  return {
+    ...basePlayer,
+    benchmarkPlayerKey: benchmarkPlayer.playerKey || `${benchmarkPlayer.runId || 'run'}:${basePlayer.id}`,
+    benchmarkAgentId: agentId,
+    benchmarkAgentVersion: benchmarkPlayer.agentVersion || 'unknown',
+    benchmarkBaseline: Boolean(benchmarkPlayer.baseline),
+    benchmarkStartingSeat: benchmarkPlayer.startingSeat ?? fallbackSeat,
+  };
+}
+
+function extractClientTimestamp(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const candidate = payload.clientTimestamp || payload.benchmarkTimestamp || payload._clientTimestamp;
+  return Number.isFinite(Number(candidate)) ? Number(candidate) : null;
+}
+
+async function recordBenchmarkAction(game, playerId, actionName, payload, result, requestStartedAt) {
+  if (!game?.benchmark?.enabled) return;
+  await benchmarkStore.recordAction(game, playerId, actionName, payload, result, {
+    requestStartedAt,
+    acknowledgedAt: Date.now(),
+    clientTimestamp: extractClientTimestamp(payload),
+  });
+  if (game.phase === 'finished') {
+    await benchmarkStore.completeGame(game);
+  }
+}
+
+async function registerBenchmarkGameIfNeeded(game) {
+  if (!game?.benchmark?.enabled) return;
+  await benchmarkStore.registerBenchmarkGame(game);
+}
+
+function maybeStartBenchmarkTurn(game) {
+  if (!game?.benchmark?.enabled) return;
+  const currentPlayer = game.players?.[game.currentPlayerIndex];
+  if (!currentPlayer) return;
+  benchmarkStore.startTurn(game, currentPlayer.id);
+}
+
 // ============================================================================
 // SOCKET.IO EVENT HANDLERS
 // ============================================================================
@@ -199,7 +332,7 @@ io.on('connection', (socket) => {
   // --------------------------------------------------------------------
   
   /** Create a new game room as the host */
-  socket.on('createGame', ({ playerName, isExtended = false, enableSpecialBuild = true }, callback) => {
+  socket.on('createGame', async ({ playerName, isExtended = false, enableSpecialBuild = true, benchmark = null }, callback) => {
     // Check game limit
     if (games.size >= MAX_CONCURRENT_GAMES) {
       callback({ 
@@ -216,6 +349,34 @@ io.on('connection', (socket) => {
       id: playerId,
       name: playerName
     }, isExtended, enableSpecialBuild);
+
+    if (benchmark?.enabled) {
+      const benchmarkPlayer = {
+        playerId,
+        playerKey: benchmark.player?.playerKey || `${benchmark.runId || gameCode}:${playerId}`,
+        agentId: benchmark.player?.agentId || playerName,
+        agentVersion: benchmark.player?.agentVersion || 'unknown',
+        playerName,
+        baseline: Boolean(benchmark.player?.baseline) || benchmark.baselineAgentId === (benchmark.player?.agentId || playerName),
+        startingSeat: benchmark.player?.startingSeat ?? 0,
+        runId: benchmark.runId || null,
+      };
+      game.benchmark = {
+        enabled: true,
+        runId: benchmark.runId || uuidv4(),
+        benchmarkId: benchmark.benchmarkId || 'default-benchmark',
+        taskId: benchmark.taskId || null,
+        gameType: benchmark.gameType || 'full-game',
+        mapLayoutId: benchmark.mapLayoutId || null,
+        opponentPolicySet: benchmark.opponentPolicySet || 'default-opponent',
+        scenarioTags: Array.isArray(benchmark.scenarioTags) ? benchmark.scenarioTags : [],
+        baselineAgentId: benchmark.baselineAgentId || null,
+        metadata: benchmark.metadata || {},
+        players: [benchmarkPlayer],
+      };
+      game.players[0] = mergeBenchmarkPlayer(game.players[0], benchmarkPlayer, 0);
+      await registerBenchmarkGameIfNeeded(game);
+    }
     
     // Add timestamp for cleanup
     game.createdAt = Date.now();
@@ -235,7 +396,7 @@ io.on('connection', (socket) => {
   });
   
   /** Join an existing game room using a game code */
-  socket.on('joinGame', ({ gameCode, playerName }, callback) => {
+  socket.on('joinGame', async ({ gameCode, playerName, benchmark = null }, callback) => {
     const game = games.get(gameCode.toUpperCase());
     
     if (!game) {
@@ -253,6 +414,26 @@ io.on('connection', (socket) => {
     
     playerSockets.set(socket.id, { gameId: gameCode.toUpperCase(), playerId });
     socket.join(gameCode.toUpperCase());
+
+    if (game.benchmark?.enabled) {
+      const benchmarkPlayer = {
+        playerId,
+        playerKey: benchmark?.player?.playerKey || `${game.benchmark.runId || gameCode.toUpperCase()}:${playerId}`,
+        agentId: benchmark?.player?.agentId || playerName,
+        agentVersion: benchmark?.player?.agentVersion || 'unknown',
+        playerName,
+        baseline: Boolean(benchmark?.player?.baseline) || game.benchmark.baselineAgentId === (benchmark?.player?.agentId || playerName),
+        startingSeat: benchmark?.player?.startingSeat ?? (game.players.length - 1),
+        runId: game.benchmark.runId,
+      };
+      game.benchmark.players.push(benchmarkPlayer);
+      game.players[game.players.length - 1] = mergeBenchmarkPlayer(
+        game.players[game.players.length - 1],
+        benchmarkPlayer,
+        game.players.length - 1
+      );
+      await registerBenchmarkGameIfNeeded(game);
+    }
     
     console.log(`${playerName} joined game ${gameCode}`);
     
@@ -273,7 +454,7 @@ io.on('connection', (socket) => {
   // --------------------------------------------------------------------
   
   /** Start the game (host only) - randomizes player order and begins setup */
-  socket.on('startGame', (callback) => {
+  socket.on('startGame', async (callback) => {
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) {
       callback({ success: false, error: 'Not in a game' });
@@ -295,6 +476,21 @@ io.on('connection', (socket) => {
     const result = GameLogic.startGame(game);
     
     if (result.success) {
+      if (game.benchmark?.enabled) {
+        game.players = game.players.map((player, index) => {
+          const benchmarkPlayer = game.benchmark.players.find(candidate => candidate.playerId === player.id) || {};
+          const merged = mergeBenchmarkPlayer(player, {
+            ...benchmarkPlayer,
+            startingSeat: index,
+          }, index);
+          if (benchmarkPlayer.playerId) {
+            benchmarkPlayer.startingSeat = index;
+          }
+          return merged;
+        });
+        await registerBenchmarkGameIfNeeded(game);
+        maybeStartBenchmarkTurn(game);
+      }
       broadcastToGame(playerInfo.gameId, 'gameStarted', { 
         turnOrder: result.turnOrder 
       });
@@ -339,7 +535,8 @@ io.on('connection', (socket) => {
   // --------------------------------------------------------------------
   
   /** Roll dice at start of turn - distributes resources or triggers robber */
-  socket.on('rollDice', (callback) => {
+  socket.on('rollDice', async (callback) => {
+    const requestStartedAt = Date.now();
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) {
       callback({ success: false, error: 'Not in a game' });
@@ -399,12 +596,13 @@ io.on('connection', (socket) => {
       
       broadcastGameState(playerInfo.gameId);
     }
-    
+    await recordBenchmarkAction(game, playerInfo.playerId, 'rollDice', {}, result, requestStartedAt);
     callback(result);
   });
   
   /** Discard cards when a 7 is rolled (for players with >7 cards) */
-  socket.on('discardCards', ({ resources }, callback) => {
+  socket.on('discardCards', async ({ resources }, callback) => {
+    const requestStartedAt = Date.now();
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) {
       callback({ success: false, error: 'Not in a game' });
@@ -417,12 +615,13 @@ io.on('connection', (socket) => {
     if (result.success) {
       broadcastGameState(playerInfo.gameId);
     }
-    
+    await recordBenchmarkAction(game, playerInfo.playerId, 'discardCards', { resources }, result, requestStartedAt);
     callback(result);
   });
   
   /** Move robber and optionally steal from a player */
-  socket.on('moveRobber', ({ hexKey, stealFromPlayerId }, callback) => {
+  socket.on('moveRobber', async ({ hexKey, stealFromPlayerId }, callback) => {
+    const requestStartedAt = Date.now();
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) {
       callback({ success: false, error: 'Not in a game' });
@@ -464,7 +663,7 @@ io.on('connection', (socket) => {
       
       broadcastGameState(playerInfo.gameId);
     }
-    
+    await recordBenchmarkAction(game, playerInfo.playerId, 'moveRobber', { hexKey, stealFromPlayerId }, result, requestStartedAt);
     callback(result);
   });
   
@@ -473,7 +672,8 @@ io.on('connection', (socket) => {
   // --------------------------------------------------------------------
   
   /** Place a settlement on a vertex */
-  socket.on('placeSettlement', ({ vertexKey, isSetup }, callback) => {
+  socket.on('placeSettlement', async ({ vertexKey, isSetup }, callback) => {
+    const requestStartedAt = Date.now();
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) {
       callback({ success: false, error: 'Not in a game' });
@@ -490,12 +690,13 @@ io.on('connection', (socket) => {
       });
       broadcastGameState(playerInfo.gameId);
     }
-    
+    await recordBenchmarkAction(game, playerInfo.playerId, 'placeSettlement', { vertexKey, isSetup }, result, requestStartedAt);
     callback(result);
   });
   
   /** Place a road on an edge */
-  socket.on('placeRoad', ({ edgeKey, isSetup, lastSettlement }, callback) => {
+  socket.on('placeRoad', async ({ edgeKey, isSetup, lastSettlement }, callback) => {
+    const requestStartedAt = Date.now();
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) {
       callback({ success: false, error: 'Not in a game' });
@@ -512,12 +713,13 @@ io.on('connection', (socket) => {
       });
       broadcastGameState(playerInfo.gameId);
     }
-    
+    await recordBenchmarkAction(game, playerInfo.playerId, 'placeRoad', { edgeKey, isSetup, lastSettlement }, result, requestStartedAt);
     callback(result);
   });
   
   /** Upgrade an existing settlement to a city */
-  socket.on('upgradeToCity', ({ vertexKey }, callback) => {
+  socket.on('upgradeToCity', async ({ vertexKey }, callback) => {
+    const requestStartedAt = Date.now();
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) {
       callback({ success: false, error: 'Not in a game' });
@@ -534,7 +736,7 @@ io.on('connection', (socket) => {
       });
       broadcastGameState(playerInfo.gameId);
     }
-    
+    await recordBenchmarkAction(game, playerInfo.playerId, 'upgradeToCity', { vertexKey }, result, requestStartedAt);
     callback(result);
   });
   
@@ -543,7 +745,8 @@ io.on('connection', (socket) => {
   // --------------------------------------------------------------------
   
   /** Buy a development card from the deck */
-  socket.on('buyDevCard', (callback) => {
+  socket.on('buyDevCard', async (callback) => {
+    const requestStartedAt = Date.now();
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) {
       callback({ success: false, error: 'Not in a game' });
@@ -556,12 +759,13 @@ io.on('connection', (socket) => {
     if (result.success) {
       broadcastGameState(playerInfo.gameId);
     }
-    
+    await recordBenchmarkAction(game, playerInfo.playerId, 'buyDevCard', {}, result, requestStartedAt);
     callback(result);
   });
   
   /** Play a development card */
-  socket.on('playDevCard', ({ cardType, params }, callback) => {
+  socket.on('playDevCard', async ({ cardType, params }, callback) => {
+    const requestStartedAt = Date.now();
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) {
       callback({ success: false, error: 'Not in a game' });
@@ -578,12 +782,13 @@ io.on('connection', (socket) => {
       });
       broadcastGameState(playerInfo.gameId);
     }
-    
+    await recordBenchmarkAction(game, playerInfo.playerId, 'playDevCard', { cardType, params }, result, requestStartedAt);
     callback(result);
   });
   
   /** Pick a resource for Year of Plenty card */
-  socket.on('yearOfPlentyPick', ({ resource }, callback) => {
+  socket.on('yearOfPlentyPick', async ({ resource }, callback) => {
+    const requestStartedAt = Date.now();
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) {
       callback({ success: false, error: 'Not in a game' });
@@ -596,7 +801,7 @@ io.on('connection', (socket) => {
     if (result.success) {
       broadcastGameState(playerInfo.gameId);
     }
-    
+    await recordBenchmarkAction(game, playerInfo.playerId, 'yearOfPlentyPick', { resource }, result, requestStartedAt);
     callback(result);
   });
   
@@ -605,7 +810,8 @@ io.on('connection', (socket) => {
   // --------------------------------------------------------------------
   
   /** Trade with the bank (uses port ratios if available) */
-  socket.on('bankTrade', ({ giveResource, giveAmount, getResource }, callback) => {
+  socket.on('bankTrade', async ({ giveResource, giveAmount, getResource }, callback) => {
+    const requestStartedAt = Date.now();
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) {
       callback({ success: false, error: 'Not in a game' });
@@ -618,12 +824,13 @@ io.on('connection', (socket) => {
     if (result.success) {
       broadcastGameState(playerInfo.gameId);
     }
-    
+    await recordBenchmarkAction(game, playerInfo.playerId, 'bankTrade', { giveResource, giveAmount, getResource }, result, requestStartedAt);
     callback(result);
   });
   
   /** Propose a trade to other players (optional targetPlayerId = propose to one player) */
-  socket.on('proposeTrade', ({ offer, request, targetPlayerId }, callback) => {
+  socket.on('proposeTrade', async ({ offer, request, targetPlayerId }, callback) => {
+    const requestStartedAt = Date.now();
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) {
       callback({ success: false, error: 'Not in a game' });
@@ -641,12 +848,13 @@ io.on('connection', (socket) => {
       });
       broadcastGameState(playerInfo.gameId);
     }
-    
+    await recordBenchmarkAction(game, playerInfo.playerId, 'proposeTrade', { offer, request, targetPlayerId }, result, requestStartedAt);
     callback(result);
   });
   
   /** Accept or decline a trade offer */
-  socket.on('respondToTrade', ({ accept }, callback) => {
+  socket.on('respondToTrade', async ({ accept }, callback) => {
+    const requestStartedAt = Date.now();
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) {
       callback({ success: false, error: 'Not in a game' });
@@ -668,12 +876,13 @@ io.on('connection', (socket) => {
       }
       broadcastGameState(playerInfo.gameId);
     }
-    
+    await recordBenchmarkAction(game, playerInfo.playerId, 'respondToTrade', { accept }, result, requestStartedAt);
     callback(result);
   });
   
   /** Cancel an active trade offer */
-  socket.on('cancelTrade', (callback) => {
+  socket.on('cancelTrade', async (callback) => {
+    const requestStartedAt = Date.now();
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) {
       callback({ success: false, error: 'Not in a game' });
@@ -687,13 +896,14 @@ io.on('connection', (socket) => {
       broadcastToGame(playerInfo.gameId, 'tradeCancelled', {});
       broadcastGameState(playerInfo.gameId);
     }
-    
+    await recordBenchmarkAction(game, playerInfo.playerId, 'cancelTrade', {}, result, requestStartedAt);
     callback(result);
   });
   
   /** Counter-offer: recipient proposes a different trade back to the proposer */
-  socket.on('counterTrade', (payload, callback) => {
+  socket.on('counterTrade', async (payload, callback) => {
     if (typeof callback !== 'function') return;
+    const requestStartedAt = Date.now();
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) {
       callback({ success: false, error: 'Not in a game' });
@@ -715,6 +925,7 @@ io.on('connection', (socket) => {
         });
         broadcastGameState(playerInfo.gameId);
       }
+      await recordBenchmarkAction(game, playerInfo.playerId, 'counterTrade', payload, result, requestStartedAt);
       callback(result);
     } catch (err) {
       console.error('counterTrade error:', err);
@@ -727,7 +938,8 @@ io.on('connection', (socket) => {
   // --------------------------------------------------------------------
   
   /** Advance to next player during setup phase */
-  socket.on('advanceSetup', (callback) => {
+  socket.on('advanceSetup', async (callback) => {
+    const requestStartedAt = Date.now();
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) {
       callback({ success: false, error: 'Not in a game' });
@@ -738,14 +950,18 @@ io.on('connection', (socket) => {
     const result = GameLogic.advanceSetup(game, playerInfo.playerId);
     
     if (result.success) {
+      if (game.benchmark?.enabled && game.phase === 'playing') {
+        maybeStartBenchmarkTurn(game);
+      }
       broadcastGameState(playerInfo.gameId);
     }
-    
+    await recordBenchmarkAction(game, playerInfo.playerId, 'advanceSetup', {}, result, requestStartedAt);
     callback(result);
   });
   
   /** End the current player's turn */
-  socket.on('endTurn', (callback) => {
+  socket.on('endTurn', async (callback) => {
+    const requestStartedAt = Date.now();
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) {
       callback({ success: false, error: 'Not in a game' });
@@ -764,14 +980,16 @@ io.on('connection', (socket) => {
       } else {
         broadcastToGame(playerInfo.gameId, 'turnEnded', { playerId: playerInfo.playerId });
       }
+      maybeStartBenchmarkTurn(game);
       broadcastGameState(playerInfo.gameId);
     }
-    
+    await recordBenchmarkAction(game, playerInfo.playerId, 'endTurn', {}, result, requestStartedAt);
     callback(result);
   });
   
   /** End special building phase for current player (5-6 player games) */
-  socket.on('endSpecialBuild', (callback) => {
+  socket.on('endSpecialBuild', async (callback) => {
+    const requestStartedAt = Date.now();
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) {
       callback({ success: false, error: 'Not in a game' });
@@ -790,9 +1008,10 @@ io.on('connection', (socket) => {
           currentBuilder: game.players[game.specialBuildIndex]?.id 
         });
       }
+      maybeStartBenchmarkTurn(game);
       broadcastGameState(playerInfo.gameId);
     }
-    
+    await recordBenchmarkAction(game, playerInfo.playerId, 'endSpecialBuild', {}, result, requestStartedAt);
     callback(result);
   });
   

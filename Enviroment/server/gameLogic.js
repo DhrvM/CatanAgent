@@ -795,6 +795,7 @@ export function createGame(gameId, hostPlayer, isExtended = false, enableSpecial
   return {
     id: gameId,
     phase: 'waiting', // waiting, setup, playing, finished
+    roundNumber: 0,
     setupPhase: 0, // 0: first settlements, 1: second settlements (reverse)
     currentPlayerIndex: 0,
     turnPhase: 'roll', // roll, main, robber, discard, specialBuild
@@ -833,6 +834,7 @@ export function createGame(gameId, hostPlayer, isExtended = false, enableSpecial
     largestArmySize: 2, // Must have at least 3 to claim
     diceRoll: null,
     winner: null,
+    benchmark: { enabled: false, players: [] },
     tradeOffer: null,
     discardingPlayers: [],
     freeRoads: 0, // For road building card
@@ -1904,7 +1906,12 @@ export function endTurn(game, playerId) {
   }
   
   // Next player
-  game.currentPlayerIndex = (game.currentPlayerIndex + 1) % game.players.length;
+  const nextPlayerIndex = (game.currentPlayerIndex + 1) % game.players.length;
+  if (nextPlayerIndex === 0) {
+    const currentRound = Number.isFinite(Number(game.roundNumber)) ? Number(game.roundNumber) : 1;
+    game.roundNumber = Math.max(1, currentRound) + 1;
+  }
+  game.currentPlayerIndex = nextPlayerIndex;
   game.turnPhase = 'roll';
   game.diceRoll = null;
   
@@ -1935,7 +1942,12 @@ export function endSpecialBuild(game, playerId) {
     // Special building phase is over, move to next turn
     game.specialBuildingPhase = false;
     game.specialBuildIndex = 0;
-    game.currentPlayerIndex = (currentTurnPlayer + 1) % game.players.length;
+    const nextPlayerIndex = (currentTurnPlayer + 1) % game.players.length;
+    if (nextPlayerIndex === 0) {
+      const currentRound = Number.isFinite(Number(game.roundNumber)) ? Number(game.roundNumber) : 1;
+      game.roundNumber = Math.max(1, currentRound) + 1;
+    }
+    game.currentPlayerIndex = nextPlayerIndex;
     game.turnPhase = 'roll';
     game.diceRoll = null;
     game.hasRolledThisTurn = false;
@@ -2004,6 +2016,7 @@ export function advanceSetup(game, playerId) {
       // Setup complete
       game.phase = 'playing';
       game.turnPhase = 'roll';
+      game.roundNumber = 1;
     }
   }
   

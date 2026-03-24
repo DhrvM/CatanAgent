@@ -36,4 +36,6 @@ coverage/
 # Misc
 *.pem
 .cache/
+server/benchmark-data/
+server/benchmark-test-data/
 
