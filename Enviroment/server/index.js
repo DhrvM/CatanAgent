@@ -590,50 +590,45 @@ async function persistBenchmarkTaskPayload(game, playerId, benchmarkTaskPayload,
 
   const player = game.players.find(candidate => candidate.id === playerId);
   if (!player) return null;
+  const response = {
+    ...(benchmarkTaskPayload.response || {}),
+  };
 
-  if (benchmarkTaskPayload.taskId === 'settlement-location-selection' && benchmarkTaskPayload.selectedOptionId) {
-    return benchmarkStore.recordTaskResult({
-      runId: game.benchmark.runId,
-      benchmarkId: game.benchmark.benchmarkId,
-      taskId: benchmarkTaskPayload.taskId,
-      playerKey: player.benchmarkPlayerKey,
-      playerName: player.name,
-      agentId: player.benchmarkAgentId || player.name,
-      agentVersion: player.benchmarkAgentVersion || 'unknown',
-      startingSeat: player.benchmarkStartingSeat ?? 0,
-      mapLayoutId: game.benchmark.mapLayoutId,
-      opponentPolicySet: game.benchmark.opponentPolicySet,
-      scenarioTags: game.benchmark.scenarioTags || [],
-      latencyMs: timing.decisionTimeMs ?? null,
-      response: {
-        selectedOptionId: benchmarkTaskPayload.selectedOptionId,
-      },
-      evaluationContext: benchmarkTaskPayload.evaluationContext,
-    });
+  if (benchmarkTaskPayload.selectedOptionId !== undefined && response.selectedOptionId === undefined) {
+    response.selectedOptionId = benchmarkTaskPayload.selectedOptionId;
+  }
+  if (benchmarkTaskPayload.choice !== undefined && response.choice === undefined) {
+    response.choice = benchmarkTaskPayload.choice;
+  }
+  if (benchmarkTaskPayload.offer !== undefined && response.offer === undefined) {
+    response.offer = benchmarkTaskPayload.offer;
+  }
+  if (benchmarkTaskPayload.request !== undefined && response.request === undefined) {
+    response.request = benchmarkTaskPayload.request;
   }
 
-  if (benchmarkTaskPayload.taskId === 'road-placement-direction' && benchmarkTaskPayload.selectedOptionId) {
-    return benchmarkStore.recordTaskResult({
-      runId: game.benchmark.runId,
-      benchmarkId: game.benchmark.benchmarkId,
-      taskId: benchmarkTaskPayload.taskId,
-      playerKey: player.benchmarkPlayerKey,
-      playerName: player.name,
-      agentId: player.benchmarkAgentId || player.name,
-      agentVersion: player.benchmarkAgentVersion || 'unknown',
-      startingSeat: player.benchmarkStartingSeat ?? 0,
-      mapLayoutId: game.benchmark.mapLayoutId,
-      opponentPolicySet: game.benchmark.opponentPolicySet,
-      scenarioTags: game.benchmark.scenarioTags || [],
-      latencyMs: timing.decisionTimeMs ?? null,
-      response: {
-        selectedOptionId: benchmarkTaskPayload.selectedOptionId,
-      },
-      evaluationContext: benchmarkTaskPayload.evaluationContext,
-    });
-  }
-
-  return null;
+  return benchmarkStore.recordTaskResult({
+    runId: game.benchmark.runId,
+    benchmarkId: game.benchmark.benchmarkId,
+    taskId: benchmarkTaskPayload.taskId,
+    playerKey: player.benchmarkPlayerKey,
+    playerName: player.name,
+    agentId: player.benchmarkAgentId || player.name,
+    agentVersion: player.benchmarkAgentVersion || 'unknown',
+    startingSeat: player.benchmarkStartingSeat ?? 0,
+    mapLayoutId: game.benchmark.mapLayoutId,
+    opponentPolicySet: game.benchmark.opponentPolicySet,
+    scenarioTags: game.benchmark.scenarioTags || [],
+    gameId: game.id,
+    turnNumber: game.roundNumber ?? null,
+    latencyMs: timing.decisionTimeMs ?? null,
+    retries: timing.retryIndex ?? 0,
+    response: Object.keys(response).length ? response : null,
+    evaluationContext: benchmarkTaskPayload.evaluationContext || null,
+    offerContext: benchmarkTaskPayload.offerContext || null,
+    explanation: benchmarkTaskPayload.explanation || null,
+    evaluationDetails: benchmarkTaskPayload.evaluationDetails || null,
+  });
 }
 
 async function recordBenchmarkTaskFromAction(game, playerId, benchmarkTaskPayload, timing = {}) {
