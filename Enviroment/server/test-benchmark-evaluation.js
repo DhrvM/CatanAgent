@@ -64,6 +64,12 @@ const cases = [
     near: { response: { selectedOptionId: 'near' }, evaluationContext: { legalOptions: [{ id: 'best', futureReachability: 1, reachableIntersectionValue: 1, blockingValue: 1 }, { id: 'near', futureReachability: 0.9, reachableIntersectionValue: 0.9, blockingValue: 0.9 }] } },
     fail: { response: { selectedOptionId: 'bad' }, evaluationContext: { legalOptions: [{ id: 'best', futureReachability: 1, reachableIntersectionValue: 1, blockingValue: 0.8 }, { id: 'bad', futureReachability: 0.1, reachableIntersectionValue: 0.1, blockingValue: 0.1 }] } },
   },
+  {
+    taskId: 'road-placement-quality',
+    pass: { response: { selectedOptionId: 'best' }, evaluationContext: { legalOptions: [{ id: 'best', futureReachability: 1, reachableIntersectionValue: 1, blockingValue: 0.8 }, { id: 'bad', futureReachability: 0.2, reachableIntersectionValue: 0.1, blockingValue: 0.1 }] } },
+    near: { response: { selectedOptionId: 'near' }, evaluationContext: { legalOptions: [{ id: 'best', futureReachability: 1, reachableIntersectionValue: 1, blockingValue: 1 }, { id: 'near', futureReachability: 0.9, reachableIntersectionValue: 0.9, blockingValue: 0.9 }] } },
+    fail: { response: { selectedOptionId: 'bad' }, evaluationContext: { legalOptions: [{ id: 'best', futureReachability: 1, reachableIntersectionValue: 1, blockingValue: 0.8 }, { id: 'bad', futureReachability: 0.1, reachableIntersectionValue: 0.1, blockingValue: 0.1 }] } },
+  },
   ...[
     'build-vs-save-decision',
     'city-vs-settlement-vs-road-prioritization',
@@ -71,6 +77,7 @@ const cases = [
     'development-card-playing-decision',
     'accept-or-reject-trade-offers',
     'select-targeted-trade-partner',
+    'bank-trade-decision',
     'decide-pursue-longest-road',
     'defend-against-longest-road',
     'decide-pursue-largest-army',
@@ -97,6 +104,12 @@ const cases = [
     pass: { response: { offer: { legal: true, selfGain: 0.9, leaderHelpPenalty: 0.1, fairnessPenalty: 0.1 } }, evaluationContext: { bestOfferScore: 0.95 } },
     near: { response: { offer: { legal: true, selfGain: 0.8, leaderHelpPenalty: 0.15, fairnessPenalty: 0.1 } }, evaluationContext: { bestOfferScore: 0.92 } },
     fail: { response: { offer: { legal: false, selfGain: 0.4, leaderHelpPenalty: 0.8, fairnessPenalty: 0.4 } }, evaluationContext: { bestOfferScore: 0.9 } },
+  },
+  {
+    taskId: 'counter-trade-offer-quality',
+    pass: { offerContext: { legal: true, selfGain: 0.9, leaderHelpPenalty: 0.1, fairnessPenalty: 0.1 }, evaluationContext: { bestOfferScore: 0.95 } },
+    near: { offerContext: { legal: true, selfGain: 0.8, leaderHelpPenalty: 0.15, fairnessPenalty: 0.1 }, evaluationContext: { bestOfferScore: 0.92 } },
+    fail: { offerContext: { legal: false, selfGain: 0.4, leaderHelpPenalty: 0.8, fairnessPenalty: 0.4 }, evaluationContext: { bestOfferScore: 0.9 } },
   },
   {
     taskId: 'detect-blocked-expansion-risk',

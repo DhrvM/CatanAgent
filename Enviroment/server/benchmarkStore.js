@@ -1237,6 +1237,11 @@ export class BenchmarkStore {
     const inferActionTaskId = record => {
       if (record.actionName === 'placeSettlement' && record.payload?.isSetup) return 'settlement-location-selection';
       if (record.actionName === 'placeRoad' && record.payload?.isSetup) return 'road-placement-direction';
+      if (record.actionName === 'placeRoad' && !record.payload?.isSetup) return 'road-placement-quality';
+      if (record.actionName === 'bankTrade') return 'bank-trade-decision';
+      if (record.actionName === 'proposeTrade') return 'generate-trade-offers';
+      if (record.actionName === 'respondToTrade') return 'accept-or-reject-trade-offers';
+      if (record.actionName === 'counterTrade') return 'counter-trade-offer-quality';
       return null;
     };
 

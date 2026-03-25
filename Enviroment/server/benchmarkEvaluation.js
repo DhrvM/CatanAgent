@@ -30,6 +30,9 @@ const TASK_THRESHOLDS = {
   'accept-or-reject-trade-offers': 0.95,
   'generate-trade-offers': 0.7,
   'select-targeted-trade-partner': 0.9,
+  'bank-trade-decision': 0.85,
+  'road-placement-quality': 0.9,
+  'counter-trade-offer-quality': 0.7,
   'detect-blocked-expansion-risk': 0.85,
   'infer-opponent-resources': 0.8,
   'discourage-expansion-cutoff': 0.8,
@@ -265,7 +268,7 @@ function evaluateRobberTask(payload = {}) {
 }
 
 function evaluateTradeOfferGenerationTask(payload = {}) {
-  const selectedOffer = payload.response?.offer || payload.offer || payload.evaluationContext?.candidateOffer || {};
+  const selectedOffer = payload.response?.offer || payload.offer || payload.evaluationContext?.candidateOffer || payload.offerContext || {};
   const generatedScore = tradeOfferScore(selectedOffer);
   const bestScore = clamp(payload.evaluationContext?.bestOfferScore ?? payload.evaluationContext?.bestScore ?? 1);
   const score = bestScore <= 0 ? generatedScore : clamp(generatedScore / bestScore);
@@ -372,6 +375,9 @@ const TASK_EVALUATORS = {
   'accept-or-reject-trade-offers': payload => evaluateChoiceRatioTask(payload, 'accept-or-reject-trade-offers'),
   'generate-trade-offers': evaluateTradeOfferGenerationTask,
   'select-targeted-trade-partner': payload => evaluateChoiceRatioTask(payload, 'select-targeted-trade-partner'),
+  'bank-trade-decision': payload => evaluateChoiceRatioTask(payload, 'bank-trade-decision'),
+  'road-placement-quality': evaluateRoadTask,
+  'counter-trade-offer-quality': evaluateTradeOfferGenerationTask,
   'detect-blocked-expansion-risk': evaluateBlockedExpansionTask,
   'infer-opponent-resources': evaluateInferResourcesTask,
   'discourage-expansion-cutoff': payload => evaluateRubricMessageTask(payload, 'discourage-expansion-cutoff', {

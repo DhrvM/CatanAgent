@@ -361,7 +361,17 @@ function buildSettlementEvaluationContext(game, playerId) {
 
 function scoreRoadPlacement(game, edgeKeyValue, lastSettlement) {
   const endpoints = getEdgeVerticesFromKey(edgeKeyValue);
-  const forwardVertex = endpoints.find(vKey => !GameLogic.areVerticesEqual(vKey, lastSettlement)) || endpoints[0] || null;
+  const forwardVertex = lastSettlement
+    ? (endpoints.find(vKey => !GameLogic.areVerticesEqual(vKey, lastSettlement)) || endpoints[0] || null)
+    : (endpoints
+      .map(vKey => ({
+        vKey,
+        score: scoreVertexPlacement(game, vKey),
+      }))
+      .sort((left, right) => (
+        ((right.score.resourceProductionExpectancy * 0.5) + (right.score.resourceDiversity * 0.3) + (right.score.portSynergy * 0.2))
+        - ((left.score.resourceProductionExpectancy * 0.5) + (left.score.resourceDiversity * 0.3) + (left.score.portSynergy * 0.2))
+      ))[0]?.vKey || endpoints[0] || null);
   const forwardVertexScore = forwardVertex ? scoreVertexPlacement(game, forwardVertex) : {
     resourceProductionExpectancy: 0,
     resourceDiversity: 0,
@@ -383,6 +393,184 @@ function scoreRoadPlacement(game, edgeKeyValue, lastSettlement) {
   };
 }
 
+function scoreResourceNeed(player = {}) {
+  const resources = player.resources || {};
+  const values = Object.values(resources).map(value => Number(value) || 0);
+  const total = values.reduce((sum, value) => sum + value, 0) || 1;
+  return Object.fromEntries(
+    Object.entries(resources).map(([resource, amount]) => [resource, Math.max(0, 1 - ((Number(amount) || 0) / total))])
+  );
+}
+
+function scoreResourceSurplus(player = {}) {
+  const resources = player.resources || {};
+  const values = Object.values(resources).map(value => Number(value) || 0);
+  const maxValue = Math.max(1, ...values);
+  return Object.fromEntries(
+    Object.entries(resources).map(([resource, amount]) => [resource, Math.max(0, (Number(amount) || 0) / maxValue)])
+  );
+}
+
+function identifyLeaderIndex(game) {
+  const players = game.players || [];
+  let bestIndex = 0;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  players.forEach((player, index) => {
+    const score = (player.victoryPoints || 0) + ((player.longestRoad ? 2 : 0)) + ((player.largestArmy ? 2 : 0));
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
+    }
+  });
+  return bestIndex;
+}
+
+function sumResources(resources = {}) {
+  return Object.values(resources || {}).reduce((sum, value) => sum + (Number(value) || 0), 0);
+}
+
+function tradeBundleValue(bundle = {}, scoreMap = {}) {
+  return Object.entries(bundle || {}).reduce((sum, [resource, amount]) => (
+    sum + ((scoreMap[resource] || 0) * (Number(amount) || 0))
+  ), 0);
+}
+
+function scoreTradeOfferForPlayer(game, fromPlayer, toPlayer, offer = {}, request = {}) {
+  const needMap = scoreResourceNeed(fromPlayer);
+  const surplusMap = scoreResourceSurplus(fromPlayer);
+  const giveCost = tradeBundleValue(offer, surplusMap);
+  const requestValue = tradeBundleValue(request, needMap);
+  const leaderIndex = identifyLeaderIndex(game);
+  const toIndex = game.players.findIndex(candidate => candidate.id === toPlayer?.id);
+  const leaderHelpPenalty = toIndex === leaderIndex ? 1 : 0;
+  const fairnessPenalty = Math.max(0, giveCost - requestValue);
+
+  return {
+    legal: Object.entries(offer).every(([resource, amount]) => (fromPlayer.resources?.[resource] || 0) >= amount),
+    selfGain: Math.max(0, Math.min(1, requestValue - (giveCost * 0.5))),
+    leaderHelpPenalty,
+    fairnessPenalty: Math.min(1, fairnessPenalty),
+  };
+}
+
+function buildRoadPlacementTaskPayload(game, playerId, edgeKeyValue, isSetup, lastSettlement) {
+  const taskId = isSetup ? 'road-placement-direction' : 'road-placement-quality';
+  const evaluationContext = isSetup
+    ? buildRoadEvaluationContext(game, playerId, lastSettlement)
+    : {
+      legalOptions: Object.keys(game.edges || {})
+        .filter(eKey => GameLogic.canPlaceRoad(game, playerId, eKey, false, null).valid)
+        .map(eKey => ({
+          id: eKey,
+          ...scoreRoadPlacement(game, eKey, lastSettlement),
+        })),
+    };
+
+  return {
+    taskId,
+    selectedOptionId: edgeKeyValue,
+    evaluationContext,
+  };
+}
+
+function buildBankTradeTaskPayload(game, playerId, giveResource, giveAmount, getResource) {
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  const player = game.players[playerIndex];
+  const needMap = scoreResourceNeed(player);
+  const surplusMap = scoreResourceSurplus(player);
+  const candidateOptions = [];
+
+  Object.keys(player.resources || {}).forEach(resourceToGive => {
+    const requiredRatio = GameLogic.getTradeRatio(game, playerIndex, resourceToGive);
+    if ((player.resources?.[resourceToGive] || 0) < requiredRatio) return;
+    Object.keys(player.resources || {}).forEach(resourceToGet => {
+      if (resourceToGet === resourceToGive) return;
+      const score = Math.max(0, Math.min(1, (needMap[resourceToGet] || 0) - ((surplusMap[resourceToGive] || 0) * 0.5) + 0.5));
+      candidateOptions.push({
+        id: `${resourceToGive}:${requiredRatio}:${resourceToGet}`,
+        score,
+      });
+    });
+  });
+
+  candidateOptions.push({
+    id: 'no-trade',
+    score: 0.45,
+  });
+
+  return {
+    taskId: 'bank-trade-decision',
+    selectedOptionId: `${giveResource}:${giveAmount}:${getResource}`,
+    evaluationContext: {
+      options: candidateOptions,
+    },
+  };
+}
+
+function buildTradeProposalTaskPayload(game, playerId, offer, request, targetPlayerId) {
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  const fromPlayer = game.players[playerIndex];
+  const recipients = targetPlayerId
+    ? game.players.filter(candidate => candidate.id === targetPlayerId)
+    : game.players.filter(candidate => candidate.id !== playerId);
+  const scoredTargets = recipients.map(candidate => ({
+    id: candidate.id,
+    score: Math.max(0, Math.min(1, scoreTradeOfferForPlayer(game, fromPlayer, candidate, offer, request).selfGain + 0.25 - (scoreTradeOfferForPlayer(game, fromPlayer, candidate, offer, request).leaderHelpPenalty * 0.4))),
+  }));
+  const selectedTargetId = targetPlayerId || recipients[0]?.id || 'all-opponents';
+  const selectedTarget = recipients.find(candidate => candidate.id === selectedTargetId) || recipients[0] || null;
+
+  return {
+    taskId: 'generate-trade-offers',
+    selectedOptionId: selectedTargetId,
+    evaluationContext: {
+      bestOfferScore: 1,
+    },
+    offerContext: scoreTradeOfferForPlayer(game, fromPlayer, selectedTarget, offer, request),
+    partnerContext: targetPlayerId ? {
+      taskId: 'select-targeted-trade-partner',
+      selectedOptionId: selectedTargetId,
+      evaluationContext: {
+        options: scoredTargets,
+      },
+    } : null,
+  };
+}
+
+function buildTradeResponseTaskPayload(game, playerId, accept) {
+  const tradeOffer = game.tradeOffer;
+  if (!tradeOffer) return null;
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  const responder = game.players[playerIndex];
+  const proposer = game.players[tradeOffer.from];
+  const acceptScore = scoreTradeOfferForPlayer(game, responder, proposer, tradeOffer.request, tradeOffer.offer).selfGain;
+  const rejectScore = Math.max(0, Math.min(1, 1 - acceptScore + 0.1));
+  return {
+    taskId: 'accept-or-reject-trade-offers',
+    selectedOptionId: accept ? 'accept' : 'reject',
+    evaluationContext: {
+      options: [
+        { id: 'accept', score: acceptScore },
+        { id: 'reject', score: rejectScore },
+      ],
+    },
+  };
+}
+
+function buildCounterTradeTaskPayload(game, playerId, offer, request) {
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  const fromPlayer = game.players[playerIndex];
+  const originalProposer = game.tradeOffer ? game.players[game.tradeOffer.to] : null;
+  return {
+    taskId: 'counter-trade-offer-quality',
+    selectedOptionId: originalProposer?.id || 'counter-target',
+    evaluationContext: {
+      bestOfferScore: 1,
+    },
+    offerContext: scoreTradeOfferForPlayer(game, fromPlayer, originalProposer, offer, request),
+  };
+}
+
 function buildRoadEvaluationContext(game, playerId, lastSettlement) {
   const legalOptions = Object.keys(game.edges || {})
     .filter(eKey => GameLogic.canPlaceRoad(game, playerId, eKey, true, lastSettlement).valid)
@@ -396,7 +584,7 @@ function buildRoadEvaluationContext(game, playerId, lastSettlement) {
   };
 }
 
-async function recordBenchmarkTaskFromAction(game, playerId, benchmarkTaskPayload, timing = {}) {
+async function persistBenchmarkTaskPayload(game, playerId, benchmarkTaskPayload, timing = {}) {
   if (!game?.benchmark?.enabled) return null;
   if (!benchmarkTaskPayload) return null;
 
@@ -446,6 +634,20 @@ async function recordBenchmarkTaskFromAction(game, playerId, benchmarkTaskPayloa
   }
 
   return null;
+}
+
+async function recordBenchmarkTaskFromAction(game, playerId, benchmarkTaskPayload, timing = {}) {
+  if (Array.isArray(benchmarkTaskPayload)) {
+    const results = [];
+    for (const payload of benchmarkTaskPayload) {
+      const result = await persistBenchmarkTaskPayload(game, playerId, payload, timing);
+      if (result) {
+        results.push(result);
+      }
+    }
+    return results;
+  }
+  return persistBenchmarkTaskPayload(game, playerId, benchmarkTaskPayload, timing);
 }
 
 async function recordBenchmarkAction(game, playerId, actionName, payload, result, requestStartedAt, benchmarkTaskPayload = null) {
@@ -891,12 +1093,8 @@ io.on('connection', (socket) => {
     }
     
     const game = games.get(playerInfo.gameId);
-    const benchmarkTaskPayload = game?.benchmark?.enabled && isSetup && lastSettlement
-      ? {
-        taskId: 'road-placement-direction',
-        selectedOptionId: edgeKey,
-        evaluationContext: buildRoadEvaluationContext(game, playerInfo.playerId, lastSettlement),
-      }
+    const benchmarkTaskPayload = game?.benchmark?.enabled
+      ? buildRoadPlacementTaskPayload(game, playerInfo.playerId, edgeKey, Boolean(isSetup), lastSettlement)
       : null;
     const result = GameLogic.placeRoad(game, playerInfo.playerId, edgeKey, isSetup, lastSettlement);
     
@@ -1021,12 +1219,23 @@ io.on('connection', (socket) => {
     }
     
     const game = games.get(playerInfo.gameId);
+    const benchmarkTaskPayload = game?.benchmark?.enabled
+      ? buildBankTradeTaskPayload(game, playerInfo.playerId, giveResource, giveAmount, getResource)
+      : null;
     const result = GameLogic.bankTrade(game, playerInfo.playerId, giveResource, giveAmount, getResource);
     
     if (result.success) {
       broadcastGameState(playerInfo.gameId);
     }
-    await recordBenchmarkAction(game, playerInfo.playerId, 'bankTrade', { giveResource, giveAmount, getResource }, result, requestStartedAt);
+    await recordBenchmarkAction(
+      game,
+      playerInfo.playerId,
+      'bankTrade',
+      { giveResource, giveAmount, getResource },
+      result,
+      requestStartedAt,
+      benchmarkTaskPayload
+    );
     callback(result);
   });
   
@@ -1040,6 +1249,20 @@ io.on('connection', (socket) => {
     }
     
     const game = games.get(playerInfo.gameId);
+    const benchmarkTaskContext = game?.benchmark?.enabled
+      ? buildTradeProposalTaskPayload(game, playerInfo.playerId, offer, request, targetPlayerId || null)
+      : null;
+    const benchmarkTaskPayload = benchmarkTaskContext
+      ? [
+        {
+          taskId: benchmarkTaskContext.taskId,
+          selectedOptionId: benchmarkTaskContext.selectedOptionId,
+          evaluationContext: benchmarkTaskContext.evaluationContext,
+          offerContext: benchmarkTaskContext.offerContext,
+        },
+        benchmarkTaskContext.partnerContext,
+      ].filter(Boolean)
+      : null;
     const result = GameLogic.proposeTrade(game, playerInfo.playerId, offer, request, targetPlayerId || null);
     
     if (result.success) {
@@ -1050,7 +1273,15 @@ io.on('connection', (socket) => {
       });
       broadcastGameState(playerInfo.gameId);
     }
-    await recordBenchmarkAction(game, playerInfo.playerId, 'proposeTrade', { offer, request, targetPlayerId }, result, requestStartedAt);
+    await recordBenchmarkAction(
+      game,
+      playerInfo.playerId,
+      'proposeTrade',
+      { offer, request, targetPlayerId },
+      result,
+      requestStartedAt,
+      benchmarkTaskPayload
+    );
     callback(result);
   });
   
@@ -1064,6 +1295,9 @@ io.on('connection', (socket) => {
     }
     
     const game = games.get(playerInfo.gameId);
+    const benchmarkTaskPayload = game?.benchmark?.enabled
+      ? buildTradeResponseTaskPayload(game, playerInfo.playerId, accept)
+      : null;
     const result = GameLogic.respondToTrade(game, playerInfo.playerId, accept);
     
     if (result.success) {
@@ -1078,7 +1312,15 @@ io.on('connection', (socket) => {
       }
       broadcastGameState(playerInfo.gameId);
     }
-    await recordBenchmarkAction(game, playerInfo.playerId, 'respondToTrade', { accept }, result, requestStartedAt);
+    await recordBenchmarkAction(
+      game,
+      playerInfo.playerId,
+      'respondToTrade',
+      { accept },
+      result,
+      requestStartedAt,
+      benchmarkTaskPayload
+    );
     callback(result);
   });
   
@@ -1118,6 +1360,9 @@ io.on('connection', (socket) => {
     }
     try {
       const game = games.get(playerInfo.gameId);
+      const benchmarkTaskPayload = game?.benchmark?.enabled
+        ? buildCounterTradeTaskPayload(game, playerInfo.playerId, offer, request)
+        : null;
       const result = GameLogic.counterTrade(game, playerInfo.playerId, offer, request);
       if (result.success) {
         broadcastToGame(playerInfo.gameId, 'tradeProposed', {
@@ -1127,7 +1372,7 @@ io.on('connection', (socket) => {
         });
         broadcastGameState(playerInfo.gameId);
       }
-      await recordBenchmarkAction(game, playerInfo.playerId, 'counterTrade', payload, result, requestStartedAt);
+      await recordBenchmarkAction(game, playerInfo.playerId, 'counterTrade', payload, result, requestStartedAt, benchmarkTaskPayload);
       callback(result);
     } catch (err) {
       console.error('counterTrade error:', err);
