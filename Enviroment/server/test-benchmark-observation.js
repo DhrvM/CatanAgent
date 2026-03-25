@@ -54,10 +54,30 @@ async function main() {
     mapLayoutId: 'map-a',
     opponentPolicySet: 'mixed-opponents',
     scenarioTags: ['alternate-map'],
-    success: true,
     latencyMs: 1100,
     retries: 1,
     illegalAttempts: 1,
+    response: {
+      selectedOptionId: 'best',
+    },
+    evaluationContext: {
+      legalOptions: [
+        {
+          id: 'best',
+          resourceProductionExpectancy: 1,
+          resourceDiversity: 0.9,
+          expansionAccess: 0.9,
+          portSynergy: 0.8,
+        },
+        {
+          id: 'okay',
+          resourceProductionExpectancy: 0.5,
+          resourceDiversity: 0.4,
+          expansionAccess: 0.4,
+          portSynergy: 0.2,
+        },
+      ],
+    },
   });
 
   await store.recordTaskResult({
@@ -73,10 +93,30 @@ async function main() {
     mapLayoutId: 'map-a',
     opponentPolicySet: 'mixed-opponents',
     scenarioTags: ['alternate-map'],
-    success: true,
     latencyMs: 900,
     retries: 0,
     illegalAttempts: 0,
+    response: {
+      selectedOptionId: 'best',
+    },
+    evaluationContext: {
+      legalOptions: [
+        {
+          id: 'best',
+          resourceProductionExpectancy: 1,
+          resourceDiversity: 0.85,
+          expansionAccess: 0.9,
+          portSynergy: 0.75,
+        },
+        {
+          id: 'risky',
+          resourceProductionExpectancy: 0.55,
+          resourceDiversity: 0.5,
+          expansionAccess: 0.45,
+          portSynergy: 0.15,
+        },
+      ],
+    },
   });
 
   const baseGame = {
@@ -137,13 +177,45 @@ async function main() {
   assert.strictEqual(baseline.rawMetrics.winRate, 0, 'Baseline win rate computed');
   assert.strictEqual(challenger.rawMetrics.averageLatencyPerTurn, 500, 'Latency telemetry aggregated');
   assert.strictEqual(challenger.rawMetrics.illegalMoveRate, 0, 'Illegal move rate aggregated');
+  assert(challenger.normalizedMetrics.taskSuccessRate > 0, 'Task success normalized absolutely');
+  assert(challenger.metricStatuses.taskSuccessRate === 'excellent', 'Absolute metric status assigned');
 
   const detail = store.getEntityDetail('player', 'run-alpha:challenger');
   assert(detail.games.length === 1, 'Player detail includes games');
   assert(detail.taskResults.length === 1, 'Player detail includes task results');
+  assert(detail.taskBreakdown[0].averageScore > 0.9, 'Task breakdown includes average rubric score');
+  assert(detail.slices[0].normalizedMetrics.winRate >= 0, 'Slices expose normalized metrics');
+
+  const originalScore = challenger.overallScore;
+  await store.upsertRun({
+    runId: 'run-alpha',
+    baselineAgentId: 'different-bot',
+  });
+  const rescoredLeaderboard = store.getLeaderboard('agent');
+  const rescoredChallenger = rescoredLeaderboard.entries.find(entry => entry.agentId === 'challenger-bot');
+  assert.strictEqual(rescoredChallenger.overallScore, originalScore, 'Overall score is baseline-independent');
 
   const slices = store.getSliceComparisons();
   assert(slices.length > 0, 'Slice comparison data built');
+
+  const liveLog = store.getLiveLog({ limit: 10 });
+  assert(liveLog.entries.length >= 3, 'Live log includes task, action, and game events');
+  assert(liveLog.entries.some(entry => entry.eventType === 'task'), 'Live log includes task entries');
+  assert(liveLog.entries.some(entry => entry.eventType === 'action'), 'Live log includes action entries');
+  assert(liveLog.entries.some(entry => entry.eventType === 'game'), 'Live log includes game completion entries');
+  const taskLogEntry = liveLog.entries.find(entry => entry.eventType === 'task');
+  const actionLogEntry = liveLog.entries.find(entry => entry.eventType === 'action');
+  assert(taskLogEntry.status === 'passed', 'Task live log reflects evaluator pass/fail');
+  assert(taskLogEntry.details.score > 0.9, 'Task live log exposes evaluator score');
+  assert(actionLogEntry.status === 'accepted', 'Action live log reflects transport acceptance');
+  assert(actionLogEntry.moveTimeMs >= 0, 'Action live log exposes move time');
+  assert(actionLogEntry.processingLatencyMs >= 0, 'Action live log exposes server processing time');
+
+  await store.clearAllData();
+  const emptyOverview = store.getOverview();
+  assert.strictEqual(emptyOverview.totals.runs, 0, 'Clear removes persisted runs');
+  assert.strictEqual(emptyOverview.totals.games, 0, 'Clear removes persisted games');
+  assert.strictEqual(emptyOverview.totals.telemetryRecords, 0, 'Clear removes telemetry');
 
   await cleanup();
   console.log('Benchmark observation tests passed');

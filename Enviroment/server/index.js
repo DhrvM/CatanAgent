@@ -101,6 +101,12 @@ function parseBenchmarkFilters(query = {}) {
   };
 }
 
+function parseLiveLogLimit(query = {}) {
+  const value = Number(query.limit);
+  if (!Number.isFinite(value)) return 100;
+  return Math.max(1, Math.min(500, value));
+}
+
 app.get('/api/benchmark/definitions', (req, res) => {
   res.json({
     tasks: BENCHMARK_TASKS,
@@ -148,6 +154,13 @@ app.get('/api/benchmark/slices', (req, res) => {
     filters: parseBenchmarkFilters(req.query),
     slices: benchmarkStore.getSliceComparisons(parseBenchmarkFilters(req.query)),
   });
+});
+
+app.get('/api/benchmark/live-log', (req, res) => {
+  res.json(benchmarkStore.getLiveLog({
+    limit: parseLiveLogLimit(req.query),
+    filters: parseBenchmarkFilters(req.query),
+  }));
 });
 
 app.post('/api/benchmark/runs', async (req, res) => {
@@ -279,13 +292,172 @@ function extractClientTimestamp(payload) {
   return Number.isFinite(Number(candidate)) ? Number(candidate) : null;
 }
 
-async function recordBenchmarkAction(game, playerId, actionName, payload, result, requestStartedAt) {
+const DICE_PROBABILITY_WEIGHTS = {
+  2: 1,
+  3: 2,
+  4: 3,
+  5: 4,
+  6: 5,
+  8: 5,
+  9: 4,
+  10: 3,
+  11: 2,
+  12: 1,
+};
+
+function normalizeVertexKey(vKey) {
+  const match = String(vKey || '').match(/^v_(-?\d+)_(-?\d+)_(\d+)$/);
+  if (!match) return null;
+  return {
+    q: Number(match[1]),
+    r: Number(match[2]),
+    dir: Number(match[3]),
+  };
+}
+
+function getEdgeVerticesFromKey(edgeKeyValue) {
+  const match = String(edgeKeyValue || '').match(/^e_(-?\d+)_(-?\d+)_(\d+)$/);
+  if (!match) return [];
+  const q = Number(match[1]);
+  const r = Number(match[2]);
+  const dir = Number(match[3]);
+  if (dir === 0) return [GameLogic.vertexKey(q, r, 0), GameLogic.vertexKey(q, r, 1)];
+  if (dir === 1) return [GameLogic.vertexKey(q, r, 1), GameLogic.vertexKey(q, r, 2)];
+  if (dir === 2) return [GameLogic.vertexKey(q, r, 2), GameLogic.vertexKey(q, r, 3)];
+  if (dir === 3) return [GameLogic.vertexKey(q, r, 3), GameLogic.vertexKey(q, r, 4)];
+  if (dir === 4) return [GameLogic.vertexKey(q, r, 4), GameLogic.vertexKey(q, r, 5)];
+  if (dir === 5) return [GameLogic.vertexKey(q, r, 5), GameLogic.vertexKey(q, r, 0)];
+  return [];
+}
+
+function scoreVertexPlacement(game, vKey) {
+  const adjacentHexes = GameLogic.getVertexAdjacentHexes(game, vKey);
+  const productionWeight = adjacentHexes.reduce((sum, hex) => sum + (DICE_PROBABILITY_WEIGHTS[hex.number] || 0), 0);
+  const resourceTypes = [...new Set(adjacentHexes.map(hex => hex.resource).filter(Boolean))];
+  const port = (game.ports || []).find(candidate => candidate.vertices.some(portVertex => GameLogic.areVerticesEqual(portVertex, vKey))) || null;
+  const edgeOptions = GameLogic.getVertexEdges(vKey)
+    .filter(edgeKeyValue => GameLogic.canPlaceRoad(game, game.currentPlayer, edgeKeyValue, true, vKey).valid);
+
+  return {
+    resourceProductionExpectancy: Math.min(1, productionWeight / 15),
+    resourceDiversity: Math.min(1, resourceTypes.length / 3),
+    expansionAccess: Math.min(1, edgeOptions.length / 3),
+    portSynergy: port ? (port.resource ? 1 : 0.7) : 0,
+  };
+}
+
+function buildSettlementEvaluationContext(game, playerId) {
+  const legalOptions = Object.keys(game.vertices || {})
+    .filter(vKey => GameLogic.canPlaceSettlement(game, playerId, vKey, true).valid)
+    .map(vKey => ({
+      id: vKey,
+      ...scoreVertexPlacement(game, vKey),
+    }));
+
+  return {
+    legalOptions,
+  };
+}
+
+function scoreRoadPlacement(game, edgeKeyValue, lastSettlement) {
+  const endpoints = getEdgeVerticesFromKey(edgeKeyValue);
+  const forwardVertex = endpoints.find(vKey => !GameLogic.areVerticesEqual(vKey, lastSettlement)) || endpoints[0] || null;
+  const forwardVertexScore = forwardVertex ? scoreVertexPlacement(game, forwardVertex) : {
+    resourceProductionExpectancy: 0,
+    resourceDiversity: 0,
+    expansionAccess: 0,
+    portSynergy: 0,
+  };
+  const nextEdges = forwardVertex
+    ? GameLogic.getVertexEdges(forwardVertex).filter(candidate => candidate !== edgeKeyValue)
+    : [];
+
+  return {
+    futureReachability: Math.min(1, nextEdges.length / 3),
+    reachableIntersectionValue: (
+      (forwardVertexScore.resourceProductionExpectancy * 0.5)
+      + (forwardVertexScore.resourceDiversity * 0.3)
+      + (forwardVertexScore.portSynergy * 0.2)
+    ),
+    blockingValue: 0,
+  };
+}
+
+function buildRoadEvaluationContext(game, playerId, lastSettlement) {
+  const legalOptions = Object.keys(game.edges || {})
+    .filter(eKey => GameLogic.canPlaceRoad(game, playerId, eKey, true, lastSettlement).valid)
+    .map(eKey => ({
+      id: eKey,
+      ...scoreRoadPlacement(game, eKey, lastSettlement),
+    }));
+
+  return {
+    legalOptions,
+  };
+}
+
+async function recordBenchmarkTaskFromAction(game, playerId, benchmarkTaskPayload, timing = {}) {
+  if (!game?.benchmark?.enabled) return null;
+  if (!benchmarkTaskPayload) return null;
+
+  const player = game.players.find(candidate => candidate.id === playerId);
+  if (!player) return null;
+
+  if (benchmarkTaskPayload.taskId === 'settlement-location-selection' && benchmarkTaskPayload.selectedOptionId) {
+    return benchmarkStore.recordTaskResult({
+      runId: game.benchmark.runId,
+      benchmarkId: game.benchmark.benchmarkId,
+      taskId: benchmarkTaskPayload.taskId,
+      playerKey: player.benchmarkPlayerKey,
+      playerName: player.name,
+      agentId: player.benchmarkAgentId || player.name,
+      agentVersion: player.benchmarkAgentVersion || 'unknown',
+      startingSeat: player.benchmarkStartingSeat ?? 0,
+      mapLayoutId: game.benchmark.mapLayoutId,
+      opponentPolicySet: game.benchmark.opponentPolicySet,
+      scenarioTags: game.benchmark.scenarioTags || [],
+      latencyMs: timing.decisionTimeMs ?? null,
+      response: {
+        selectedOptionId: benchmarkTaskPayload.selectedOptionId,
+      },
+      evaluationContext: benchmarkTaskPayload.evaluationContext,
+    });
+  }
+
+  if (benchmarkTaskPayload.taskId === 'road-placement-direction' && benchmarkTaskPayload.selectedOptionId) {
+    return benchmarkStore.recordTaskResult({
+      runId: game.benchmark.runId,
+      benchmarkId: game.benchmark.benchmarkId,
+      taskId: benchmarkTaskPayload.taskId,
+      playerKey: player.benchmarkPlayerKey,
+      playerName: player.name,
+      agentId: player.benchmarkAgentId || player.name,
+      agentVersion: player.benchmarkAgentVersion || 'unknown',
+      startingSeat: player.benchmarkStartingSeat ?? 0,
+      mapLayoutId: game.benchmark.mapLayoutId,
+      opponentPolicySet: game.benchmark.opponentPolicySet,
+      scenarioTags: game.benchmark.scenarioTags || [],
+      latencyMs: timing.decisionTimeMs ?? null,
+      response: {
+        selectedOptionId: benchmarkTaskPayload.selectedOptionId,
+      },
+      evaluationContext: benchmarkTaskPayload.evaluationContext,
+    });
+  }
+
+  return null;
+}
+
+async function recordBenchmarkAction(game, playerId, actionName, payload, result, requestStartedAt, benchmarkTaskPayload = null) {
   if (!game?.benchmark?.enabled) return;
-  await benchmarkStore.recordAction(game, playerId, actionName, payload, result, {
+  const telemetryRecord = await benchmarkStore.recordAction(game, playerId, actionName, payload, result, {
     requestStartedAt,
     acknowledgedAt: Date.now(),
     clientTimestamp: extractClientTimestamp(payload),
   });
+  if (result?.success) {
+    await recordBenchmarkTaskFromAction(game, playerId, benchmarkTaskPayload, telemetryRecord || {});
+  }
   if (game.phase === 'finished') {
     await benchmarkStore.completeGame(game);
   }
@@ -681,6 +853,13 @@ io.on('connection', (socket) => {
     }
     
     const game = games.get(playerInfo.gameId);
+    const benchmarkTaskPayload = game?.benchmark?.enabled && isSetup
+      ? {
+        taskId: 'settlement-location-selection',
+        selectedOptionId: vertexKey,
+        evaluationContext: buildSettlementEvaluationContext(game, playerInfo.playerId),
+      }
+      : null;
     const result = GameLogic.placeSettlement(game, playerInfo.playerId, vertexKey);
     
     if (result.success) {
@@ -690,7 +869,15 @@ io.on('connection', (socket) => {
       });
       broadcastGameState(playerInfo.gameId);
     }
-    await recordBenchmarkAction(game, playerInfo.playerId, 'placeSettlement', { vertexKey, isSetup }, result, requestStartedAt);
+    await recordBenchmarkAction(
+      game,
+      playerInfo.playerId,
+      'placeSettlement',
+      { vertexKey, isSetup },
+      result,
+      requestStartedAt,
+      benchmarkTaskPayload
+    );
     callback(result);
   });
   
@@ -704,6 +891,13 @@ io.on('connection', (socket) => {
     }
     
     const game = games.get(playerInfo.gameId);
+    const benchmarkTaskPayload = game?.benchmark?.enabled && isSetup && lastSettlement
+      ? {
+        taskId: 'road-placement-direction',
+        selectedOptionId: edgeKey,
+        evaluationContext: buildRoadEvaluationContext(game, playerInfo.playerId, lastSettlement),
+      }
+      : null;
     const result = GameLogic.placeRoad(game, playerInfo.playerId, edgeKey, isSetup, lastSettlement);
     
     if (result.success) {
@@ -713,7 +907,15 @@ io.on('connection', (socket) => {
       });
       broadcastGameState(playerInfo.gameId);
     }
-    await recordBenchmarkAction(game, playerInfo.playerId, 'placeRoad', { edgeKey, isSetup, lastSettlement }, result, requestStartedAt);
+    await recordBenchmarkAction(
+      game,
+      playerInfo.playerId,
+      'placeRoad',
+      { edgeKey, isSetup, lastSettlement },
+      result,
+      requestStartedAt,
+      benchmarkTaskPayload
+    );
     callback(result);
   });
   

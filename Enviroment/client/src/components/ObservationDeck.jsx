@@ -25,18 +25,20 @@ function metricLabel(metric) {
 
 function statusLabel(status) {
   switch (status) {
-    case 'above-baseline':
-      return 'Above baseline';
-    case 'below-baseline':
-      return 'At/below baseline';
-    case 'better-than-baseline-lower-is-better':
-      return 'Better on lower-is-better metric';
-    case 'worse-than-baseline-lower-is-better':
-      return 'At/above baseline on lower-is-better metric';
-    case 'at-baseline':
-      return 'At baseline';
+    case 'excellent':
+      return 'Excellent';
+    case 'strong':
+      return 'Strong';
+    case 'fair':
+      return 'Fair';
+    case 'weak':
+      return 'Needs work';
+    case 'high-penalty':
+      return 'High penalty';
+    case 'low-score':
+      return 'Low score';
     default:
-      return 'No baseline';
+      return 'No data';
   }
 }
 
@@ -60,19 +62,51 @@ function SummaryCard({ label, value, hint }) {
   );
 }
 
+function formatEventStatus(entry) {
+  if (entry.eventType === 'task') {
+    const score = entry.details?.score;
+    const scoreText = score === null || score === undefined ? '' : ` (${(score * 100).toFixed(1)}%)`;
+    return `Task success: ${entry.status || 'evaluated'}${scoreText}`;
+  }
+  if (entry.eventType === 'action') {
+    if (entry.benchmarkTaskId) {
+      const score = entry.details?.benchmarkScore;
+      const scoreText = score === null || score === undefined ? '' : ` (${(score * 100).toFixed(1)}%)`;
+      return `Task success: ${entry.details?.benchmarkPassed ? 'passed' : 'failed'}${scoreText}`;
+    }
+    return `Action status: ${entry.status || 'recorded'}`;
+  }
+  return entry.status || 'recorded';
+}
+
+function formatMoveTimeSeconds(value) {
+  if (value === null || value === undefined) return 'No move timing';
+  return `Move time ${(value / 1000).toFixed(1)}s`;
+}
+
+function formatLogContext(entry) {
+  if (entry.eventType === 'task') {
+    return `Turn ${entry.turnNumber ?? 'N/A'} - ${entry.task || 'Benchmark task'}`;
+  }
+  if (entry.eventType === 'action') {
+    return `Turn ${entry.turnNumber ?? 'N/A'} - ${entry.benchmarkTaskName || entry.actionName || 'Action'}`;
+  }
+  return `Turn ${entry.turnNumber ?? 'N/A'} - ${entry.task || entry.actionName || entry.eventType}`;
+}
+
 function ObservationDeck({ serverUrl, onBack }) {
   const [overview, setOverview] = useState(null);
   const [leaderboard, setLeaderboard] = useState(null);
   const [detail, setDetail] = useState(null);
   const [runDetail, setRunDetail] = useState(null);
   const [slices, setSlices] = useState([]);
+  const [liveLog, setLiveLog] = useState([]);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState(null);
   const [filters, setFilters] = useState({
     benchmarkId: '',
     taskCategory: '',
-    baselineAgentId: '',
     mapLayoutId: '',
     opponentPolicySet: '',
     runId: '',
@@ -126,6 +160,34 @@ function ObservationDeck({ serverUrl, onBack }) {
     };
   }, [serverUrl, entityType, filterQuery]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadLiveLog() {
+      try {
+        const response = await fetch(`${serverUrl}/api/benchmark/live-log?limit=30${filterQuery ? `&${filterQuery}` : ''}`);
+        if (!response.ok) {
+          throw new Error('Failed to load live benchmark log');
+        }
+        const payload = await response.json();
+        if (!cancelled) {
+          setLiveLog(payload.entries || []);
+        }
+      } catch (fetchError) {
+        if (!cancelled) {
+          setError(current => current || fetchError.message);
+        }
+      }
+    }
+
+    loadLiveLog();
+    const intervalId = setInterval(loadLiveLog, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [serverUrl, filterQuery]);
+
   const handleFilterChange = event => {
     const { name, value } = event.target;
     setFilters(current => ({
@@ -169,7 +231,6 @@ function ObservationDeck({ serverUrl, onBack }) {
 
   const filtersMeta = overview?.filters || {
     benchmarkIds: [],
-    baselineAgentIds: [],
     mapLayoutIds: [],
     opponentPolicySets: [],
     runIds: [],
@@ -183,7 +244,7 @@ function ObservationDeck({ serverUrl, onBack }) {
           <p className="observation-deck__eyebrow">Observation Deck</p>
           <h1>Benchmark analytics for every Catan player and agent</h1>
           <p className="observation-deck__subhead">
-            Compare benchmark runs, drill into task families, inspect turn telemetry, and rank agents against a baseline slice by slice.
+            Compare benchmark runs, drill into task families, inspect turn telemetry, and rank agents with absolute benchmark scoring.
           </p>
         </div>
         <div className="observation-deck__hero-actions">
@@ -229,13 +290,6 @@ function ObservationDeck({ serverUrl, onBack }) {
                   ))}
                 </select>
               </label>
-              <label>
-                Baseline
-                <select name="baselineAgentId" value={filters.baselineAgentId} onChange={handleFilterChange}>
-                  <option value="">All</option>
-                  {filtersMeta.baselineAgentIds.map(value => <option key={value} value={value}>{value}</option>)}
-                </select>
-              </label>
             </div>
             <div className="deck-toolbar__row">
               <label>
@@ -272,6 +326,28 @@ function ObservationDeck({ serverUrl, onBack }) {
           </div>
 
           <div className="deck-layout">
+            <section className="deck-panel">
+              <div className="deck-panel__header">
+                <h2>Live Benchmark Log</h2>
+                <span>{liveLog.length} recent events</span>
+              </div>
+              <div className="deck-list">
+                {liveLog.map(entry => (
+                  <div key={entry.id} className="deck-list__item">
+                    <strong>{`${entry.gameCode || 'No game'} - ${entry.playerName || 'Unknown player'}`}</strong>
+                    <span>{formatLogContext(entry)}</span>
+                    <span>{`${entry.eventType}: ${formatEventStatus(entry)}`}</span>
+                    <span>{formatMoveTimeSeconds(entry.moveTimeMs)}</span>
+                    <span>
+                      {entry.eventType === 'task'
+                        ? (entry.details?.explanation || 'No evaluator notes')
+                        : (entry.details?.benchmarkExplanation || 'No evaluator notes')}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </section>
+
             <section className="deck-panel deck-panel--leaderboard">
               <div className="deck-panel__header">
                 <h2>{entityType === 'agent' ? 'Agent Leaderboard' : 'Player Leaderboard'}</h2>
@@ -320,6 +396,9 @@ function ObservationDeck({ serverUrl, onBack }) {
                       <div key={metric} className="deck-metric-card">
                         <span>{metricLabel(metric)}</span>
                         <strong>{formatMetric(metric, value)}</strong>
+                        {detail.normalizedMetrics?.[metric] !== undefined ? (
+                          <small>{`Absolute score ${(detail.normalizedMetrics[metric] * 100).toFixed(1)}%`}</small>
+                        ) : null}
                         <small>{statusLabel(detail.metricStatuses?.[metric])}</small>
                       </div>
                     ))}
@@ -333,6 +412,8 @@ function ObservationDeck({ serverUrl, onBack }) {
                           <strong>{task.taskName}</strong>
                           <span>{task.attempts} attempts</span>
                           <span>{formatPercent(task.successRate)} success</span>
+                          <span>{task.averageScore?.toFixed(2) ?? 'N/A'} avg rubric score</span>
+                          <span>{task.commonFailureReasons?.[0]?.reason || 'No common failure reason'}</span>
                         </div>
                       ))}
                     </div>
@@ -345,7 +426,7 @@ function ObservationDeck({ serverUrl, onBack }) {
                         <div key={slice.sliceKey} className="deck-list__item">
                           <strong>{slice.taskId || slice.gameType || 'Gameplay Slice'}</strong>
                           <span>{slice.mapLayoutId}</span>
-                          <span>{slice.sliceScore?.toFixed(3) ?? 'N/A'} score</span>
+                          <span>{slice.sliceScore?.toFixed(3) ?? 'N/A'} primary score</span>
                         </div>
                       ))}
                     </div>
@@ -416,7 +497,7 @@ function ObservationDeck({ serverUrl, onBack }) {
             <section className="deck-panel">
               <div className="deck-panel__header">
                 <h2>Slice Drilldown</h2>
-                <span>Baseline-relative comparisons by map, seat, task, and opponent</span>
+                <span>Absolute comparisons by map, seat, task, and opponent</span>
               </div>
               <div className="deck-list">
                 {slices.slice(0, 12).map(slice => (

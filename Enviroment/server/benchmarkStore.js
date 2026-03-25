@@ -7,10 +7,17 @@ import {
   BENCHMARK_TASKS,
   BENCHMARK_WEIGHTS,
   METRIC_DIRECTIONS,
-  SECONDARY_SLICE_TAGS,
   TASK_CATEGORIES,
   getTaskDefinition,
 } from './benchmarkDefinitions.js';
+import {
+  computePrimaryComposite,
+  computeSecondaryMetricsFromSlices,
+  computeWeightedMetricScore,
+  evaluateBenchmarkTask,
+  metricStatus,
+  normalizeMetricScore,
+} from './benchmarkEvaluation.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -48,37 +55,12 @@ function safeDivide(numerator, denominator) {
   return numerator / denominator;
 }
 
-function normalizeDelta(metric, value, baselineValue) {
-  if (value === null || baselineValue === null || value === undefined || baselineValue === undefined) {
-    return null;
-  }
-  const denominator = Math.max(Math.abs(baselineValue), 1);
-  return METRIC_DIRECTIONS[metric] === 'lower'
-    ? (baselineValue - value) / denominator
-    : (value - baselineValue) / denominator;
-}
-
 function sortScenarioTags(tags = []) {
   return [...new Set((tags || []).filter(Boolean))].sort();
 }
 
 function makeEntityAgentKey(agentId, agentVersion) {
   return `${agentId || 'unknown'}@${agentVersion || 'unversioned'}`;
-}
-
-function metricStatus(metric, delta) {
-  if (delta === null || delta === undefined) return 'no-baseline';
-  if (delta > 0) {
-    return METRIC_DIRECTIONS[metric] === 'lower'
-      ? 'better-than-baseline-lower-is-better'
-      : 'above-baseline';
-  }
-  if (delta < 0) {
-    return METRIC_DIRECTIONS[metric] === 'lower'
-      ? 'worse-than-baseline-lower-is-better'
-      : 'below-baseline';
-  }
-  return 'at-baseline';
 }
 
 function buildSliceKey(source) {
@@ -215,6 +197,15 @@ export class BenchmarkStore {
     await this.#writeJson(path.join(this.dirMap.snapshots, 'overview.json'), payload);
   }
 
+  async #clearJsonFiles(dir) {
+    const entries = await fsp.readdir(dir).catch(() => []);
+    await Promise.all(
+      entries
+        .filter(name => name.endsWith('.json'))
+        .map(fileName => fsp.unlink(path.join(dir, fileName)).catch(() => {}))
+    );
+  }
+
   createOrUpdateRun(payload = {}) {
     const runId = payload.runId || uuidv4();
     const existing = this.runs.get(runId);
@@ -256,6 +247,31 @@ export class BenchmarkStore {
     await this.#persistRun(run);
     await this.rebuildSnapshots();
     return run;
+  }
+
+  async clearAllData() {
+    this.runs.clear();
+    this.games.clear();
+    this.tasks.clear();
+    this.telemetry.clear();
+    this.snapshots = {
+      updatedAt: null,
+      overview: null,
+      leaderboards: {
+        agent: [],
+        player: [],
+      },
+    };
+
+    await Promise.all([
+      this.#clearJsonFiles(this.dirMap.runs),
+      this.#clearJsonFiles(this.dirMap.games),
+      this.#clearJsonFiles(this.dirMap.tasks),
+      this.#clearJsonFiles(this.dirMap.telemetry),
+      this.#clearJsonFiles(this.dirMap.snapshots),
+    ]);
+
+    await this.rebuildSnapshots();
   }
 
   getOrCreateBenchmarkGame(game, options = {}) {
@@ -387,9 +403,10 @@ export class BenchmarkStore {
     const requestStartedAt = timing.requestStartedAt || Date.now();
     const acknowledgedAt = timing.acknowledgedAt || Date.now();
     const clientTimestamp = timing.clientTimestamp || null;
-    const latencyMs = clientTimestamp
+    const processingLatencyMs = clientTimestamp
       ? Math.max(0, acknowledgedAt - clientTimestamp)
       : Math.max(0, acknowledgedAt - requestStartedAt);
+    const decisionTimeMs = Math.max(0, acknowledgedAt - safeNumber(turnState.startedAt, acknowledgedAt));
 
     const retryIndex = gameRecord.actionAttemptsByTurn[turnState.turnId] || 0;
     gameRecord.actionAttemptsByTurn[turnState.turnId] = retryIndex + 1;
@@ -418,7 +435,9 @@ export class BenchmarkStore {
       mapLayoutId: gameRecord.mapLayoutId,
       opponentPolicySet: gameRecord.opponentPolicySet,
       scenarioTags: gameRecord.scenarioTags,
-      latencyMs,
+      latencyMs: processingLatencyMs,
+      processingLatencyMs,
+      decisionTimeMs,
       requestStartedAt: new Date(requestStartedAt).toISOString(),
       acknowledgedAt: new Date(acknowledgedAt).toISOString(),
       payload: payload || {},
@@ -428,6 +447,12 @@ export class BenchmarkStore {
     const records = this.telemetry.get(game.id) || [];
     records.push(telemetryRecord);
     this.telemetry.set(game.id, records);
+    if (result?.success) {
+      gameRecord.turnStates[playerId] = {
+        ...turnState,
+        startedAt: acknowledgedAt,
+      };
+    }
     gameRecord.updatedAt = new Date().toISOString();
 
     await Promise.all([
@@ -484,6 +509,7 @@ export class BenchmarkStore {
 
     const definition = getTaskDefinition(payload.taskId);
     const id = payload.id || uuidv4();
+    const evaluation = evaluateBenchmarkTask(payload.taskId, payload);
     const taskResult = {
       id,
       runId: run.runId,
@@ -493,12 +519,14 @@ export class BenchmarkStore {
       taskName: definition?.name || payload.taskName || payload.taskId,
       taskCategory: definition?.category || payload.taskCategory || null,
       difficulty: definition?.difficulty || payload.difficulty || 'unknown',
-      success: Boolean(payload.success),
-      score: payload.score ?? (payload.success ? 1 : 0),
+      passed: evaluation.passed,
+      success: evaluation.passed,
+      score: evaluation.score,
       latencyMs: payload.latencyMs ?? null,
       retries: payload.retries ?? 0,
       illegalAttempts: payload.illegalAttempts ?? 0,
-      explanation: payload.explanation || null,
+      explanation: evaluation.explanation || payload.explanation || null,
+      evaluationDetails: evaluation.evaluationDetails || null,
       playerKey: payload.playerKey || `${run.runId}:${payload.agentId || 'unknown-agent'}`,
       playerName: payload.playerName || payload.agentId || 'Unknown Player',
       agentId: payload.agentId || 'unknown-agent',
@@ -509,6 +537,8 @@ export class BenchmarkStore {
       scenarioTags: sortScenarioTags(payload.scenarioTags || run.scenarioTags || []),
       gameType: payload.gameType || 'reasoning-task',
       createdAt: payload.createdAt || new Date().toISOString(),
+      response: payload.response || null,
+      evaluationContext: payload.evaluationContext || null,
     };
 
     this.runs.set(run.runId, run);
@@ -576,6 +606,7 @@ export class BenchmarkStore {
       taskBreakdown: new Map(),
       games: [],
       taskResults: [],
+      telemetryRecords: [],
     };
   }
 
@@ -599,6 +630,7 @@ export class BenchmarkStore {
         roundsToWin: [],
         tasks: 0,
         successes: 0,
+        taskScores: [],
         latencies: [],
         illegalAttempts: 0,
         totalAttempts: 0,
@@ -677,18 +709,26 @@ export class BenchmarkStore {
       difficulty: taskResult.difficulty,
       attempts: 0,
       successes: 0,
+      scores: [],
       latencies: [],
+      failureReasons: new Map(),
     };
     taskBreakdown.attempts += 1;
     taskBreakdown.successes += taskResult.success ? 1 : 0;
+    taskBreakdown.scores.push(safeNumber(taskResult.score, 0));
     if (taskResult.latencyMs !== null) {
       taskBreakdown.latencies.push(taskResult.latencyMs);
+    }
+    if (!taskResult.success) {
+      const failureReason = taskResult.explanation || 'Task rubric not satisfied';
+      taskBreakdown.failureReasons.set(failureReason, (taskBreakdown.failureReasons.get(failureReason) || 0) + 1);
     }
     entity.taskBreakdown.set(taskResult.taskId, taskBreakdown);
 
     const slice = this.#getSliceAccumulator(entity, taskResult);
     slice.tasks += 1;
     slice.successes += taskResult.success ? 1 : 0;
+    slice.taskScores.push(safeNumber(taskResult.score, 0));
     if (taskResult.latencyMs !== null) {
       slice.latencies.push(taskResult.latencyMs);
     }
@@ -715,6 +755,7 @@ export class BenchmarkStore {
     if (telemetryRecord.latencyMs !== null) {
       entity.operations.latencies.push(telemetryRecord.latencyMs);
     }
+    entity.telemetryRecords.push(telemetryRecord);
 
     const slice = this.#getSliceAccumulator(entity, telemetryRecord);
     slice.totalAttempts += 1;
@@ -844,153 +885,175 @@ export class BenchmarkStore {
       averageFinalVictoryPoints: average(slice.finalVictoryPoints),
       averageRoundsToWin: average(slice.roundsToWin),
       taskSuccessRate: safeDivide(slice.successes, slice.tasks),
+      averageTaskScore: average(slice.taskScores),
       averageLatencyPerTurn: average(slice.latencies),
       illegalMoveRate: safeDivide(slice.illegalAttempts, slice.totalAttempts),
       retryRate: safeDivide(slice.retryCount, slice.turnIds.size),
     };
   }
 
-  #baselineBySlice(entityMaps) {
-    const baselineMaps = {
-      agent: new Map(),
-      player: new Map(),
+  #createRunSliceAccumulator(source) {
+    return {
+      runId: source.runId || null,
+      benchmarkId: source.benchmarkId || null,
+      taskId: source.taskId || null,
+      taskCategory: source.taskCategory || null,
+      gameType: source.gameType || null,
+      mapLayoutId: source.mapLayoutId || null,
+      startingSeat: source.startingSeat ?? null,
+      opponentPolicySet: source.opponentPolicySet || null,
+      scenarioTags: sortScenarioTags(source.scenarioTags || []),
+      wins: 0,
+      gamesPlayed: 0,
+      finalVictoryPoints: [],
+      roundsToWin: [],
+      tasks: 0,
+      successes: 0,
+      taskScores: [],
+      latencies: [],
+      illegalAttempts: 0,
+      totalAttempts: 0,
+      retryCount: 0,
+      turnIds: new Set(),
     };
-
-    [...this.games.values()].forEach(gameRecord => {
-      gameRecord.players.forEach(playerRecord => {
-        if (!playerRecord.baseline) return;
-        const agentKey = makeEntityAgentKey(playerRecord.agentId, playerRecord.agentVersion);
-        const sliceKey = buildSliceKey({
-          ...gameRecord,
-          startingSeat: playerRecord.startingSeat,
-        });
-        const agentEntity = entityMaps.agent.get(agentKey);
-        const playerEntity = entityMaps.player.get(playerRecord.playerKey);
-        if (agentEntity?.slices.has(sliceKey)) {
-          baselineMaps.agent.set(sliceKey, {
-            entityKey: agentKey,
-            metrics: this.#finalizeSliceMetrics(agentEntity.slices.get(sliceKey)),
-          });
-        }
-        if (playerEntity?.slices.has(sliceKey)) {
-          baselineMaps.player.set(sliceKey, {
-            entityKey: playerRecord.playerKey,
-            metrics: this.#finalizeSliceMetrics(playerEntity.slices.get(sliceKey)),
-          });
-        }
-      });
-    });
-
-    [...this.tasks.values()].forEach(taskResult => {
-      if (taskResult.baselineAgentId !== taskResult.agentId) return;
-      const agentKey = makeEntityAgentKey(taskResult.agentId, taskResult.agentVersion);
-      const sliceKey = buildSliceKey(taskResult);
-      const agentEntity = entityMaps.agent.get(agentKey);
-      const playerEntity = entityMaps.player.get(taskResult.playerKey);
-      if (agentEntity?.slices.has(sliceKey)) {
-        baselineMaps.agent.set(sliceKey, {
-          entityKey: agentKey,
-          metrics: this.#finalizeSliceMetrics(agentEntity.slices.get(sliceKey)),
-        });
-      }
-      if (playerEntity?.slices.has(sliceKey)) {
-        baselineMaps.player.set(sliceKey, {
-          entityKey: taskResult.playerKey,
-          metrics: this.#finalizeSliceMetrics(playerEntity.slices.get(sliceKey)),
-        });
-      }
-    });
-
-    return baselineMaps;
   }
 
-  #finalizeEntity(entity, baselineBySlice = new Map()) {
+  #buildRunSlices(entity) {
+    const runSlices = new Map();
+    const getRunSlice = source => {
+      const key = [
+        source.runId || 'unknown-run',
+        source.benchmarkId || 'default-benchmark',
+        source.taskId || source.gameType || 'gameplay',
+        source.mapLayoutId || 'default-map',
+        source.startingSeat ?? 'unknown-seat',
+        source.opponentPolicySet || 'default-opponent',
+        sortScenarioTags(source.scenarioTags).join(',') || 'no-scenarios',
+      ].join('|');
+      if (!runSlices.has(key)) {
+        runSlices.set(key, this.#createRunSliceAccumulator(source));
+      }
+      return runSlices.get(key);
+    };
+
+    entity.games.forEach(gameRecord => {
+      const slice = getRunSlice({
+        ...gameRecord,
+        gameType: gameRecord.taskId ? 'reasoning-task' : 'full-game',
+      });
+      slice.gamesPlayed += 1;
+      slice.finalVictoryPoints.push(safeNumber(gameRecord.finalVictoryPoints, 0));
+      if (gameRecord.won) {
+        slice.wins += 1;
+        if (gameRecord.roundsPlayed !== null) {
+          slice.roundsToWin.push(gameRecord.roundsPlayed);
+        }
+      }
+    });
+
+    entity.taskResults.forEach(taskResult => {
+      const slice = getRunSlice(taskResult);
+      slice.tasks += 1;
+      slice.successes += taskResult.success ? 1 : 0;
+      slice.taskScores.push(safeNumber(taskResult.score, 0));
+      if (taskResult.latencyMs !== null) {
+        slice.latencies.push(taskResult.latencyMs);
+      }
+      slice.illegalAttempts += safeNumber(taskResult.illegalAttempts, 0);
+      slice.totalAttempts += 1 + safeNumber(taskResult.illegalAttempts, 0) + safeNumber(taskResult.retries, 0);
+      slice.retryCount += safeNumber(taskResult.retries, 0);
+    });
+
+    entity.telemetryRecords.forEach(record => {
+      const slice = getRunSlice(record);
+      slice.totalAttempts += 1;
+      slice.turnIds.add(record.turnId);
+      if (!record.legal) {
+        slice.illegalAttempts += 1;
+      }
+      if (record.retryIndex > 0) {
+        slice.retryCount += 1;
+      }
+      if (record.latencyMs !== null) {
+        slice.latencies.push(record.latencyMs);
+      }
+    });
+
+    return [...runSlices.values()].map(slice => {
+      const metrics = this.#finalizeSliceMetrics(slice);
+      const normalizedMetrics = Object.fromEntries(
+        Object.keys(BENCHMARK_WEIGHTS).map(metric => [
+          metric,
+          Object.prototype.hasOwnProperty.call(metrics, metric) ? normalizeMetricScore(metric, metrics[metric]) : 0,
+        ])
+      );
+      return {
+        ...slice,
+        metrics,
+        normalizedMetrics,
+        primaryCompositeScore: computePrimaryComposite(normalizedMetrics),
+        configKey: [
+          slice.benchmarkId || 'default-benchmark',
+          slice.taskId || slice.gameType || 'gameplay',
+          slice.mapLayoutId || 'default-map',
+          slice.startingSeat ?? 'unknown-seat',
+          slice.opponentPolicySet || 'default-opponent',
+          sortScenarioTags(slice.scenarioTags).join(',') || 'no-scenarios',
+        ].join('|'),
+      };
+    });
+  }
+
+  #finalizeEntity(entity) {
     const winRate = safeDivide(entity.gameplay.wins, entity.gameplay.gamesPlayed);
     const averageFinalVictoryPoints = average(entity.gameplay.finalVictoryPoints);
     const averageRoundsToWin = average(entity.gameplay.roundsToWin);
     const taskSuccessRate = safeDivide(entity.reasoning.successes, entity.reasoning.tasks);
+    const averageTaskScore = average(entity.reasoning.scores);
     const averageLatencyPerTurn = average(entity.operations.latencies);
     const illegalMoveRate = safeDivide(entity.operations.illegalAttempts, entity.operations.totalAttempts);
     const retryRate = safeDivide(entity.operations.totalRetries, entity.operations.turnsWithAttempts.size);
 
-    const sliceScores = [];
-    const metricDeltasByMetric = {};
     const finalizedSlices = [...entity.slices.values()].map(slice => {
       const sliceMetrics = this.#finalizeSliceMetrics(slice);
-      const baseline = baselineBySlice.get(slice.sliceKey) || null;
-      const metricDeltas = Object.fromEntries(
-        Object.keys(BENCHMARK_WEIGHTS).map(metric => {
-          if (!Object.prototype.hasOwnProperty.call(sliceMetrics, metric)) {
-            return [metric, null];
-          }
-          const baselineMetric = baseline?.metrics?.[metric] ?? null;
-          return [metric, normalizeDelta(metric, sliceMetrics[metric], baselineMetric)];
-        })
+      const normalizedMetrics = Object.fromEntries(
+        Object.keys(BENCHMARK_WEIGHTS).map(metric => [
+          metric,
+          Object.prototype.hasOwnProperty.call(sliceMetrics, metric)
+            ? normalizeMetricScore(metric, sliceMetrics[metric])
+            : 0,
+        ])
       );
-
-      Object.entries(metricDeltas).forEach(([metric, delta]) => {
-        if (delta === null) return;
-        if (!metricDeltasByMetric[metric]) {
-          metricDeltasByMetric[metric] = [];
-        }
-        metricDeltasByMetric[metric].push(delta);
-      });
-
-      const validDeltas = Object.entries(metricDeltas)
-        .filter(([metric, delta]) => delta !== null && BENCHMARK_WEIGHTS[metric])
-        .map(([metric, delta]) => delta * BENCHMARK_WEIGHTS[metric]);
-      const sliceScore = validDeltas.length ? validDeltas.reduce((sum, value) => sum + value, 0) : null;
-      if (sliceScore !== null) {
-        sliceScores.push(sliceScore);
-      }
+      const primaryCompositeScore = computePrimaryComposite(normalizedMetrics);
 
       return {
         ...slice,
         metrics: sliceMetrics,
-        metricDeltas,
-        sliceScore,
+        normalizedMetrics,
+        primaryCompositeScore,
+        sliceScore: primaryCompositeScore,
       };
     });
 
-    const robustnessSliceScores = finalizedSlices
-      .filter(slice => slice.scenarioTags.some(tag => SECONDARY_SLICE_TAGS.robustness.includes(tag)))
-      .map(slice => slice.sliceScore)
-      .filter(score => score !== null);
-    const generalizationSliceScores = finalizedSlices
-      .filter(slice => {
-        if (slice.scenarioTags.some(tag => SECONDARY_SLICE_TAGS.generalization.includes(tag))) return true;
-        return Boolean(slice.mapLayoutId || slice.startingSeat !== null || slice.opponentPolicySet);
-      })
-      .map(slice => slice.sliceScore)
-      .filter(score => score !== null);
-
+    const secondaryMetrics = computeSecondaryMetricsFromSlices(finalizedSlices, this.#buildRunSlices(entity));
     const rawMetrics = {
       winRate,
       averageFinalVictoryPoints,
       averageRoundsToWin,
       taskSuccessRate,
+      averageTaskScore,
       averageLatencyPerTurn,
       illegalMoveRate,
       retryRate,
-      robustness: average(robustnessSliceScores.length ? robustnessSliceScores : sliceScores),
-      consistency: sliceScores.length ? 1 / (1 + variance(sliceScores)) : null,
-      generalization: average(generalizationSliceScores.length ? generalizationSliceScores : sliceScores),
+      robustness: secondaryMetrics.robustness,
+      consistency: secondaryMetrics.consistency,
+      generalization: secondaryMetrics.generalization,
     };
 
-    const aggregatedDeltas = Object.fromEntries(
-      Object.keys(BENCHMARK_WEIGHTS).map(metric => [metric, average(metricDeltasByMetric[metric] || [])])
+    const normalizedMetrics = Object.fromEntries(
+      Object.keys(BENCHMARK_WEIGHTS).map(metric => [metric, normalizeMetricScore(metric, rawMetrics[metric])])
     );
-    aggregatedDeltas.robustness = rawMetrics.robustness;
-    aggregatedDeltas.generalization = rawMetrics.generalization;
-    aggregatedDeltas.consistency = rawMetrics.consistency === null ? null : rawMetrics.consistency - 0.5;
-
-    const overallScore = Object.entries(BENCHMARK_WEIGHTS)
-      .map(([metric, weight]) => {
-        const delta = aggregatedDeltas[metric];
-        return delta === null || delta === undefined ? null : delta * weight;
-      })
-      .filter(value => value !== null)
-      .reduce((sum, value) => sum + value, 0);
+    const overallScore = computeWeightedMetricScore(normalizedMetrics);
 
     return {
       entityType: entity.entityType,
@@ -1006,36 +1069,47 @@ export class BenchmarkStore {
       opponentPolicySets: [...entity.opponentPolicySets],
       scenarioTags: [...entity.scenarioTags],
       rawMetrics,
+      normalizedMetrics,
       categoryScores: {
         gameplay: average([
-          aggregatedDeltas.winRate,
-          aggregatedDeltas.averageFinalVictoryPoints,
-          aggregatedDeltas.averageRoundsToWin,
-        ].filter(value => value !== null)),
-        reasoning: aggregatedDeltas.taskSuccessRate,
+          normalizedMetrics.winRate,
+          normalizedMetrics.averageFinalVictoryPoints,
+          normalizedMetrics.averageRoundsToWin,
+        ]),
+        reasoning: normalizedMetrics.taskSuccessRate,
         operations: average([
-          aggregatedDeltas.averageLatencyPerTurn,
-          aggregatedDeltas.illegalMoveRate,
-          aggregatedDeltas.retryRate,
-        ].filter(value => value !== null)),
+          normalizedMetrics.averageLatencyPerTurn,
+          normalizedMetrics.illegalMoveRate,
+          normalizedMetrics.retryRate,
+        ]),
         secondary: average([
-          rawMetrics.robustness,
-          rawMetrics.consistency,
-          rawMetrics.generalization,
-        ].filter(value => value !== null)),
+          normalizedMetrics.robustness,
+          normalizedMetrics.consistency,
+          normalizedMetrics.generalization,
+        ]),
       },
-      metricDeltas: aggregatedDeltas,
+      metricDeltas: normalizedMetrics,
       metricStatuses: Object.fromEntries(
-        Object.entries(aggregatedDeltas).map(([metric, delta]) => [metric, metricStatus(metric, delta)])
+        Object.entries(normalizedMetrics).map(([metric, score]) => [metric, metricStatus(metric, score, rawMetrics[metric])])
       ),
       overallScore,
-      consistencyVariance: variance(sliceScores),
+      consistencyVariance: secondaryMetrics.consistencyVariance,
       sliceCount: finalizedSlices.length,
       slices: finalizedSlices,
       taskBreakdown: [...entity.taskBreakdown.values()].map(task => ({
-        ...task,
+        taskId: task.taskId,
+        taskName: task.taskName,
+        taskCategory: task.taskCategory,
+        difficulty: task.difficulty,
+        attempts: task.attempts,
+        successes: task.successes,
         successRate: safeDivide(task.successes, task.attempts),
         averageLatencyMs: average(task.latencies),
+        averageScore: average(task.scores),
+        commonFailureReasons: [...task.failureReasons.entries()]
+          .sort((left, right) => right[1] - left[1])
+          .slice(0, 3)
+          .map(([reason, count]) => ({ reason, count })),
       })),
       games: entity.games.sort((left, right) => String(right.finishedAt || '').localeCompare(String(left.finishedAt || ''))),
       taskResults: entity.taskResults.sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || ''))),
@@ -1045,10 +1119,9 @@ export class BenchmarkStore {
   buildLeaderboards(rawFilters = {}) {
     const filters = defaultFilters(rawFilters);
     const entityMaps = this.#buildEntityMaps(filters);
-    const baselineMaps = this.#baselineBySlice(entityMaps);
 
     const finalizeList = entityType => [...entityMaps[entityType].values()]
-      .map(entity => this.#finalizeEntity(entity, baselineMaps[entityType]))
+      .map(entity => this.#finalizeEntity(entity))
       .sort((left, right) => {
         const rightScore = right.overallScore ?? Number.NEGATIVE_INFINITY;
         const leftScore = left.overallScore ?? Number.NEGATIVE_INFINITY;
@@ -1156,6 +1229,141 @@ export class BenchmarkStore {
     };
   }
 
+  getLiveLog({ limit = 100, filters = {} } = {}) {
+    const normalizedLimit = Math.max(1, Math.min(500, safeNumber(limit, 100)));
+    const taskResults = [...this.tasks.values()].filter(task => matchesFilters(task, filters));
+    const unmatchedTaskIds = new Set(taskResults.map(task => task.id));
+
+    const inferActionTaskId = record => {
+      if (record.actionName === 'placeSettlement' && record.payload?.isSetup) return 'settlement-location-selection';
+      if (record.actionName === 'placeRoad' && record.payload?.isSetup) return 'road-placement-direction';
+      return null;
+    };
+
+    const findLinkedTaskResult = record => {
+      const taskId = inferActionTaskId(record);
+      if (!taskId) return null;
+      const actionTimestamp = Date.parse(record.acknowledgedAt || record.requestStartedAt || '') || 0;
+      const candidates = taskResults
+        .filter(task => unmatchedTaskIds.has(task.id))
+        .filter(task => task.runId === record.runId && task.playerKey === record.playerKey && task.taskId === taskId)
+        .map(task => ({
+          task,
+          delta: Math.abs((Date.parse(task.createdAt || '') || 0) - actionTimestamp),
+        }))
+        .filter(candidate => candidate.delta <= 15000)
+        .sort((left, right) => left.delta - right.delta);
+
+      const linked = candidates[0]?.task || null;
+      if (linked) {
+        unmatchedTaskIds.delete(linked.id);
+      }
+      return linked;
+    };
+
+    const telemetryEntries = [...this.telemetry.values()]
+      .flatMap(payload => ensureArray(payload.records || payload))
+      .filter(record => matchesFilters(record, filters))
+      .map(record => {
+        const linkedTask = findLinkedTaskResult(record);
+        return {
+        id: `action:${record.id}`,
+        timestamp: record.acknowledgedAt || record.requestStartedAt || null,
+        eventType: 'action',
+        gameCode: record.gameId || null,
+        runId: record.runId || null,
+        benchmarkId: record.benchmarkId || null,
+        playerName: record.playerName || null,
+        agentId: record.agentId || null,
+        turnNumber: record.roundNumber ?? null,
+        task: record.taskId || record.taskCategory || record.actionName || null,
+        actionName: record.actionName || null,
+        benchmarkTaskId: linkedTask?.taskId || null,
+        benchmarkTaskName: linkedTask?.taskName || null,
+        success: linkedTask ? Boolean(linkedTask.success) : null,
+        status: record.accepted ? 'accepted' : 'rejected',
+        latencyMs: record.decisionTimeMs ?? null,
+        moveTimeMs: record.decisionTimeMs ?? null,
+        processingLatencyMs: record.processingLatencyMs ?? record.latencyMs ?? null,
+        retryIndex: record.retryIndex ?? 0,
+        illegal: record.legal === false,
+        details: {
+          benchmarkPassed: linkedTask ? Boolean(linkedTask.success) : null,
+          benchmarkScore: linkedTask?.score ?? null,
+          benchmarkExplanation: linkedTask?.explanation || null,
+          startingSeat: record.startingSeat ?? null,
+          opponentPolicySet: record.opponentPolicySet || null,
+        },
+      };
+      });
+
+    const taskEntries = taskResults
+      .filter(task => unmatchedTaskIds.has(task.id))
+      .map(task => ({
+        id: `task:${task.id}`,
+        timestamp: task.createdAt || null,
+        eventType: 'task',
+        gameCode: task.gameId || task.runId || null,
+        runId: task.runId || null,
+        benchmarkId: task.benchmarkId || null,
+        playerName: task.playerName || null,
+        agentId: task.agentId || null,
+        turnNumber: task.turnNumber ?? task.roundNumber ?? null,
+        task: task.taskName || task.taskId || null,
+        actionName: null,
+        success: Boolean(task.success),
+        status: task.success ? 'passed' : 'failed',
+        latencyMs: task.latencyMs ?? null,
+        moveTimeMs: task.latencyMs ?? null,
+        processingLatencyMs: null,
+        retryIndex: task.retries ?? 0,
+        illegal: safeNumber(task.illegalAttempts, 0) > 0,
+        details: {
+          score: task.score ?? null,
+          explanation: task.explanation || null,
+          taskCategory: task.taskCategory || null,
+        },
+      }));
+
+    const completedGameEntries = [...this.games.values()]
+      .filter(game => matchesFilters(game, filters))
+      .filter(game => Boolean(game.finishedAt))
+      .flatMap(game => game.players.map(player => ({
+        id: `game:${game.gameId}:${player.playerKey}`,
+        timestamp: game.finishedAt,
+        eventType: 'game',
+        gameCode: game.gameId || null,
+        runId: game.runId || null,
+        benchmarkId: game.benchmarkId || null,
+        playerName: player.playerName || null,
+        agentId: player.agentId || null,
+        turnNumber: game.roundsPlayed ?? null,
+        task: game.taskId || game.gameType || 'full-game',
+        actionName: 'game-complete',
+        success: Boolean(player.won),
+        status: player.won ? 'won' : 'lost',
+        latencyMs: null,
+        moveTimeMs: null,
+        processingLatencyMs: null,
+        retryIndex: null,
+        illegal: false,
+        details: {
+          finalVictoryPoints: player.finalVictoryPoints ?? null,
+          roundsPlayed: game.roundsPlayed ?? null,
+        },
+      })));
+
+    const entries = [...telemetryEntries, ...taskEntries, ...completedGameEntries]
+      .sort((left, right) => String(right.timestamp || '').localeCompare(String(left.timestamp || '')))
+      .slice(0, normalizedLimit);
+
+    return {
+      filters: defaultFilters(filters),
+      limit: normalizedLimit,
+      entries,
+    };
+  }
+
   getSliceComparisons(filters = {}) {
     const leaderboards = this.buildLeaderboards(filters);
     const entries = [...leaderboards.agent, ...leaderboards.player];
@@ -1183,7 +1391,8 @@ export class BenchmarkStore {
           displayName: entry.displayName,
           overallScore: entry.overallScore,
           sliceScore: slice.sliceScore,
-          metricDeltas: slice.metricDeltas,
+          normalizedMetrics: slice.normalizedMetrics,
+          metricDeltas: slice.normalizedMetrics,
           metrics: slice.metrics,
         });
       });
