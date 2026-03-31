@@ -128,7 +128,7 @@ function Lobby({ onCreateGame, onJoinGame, error, setError, onOpenObservationDec
               onClick={onOpenObservationDeck}
             >
               <span className="btn-icon">Deck</span>
-              Observation Deck
+              Benchmark Deck
             </button>
           </div>
         ) : (
@@ -342,7 +342,7 @@ function Lobby({ onCreateGame, onJoinGame, error, setError, onOpenObservationDec
                     >
                       <span className="mode-icon">👥</span>
                       <span className="mode-label">Extended</span>
-                      <span className="mode-desc">5-6 Players</span>
+                      <span className="mode-desc">2-6 Players</span>
                     </button>
                   </div>
                 </div>

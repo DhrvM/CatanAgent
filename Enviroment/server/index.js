@@ -305,6 +305,12 @@ const DICE_PROBABILITY_WEIGHTS = {
   12: 1,
 };
 
+function clamp01(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.max(0, Math.min(1, numeric));
+}
+
 function normalizeVertexKey(vKey) {
   const match = String(vKey || '').match(/^v_(-?\d+)_(-?\d+)_(\d+)$/);
   if (!match) return null;
@@ -346,6 +352,33 @@ function scoreVertexPlacement(game, vKey) {
   };
 }
 
+function settlementPlacementScore(score = {}) {
+  return clamp01(
+    (Number(score.resourceProductionExpectancy) || 0) * 0.4
+    + (Number(score.resourceDiversity) || 0) * 0.25
+    + (Number(score.expansionAccess) || 0) * 0.2
+    + (Number(score.portSynergy) || 0) * 0.15
+  );
+}
+
+function roadPlacementPriorityScore(score = {}) {
+  return clamp01(
+    (Number(score.futureReachability) || 0) * 0.5
+    + (Number(score.reachableIntersectionValue) || 0) * 0.35
+    + (Number(score.blockingValue) || 0) * 0.15
+  );
+}
+
+function cityUpgradeScore(game, vKey) {
+  const baseScore = scoreVertexPlacement(game, vKey);
+  return clamp01(
+    (baseScore.resourceProductionExpectancy * 0.65)
+    + (baseScore.resourceDiversity * 0.1)
+    + (baseScore.portSynergy * 0.05)
+    + 0.2
+  );
+}
+
 function buildSettlementEvaluationContext(game, playerId) {
   const legalOptions = Object.keys(game.vertices || {})
     .filter(vKey => GameLogic.canPlaceSettlement(game, playerId, vKey, true).valid)
@@ -356,6 +389,44 @@ function buildSettlementEvaluationContext(game, playerId) {
 
   return {
     legalOptions,
+  };
+}
+
+function buildBuildPrioritizationTaskPayload(game, playerId, selectedOptionId) {
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  if (playerIndex === -1) return null;
+  const player = game.players[playerIndex];
+
+  const settlementOptions = Object.keys(game.vertices || {})
+    .filter(vKey => GameLogic.canPlaceSettlement(game, playerId, vKey, false).valid)
+    .map(vKey => settlementPlacementScore(scoreVertexPlacement(game, vKey)));
+
+  const cityOptions = player?.cities > 0 && hasRequiredResources(player, { ore: 3, grain: 2 })
+    ? Object.entries(game.vertices || {})
+      .filter(([, vertex]) => vertex?.building === 'settlement' && vertex.owner === playerIndex)
+      .map(([vKey]) => cityUpgradeScore(game, vKey))
+    : [];
+
+  const roadOptions = Object.keys(game.edges || {})
+    .filter(eKey => GameLogic.canPlaceRoad(game, playerId, eKey, false, null).valid)
+    .map(eKey => roadPlacementPriorityScore(scoreRoadPlacement(game, eKey, null)));
+
+  const options = [
+    settlementOptions.length ? { id: 'settlement', score: Math.max(...settlementOptions) } : null,
+    cityOptions.length ? { id: 'city', score: Math.max(...cityOptions) } : null,
+    roadOptions.length ? { id: 'road', score: Math.max(...roadOptions) } : null,
+  ].filter(Boolean);
+
+  if (!options.length || !options.some(option => option.id === selectedOptionId)) {
+    return null;
+  }
+
+  return {
+    taskId: 'city-vs-settlement-vs-road-prioritization',
+    selectedOptionId,
+    evaluationContext: {
+      options,
+    },
   };
 }
 
@@ -402,6 +473,10 @@ function scoreResourceNeed(player = {}) {
   );
 }
 
+function hasRequiredResources(player = {}, cost = {}) {
+  return Object.entries(cost).every(([resource, amount]) => (Number(player.resources?.[resource]) || 0) >= amount);
+}
+
 function scoreResourceSurplus(player = {}) {
   const resources = player.resources || {};
   const values = Object.values(resources).map(value => Number(value) || 0);
@@ -429,6 +504,102 @@ function sumResources(resources = {}) {
   return Object.values(resources || {}).reduce((sum, value) => sum + (Number(value) || 0), 0);
 }
 
+function getPlayerVisibleScore(player = {}) {
+  return (player.victoryPoints || 0)
+    + (player.hasLongestRoad ? 2 : 0)
+    + (player.hasLargestArmy ? 2 : 0);
+}
+
+function scoreRobberHexPlacement(game, actingPlayerIndex, hexKeyValue) {
+  const leaderIndex = identifyLeaderIndex(game);
+  const hex = game.hexes?.[hexKeyValue];
+  if (!hex) {
+    return {
+      hurtLeader: 0,
+      productionDamage: 0,
+      theftValue: 0,
+      selfHarmAvoidance: 0,
+    };
+  }
+
+  const playersOnHex = GameLogic.getPlayersOnHex(game, hexKeyValue, actingPlayerIndex) || [];
+  const numberWeight = DICE_PROBABILITY_WEIGHTS[hex.number] || 0;
+  let leaderDamage = 0;
+  let totalDamage = 0;
+  let bestTheftValue = 0;
+
+  playersOnHex.forEach(playerIndex => {
+    const player = game.players[playerIndex];
+    if (!player) return;
+    const resourceTotal = sumResources(player.resources);
+    const strengthScore = Math.min(1, (getPlayerVisibleScore(player) + (resourceTotal / 8)) / 5);
+    totalDamage += strengthScore;
+    if (playerIndex === leaderIndex) {
+      leaderDamage += strengthScore;
+    }
+    bestTheftValue = Math.max(bestTheftValue, Math.min(1, resourceTotal / 7));
+  });
+
+  const myBuildingsOnHex = (GameLogic.getPlayersOnHex(game, hexKeyValue, null) || []).includes(actingPlayerIndex);
+  const normalizedProductionDamage = Math.min(1, (totalDamage * numberWeight) / 5);
+  const normalizedLeaderDamage = Math.min(1, (leaderDamage * numberWeight) / 3);
+
+  return {
+    hurtLeader: normalizedLeaderDamage,
+    productionDamage: normalizedProductionDamage,
+    theftValue: bestTheftValue,
+    selfHarmAvoidance: myBuildingsOnHex ? 0 : 1,
+  };
+}
+
+function buildRobberTaskPayload(game, playerId, hexKeyValue, stealFromPlayerId) {
+  const actingPlayerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  if (actingPlayerIndex === -1) return null;
+
+  const hexOptions = Object.keys(game.hexes || {})
+    .filter(candidateHexKey => candidateHexKey !== game.robber)
+    .map(candidateHexKey => ({
+      id: candidateHexKey,
+      ...scoreRobberHexPlacement(game, actingPlayerIndex, candidateHexKey),
+    }));
+
+  const payloads = [{
+    taskId: 'robber-placement',
+    selectedHexId: hexKeyValue,
+    evaluationContext: {
+      options: hexOptions,
+    },
+  }];
+
+  const victimOptions = (GameLogic.getPlayersOnHex(game, hexKeyValue, actingPlayerIndex) || [])
+    .map(playerIndex => {
+      const player = game.players[playerIndex];
+      const resourceTotal = sumResources(player?.resources);
+      const isLeader = playerIndex === identifyLeaderIndex(game);
+      return {
+        id: player?.id || `player-${playerIndex}`,
+        score: Math.min(
+          1,
+          (isLeader ? 0.55 : 0.25)
+          + Math.min(0.35, resourceTotal / 20)
+          + Math.min(0.1, getPlayerVisibleScore(player) / 20)
+        ),
+      };
+    });
+
+  if (victimOptions.length && stealFromPlayerId) {
+    payloads.push({
+      taskId: 'robber-victim-selection',
+      selectedOptionId: stealFromPlayerId,
+      evaluationContext: {
+        options: victimOptions,
+      },
+    });
+  }
+
+  return payloads;
+}
+
 function tradeBundleValue(bundle = {}, scoreMap = {}) {
   return Object.entries(bundle || {}).reduce((sum, [resource, amount]) => (
     sum + ((scoreMap[resource] || 0) * (Number(amount) || 0))
@@ -454,7 +625,6 @@ function scoreTradeOfferForPlayer(game, fromPlayer, toPlayer, offer = {}, reques
 }
 
 function buildRoadPlacementTaskPayload(game, playerId, edgeKeyValue, isSetup, lastSettlement) {
-  const taskId = isSetup ? 'road-placement-direction' : 'road-placement-quality';
   const evaluationContext = isSetup
     ? buildRoadEvaluationContext(game, playerId, lastSettlement)
     : {
@@ -467,7 +637,7 @@ function buildRoadPlacementTaskPayload(game, playerId, edgeKeyValue, isSetup, la
     };
 
   return {
-    taskId,
+    taskId: 'road-placement-direction',
     selectedOptionId: edgeKeyValue,
     evaluationContext,
   };
@@ -562,7 +732,7 @@ function buildCounterTradeTaskPayload(game, playerId, offer, request) {
   const fromPlayer = game.players[playerIndex];
   const originalProposer = game.tradeOffer ? game.players[game.tradeOffer.to] : null;
   return {
-    taskId: 'counter-trade-offer-quality',
+    taskId: 'generate-counter-trade-offer',
     selectedOptionId: originalProposer?.id || 'counter-target',
     evaluationContext: {
       bestOfferScore: 1,
@@ -596,6 +766,12 @@ async function persistBenchmarkTaskPayload(game, playerId, benchmarkTaskPayload,
 
   if (benchmarkTaskPayload.selectedOptionId !== undefined && response.selectedOptionId === undefined) {
     response.selectedOptionId = benchmarkTaskPayload.selectedOptionId;
+  }
+  if (benchmarkTaskPayload.selectedHexId !== undefined && response.selectedHexId === undefined) {
+    response.selectedHexId = benchmarkTaskPayload.selectedHexId;
+  }
+  if (benchmarkTaskPayload.selectedDiscardId !== undefined && response.selectedDiscardId === undefined) {
+    response.selectedDiscardId = benchmarkTaskPayload.selectedDiscardId;
   }
   if (benchmarkTaskPayload.choice !== undefined && response.choice === undefined) {
     response.choice = benchmarkTaskPayload.choice;
@@ -998,6 +1174,9 @@ io.on('connection', (socket) => {
     }
     
     const game = games.get(playerInfo.gameId);
+    const benchmarkTaskPayload = game?.benchmark?.enabled
+      ? buildRobberTaskPayload(game, playerInfo.playerId, hexKey, stealFromPlayerId)
+      : null;
     const result = GameLogic.moveRobber(game, playerInfo.playerId, hexKey, stealFromPlayerId);
     
     if (result.success) {
@@ -1032,7 +1211,15 @@ io.on('connection', (socket) => {
       
       broadcastGameState(playerInfo.gameId);
     }
-    await recordBenchmarkAction(game, playerInfo.playerId, 'moveRobber', { hexKey, stealFromPlayerId }, result, requestStartedAt);
+    await recordBenchmarkAction(
+      game,
+      playerInfo.playerId,
+      'moveRobber',
+      { hexKey, stealFromPlayerId },
+      result,
+      requestStartedAt,
+      benchmarkTaskPayload
+    );
     callback(result);
   });
   
@@ -1050,12 +1237,23 @@ io.on('connection', (socket) => {
     }
     
     const game = games.get(playerInfo.gameId);
-    const benchmarkTaskPayload = game?.benchmark?.enabled && isSetup
-      ? {
-        taskId: 'settlement-location-selection',
-        selectedOptionId: vertexKey,
-        evaluationContext: buildSettlementEvaluationContext(game, playerInfo.playerId),
-      }
+    const benchmarkTaskPayload = game?.benchmark?.enabled
+      ? (
+        isSetup
+          ? {
+            taskId: 'initial-settlement-location-selection',
+            selectedOptionId: vertexKey,
+            evaluationContext: buildSettlementEvaluationContext(game, playerInfo.playerId),
+          }
+          : [
+            buildBuildPrioritizationTaskPayload(game, playerInfo.playerId, 'settlement'),
+            {
+              taskId: 'settlement-location-selection',
+              selectedOptionId: vertexKey,
+              evaluationContext: buildSettlementEvaluationContext(game, playerInfo.playerId),
+            },
+          ].filter(Boolean)
+      )
       : null;
     const result = GameLogic.placeSettlement(game, playerInfo.playerId, vertexKey);
     
@@ -1122,6 +1320,9 @@ io.on('connection', (socket) => {
     }
     
     const game = games.get(playerInfo.gameId);
+    const benchmarkTaskPayload = game?.benchmark?.enabled
+      ? buildBuildPrioritizationTaskPayload(game, playerInfo.playerId, 'city')
+      : null;
     const result = GameLogic.upgradeToCity(game, playerInfo.playerId, vertexKey);
     
     if (result.success) {
@@ -1131,7 +1332,15 @@ io.on('connection', (socket) => {
       });
       broadcastGameState(playerInfo.gameId);
     }
-    await recordBenchmarkAction(game, playerInfo.playerId, 'upgradeToCity', { vertexKey }, result, requestStartedAt);
+    await recordBenchmarkAction(
+      game,
+      playerInfo.playerId,
+      'upgradeToCity',
+      { vertexKey },
+      result,
+      requestStartedAt,
+      benchmarkTaskPayload
+    );
     callback(result);
   });
   

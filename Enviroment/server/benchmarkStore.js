@@ -435,7 +435,7 @@ export class BenchmarkStore {
       mapLayoutId: gameRecord.mapLayoutId,
       opponentPolicySet: gameRecord.opponentPolicySet,
       scenarioTags: gameRecord.scenarioTags,
-      latencyMs: processingLatencyMs,
+      latencyMs: decisionTimeMs,
       processingLatencyMs,
       decisionTimeMs,
       requestStartedAt: new Date(requestStartedAt).toISOString(),
@@ -600,8 +600,6 @@ export class BenchmarkStore {
         latencies: [],
         illegalAttempts: 0,
         totalAttempts: 0,
-        totalRetries: 0,
-        turnsWithAttempts: new Set(),
       },
       taskBreakdown: new Map(),
       games: [],
@@ -634,8 +632,6 @@ export class BenchmarkStore {
         latencies: [],
         illegalAttempts: 0,
         totalAttempts: 0,
-        retryCount: 0,
-        turnIds: new Set(),
       });
     }
     return entity.slices.get(sliceKey);
@@ -733,8 +729,7 @@ export class BenchmarkStore {
       slice.latencies.push(taskResult.latencyMs);
     }
     slice.illegalAttempts += safeNumber(taskResult.illegalAttempts, 0);
-    slice.totalAttempts += 1 + safeNumber(taskResult.illegalAttempts, 0) + safeNumber(taskResult.retries, 0);
-    slice.retryCount += safeNumber(taskResult.retries, 0);
+    slice.totalAttempts += 1 + safeNumber(taskResult.illegalAttempts, 0);
   }
 
   #accumulateTelemetry(entity, telemetryRecord) {
@@ -745,12 +740,8 @@ export class BenchmarkStore {
     telemetryRecord.scenarioTags.forEach(tag => entity.scenarioTags.add(tag));
 
     entity.operations.totalAttempts += 1;
-    entity.operations.turnsWithAttempts.add(telemetryRecord.turnId);
     if (!telemetryRecord.legal) {
       entity.operations.illegalAttempts += 1;
-    }
-    if (telemetryRecord.retryIndex > 0) {
-      entity.operations.totalRetries += 1;
     }
     if (telemetryRecord.latencyMs !== null) {
       entity.operations.latencies.push(telemetryRecord.latencyMs);
@@ -759,12 +750,8 @@ export class BenchmarkStore {
 
     const slice = this.#getSliceAccumulator(entity, telemetryRecord);
     slice.totalAttempts += 1;
-    slice.turnIds.add(telemetryRecord.turnId);
     if (!telemetryRecord.legal) {
       slice.illegalAttempts += 1;
-    }
-    if (telemetryRecord.retryIndex > 0) {
-      slice.retryCount += 1;
     }
     if (telemetryRecord.latencyMs !== null) {
       slice.latencies.push(telemetryRecord.latencyMs);
@@ -888,7 +875,6 @@ export class BenchmarkStore {
       averageTaskScore: average(slice.taskScores),
       averageLatencyPerTurn: average(slice.latencies),
       illegalMoveRate: safeDivide(slice.illegalAttempts, slice.totalAttempts),
-      retryRate: safeDivide(slice.retryCount, slice.turnIds.size),
     };
   }
 
@@ -913,8 +899,6 @@ export class BenchmarkStore {
       latencies: [],
       illegalAttempts: 0,
       totalAttempts: 0,
-      retryCount: 0,
-      turnIds: new Set(),
     };
   }
 
@@ -960,19 +944,14 @@ export class BenchmarkStore {
         slice.latencies.push(taskResult.latencyMs);
       }
       slice.illegalAttempts += safeNumber(taskResult.illegalAttempts, 0);
-      slice.totalAttempts += 1 + safeNumber(taskResult.illegalAttempts, 0) + safeNumber(taskResult.retries, 0);
-      slice.retryCount += safeNumber(taskResult.retries, 0);
+      slice.totalAttempts += 1 + safeNumber(taskResult.illegalAttempts, 0);
     });
 
     entity.telemetryRecords.forEach(record => {
       const slice = getRunSlice(record);
       slice.totalAttempts += 1;
-      slice.turnIds.add(record.turnId);
       if (!record.legal) {
         slice.illegalAttempts += 1;
-      }
-      if (record.retryIndex > 0) {
-        slice.retryCount += 1;
       }
       if (record.latencyMs !== null) {
         slice.latencies.push(record.latencyMs);
@@ -1012,7 +991,6 @@ export class BenchmarkStore {
     const averageTaskScore = average(entity.reasoning.scores);
     const averageLatencyPerTurn = average(entity.operations.latencies);
     const illegalMoveRate = safeDivide(entity.operations.illegalAttempts, entity.operations.totalAttempts);
-    const retryRate = safeDivide(entity.operations.totalRetries, entity.operations.turnsWithAttempts.size);
 
     const finalizedSlices = [...entity.slices.values()].map(slice => {
       const sliceMetrics = this.#finalizeSliceMetrics(slice);
@@ -1044,7 +1022,6 @@ export class BenchmarkStore {
       averageTaskScore,
       averageLatencyPerTurn,
       illegalMoveRate,
-      retryRate,
       robustness: secondaryMetrics.robustness,
       consistency: secondaryMetrics.consistency,
       generalization: secondaryMetrics.generalization,
@@ -1080,7 +1057,6 @@ export class BenchmarkStore {
         operations: average([
           normalizedMetrics.averageLatencyPerTurn,
           normalizedMetrics.illegalMoveRate,
-          normalizedMetrics.retryRate,
         ]),
         secondary: average([
           normalizedMetrics.robustness,
@@ -1235,13 +1211,15 @@ export class BenchmarkStore {
     const unmatchedTaskIds = new Set(taskResults.map(task => task.id));
 
     const inferActionTaskId = record => {
-      if (record.actionName === 'placeSettlement' && record.payload?.isSetup) return 'settlement-location-selection';
+      if (record.actionName === 'placeSettlement' && record.payload?.isSetup) return 'initial-settlement-location-selection';
+      if (record.actionName === 'placeSettlement' && !record.payload?.isSetup) return 'city-vs-settlement-vs-road-prioritization';
       if (record.actionName === 'placeRoad' && record.payload?.isSetup) return 'road-placement-direction';
-      if (record.actionName === 'placeRoad' && !record.payload?.isSetup) return 'road-placement-quality';
+      if (record.actionName === 'placeRoad' && !record.payload?.isSetup) return 'road-placement-direction';
+      if (record.actionName === 'upgradeToCity') return 'city-vs-settlement-vs-road-prioritization';
       if (record.actionName === 'bankTrade') return 'bank-trade-decision';
       if (record.actionName === 'proposeTrade') return 'generate-trade-offers';
       if (record.actionName === 'respondToTrade') return 'accept-or-reject-trade-offers';
-      if (record.actionName === 'counterTrade') return 'counter-trade-offer-quality';
+      if (record.actionName === 'counterTrade') return 'generate-counter-trade-offer';
       return null;
     };
 
@@ -1296,6 +1274,8 @@ export class BenchmarkStore {
           benchmarkPassed: linkedTask ? Boolean(linkedTask.success) : null,
           benchmarkScore: linkedTask?.score ?? null,
           benchmarkExplanation: linkedTask?.explanation || null,
+          benchmarkTaskCategory: linkedTask?.taskCategory || null,
+          benchmarkEvaluationDetails: linkedTask?.evaluationDetails || null,
           startingSeat: record.startingSeat ?? null,
           opponentPolicySet: record.opponentPolicySet || null,
         },
@@ -1327,6 +1307,7 @@ export class BenchmarkStore {
           score: task.score ?? null,
           explanation: task.explanation || null,
           taskCategory: task.taskCategory || null,
+          evaluationDetails: task.evaluationDetails || null,
         },
       }));
 

@@ -84,6 +84,34 @@ function formatMoveTimeSeconds(value) {
   return `Move time ${(value / 1000).toFixed(1)}s`;
 }
 
+function formatScoreValue(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return null;
+  return Number(value).toFixed(3);
+}
+
+function formatShortTermScoreDetails(entry) {
+  const details = entry.eventType === 'task'
+    ? entry.details?.evaluationDetails
+    : entry.details?.benchmarkEvaluationDetails;
+  const category = entry.eventType === 'task'
+    ? entry.details?.taskCategory
+    : entry.details?.benchmarkTaskCategory;
+
+  if (category !== 'shortTerm' || !details) return null;
+
+  const selected = formatScoreValue(details.selectedScore);
+  const best = formatScoreValue(details.bestScore);
+  const threshold = formatScoreValue(details.threshold);
+  const parts = [];
+
+  if (selected !== null) parts.push(`selected ${selected}`);
+  if (best !== null) parts.push(`best ${best}`);
+  if (threshold !== null) parts.push(`threshold ${threshold}`);
+
+  if (!parts.length) return null;
+  return `Short-term score details: ${parts.join(' | ')}`;
+}
+
 function formatLogContext(entry) {
   if (entry.eventType === 'task') {
     return `Turn ${entry.turnNumber ?? 'N/A'} - ${entry.task || 'Benchmark task'}`;
@@ -241,7 +269,7 @@ function ObservationDeck({ serverUrl, onBack }) {
     <div className="observation-deck">
       <div className="observation-deck__hero">
         <div>
-          <p className="observation-deck__eyebrow">Observation Deck</p>
+          <p className="observation-deck__eyebrow">Benchmark Deck</p>
           <h1>Benchmark analytics for every Catan player and agent</h1>
           <p className="observation-deck__subhead">
             Compare benchmark runs, drill into task families, inspect turn telemetry, and rank agents with absolute benchmark scoring.
@@ -255,7 +283,7 @@ function ObservationDeck({ serverUrl, onBack }) {
       {error ? <div className="deck-error">{error}</div> : null}
 
       {loading ? (
-        <div className="deck-loading">Loading benchmark observation deck...</div>
+        <div className="deck-loading">Loading benchmark deck...</div>
       ) : (
         <>
           <div className="deck-summary-grid">
@@ -338,6 +366,9 @@ function ObservationDeck({ serverUrl, onBack }) {
                     <span>{formatLogContext(entry)}</span>
                     <span>{`${entry.eventType}: ${formatEventStatus(entry)}`}</span>
                     <span>{formatMoveTimeSeconds(entry.moveTimeMs)}</span>
+                    {formatShortTermScoreDetails(entry) ? (
+                      <span>{formatShortTermScoreDetails(entry)}</span>
+                    ) : null}
                     <span>
                       {entry.eventType === 'task'
                         ? (entry.details?.explanation || 'No evaluator notes')

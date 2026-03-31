@@ -1,38 +1,39 @@
 .action-panel {
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
+  gap: 0.2rem;
+  min-height: 0;
 }
 
 .action-panel h3 {
   color: var(--accent-gold);
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  margin-bottom: 0.3rem;
+  margin-bottom: 0.15rem;
 }
 
 .action-panel h4 {
   color: var(--text-muted);
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  margin: 0.3rem 0 0.2rem;
+  margin: 0.2rem 0 0.15rem;
 }
 
 .action-section {
   border-top: 1px solid var(--border-color);
-  padding-top: 0.3rem;
+  padding-top: 0.2rem;
 }
 
 .action-btn {
   width: 100%;
-  padding: 0.5rem 0.8rem;
+  padding: 0.42rem 0.65rem;
   background: var(--bg-tertiary);
   border: 1px solid var(--border-color);
   border-radius: 6px;
   color: var(--text-primary);
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   display: flex;
   align-items: center;
   gap: 0.4rem;
@@ -76,8 +77,8 @@
 }
 
 .roll-btn {
-  font-size: 0.95rem;
-  padding: 0.6rem;
+  font-size: 0.85rem;
+  padding: 0.5rem 0.6rem;
 }
 
 .build-btn {
@@ -85,8 +86,8 @@
 }
 
 .build-btn .btn-icon {
-  font-size: 1.1rem;
-  width: 24px;
+  font-size: 0.95rem;
+  width: 18px;
   text-align: center;
 }
 
@@ -95,17 +96,17 @@
 }
 
 .build-btn .cost {
-  font-size: 0.75rem;
+  font-size: 0.68rem;
   color: var(--text-muted);
   width: 100%;
-  margin-top: 0.2rem;
-  padding-left: 28px;
+  margin-top: 0.1rem;
+  padding-left: 22px;
 }
 
 .build-btn .remaining {
-  font-size: 0.7rem;
+  font-size: 0.62rem;
   color: var(--accent-copper);
-  margin-left: 0.5rem;
+  margin-left: 0.35rem;
 }
 
 .trade-btn {
@@ -118,31 +119,32 @@
 }
 
 .end-turn-btn {
-  margin-top: 0.5rem;
+  margin-top: 0.3rem;
 }
 
 .special-action {
   background: rgba(212, 169, 66, 0.15);
   border: 1px solid var(--accent-gold);
   border-radius: 8px;
-  padding: 0.8rem;
-  margin-bottom: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  margin-bottom: 0.25rem;
 }
 
 .special-action p {
   color: var(--accent-gold);
-  font-size: 0.9rem;
-  margin-bottom: 0.5rem;
+  font-size: 0.78rem;
+  margin-bottom: 0.35rem;
 }
 
 .special-action button {
   width: 100%;
-  padding: 0.5rem;
+  padding: 0.4rem 0.5rem;
   background: var(--accent-gold);
   border: none;
   border-radius: 6px;
   color: var(--bg-primary);
   font-weight: 600;
+  font-size: 0.76rem;
 }
 
 .special-action button.active {
@@ -154,12 +156,12 @@
   background: linear-gradient(135deg, rgba(106, 153, 78, 0.2) 0%, rgba(74, 124, 62, 0.2) 100%);
   border: 1px solid #6a994e;
   border-radius: 8px;
-  padding: 0.6rem 0.8rem;
+  padding: 0.45rem 0.6rem;
   color: #8fb974;
   font-weight: 600;
-  font-size: 0.9rem;
+  font-size: 0.78rem;
   text-align: center;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.25rem;
   animation: specialBuildGlow 1.5s ease-in-out infinite;
 }
 
@@ -170,14 +172,14 @@
 
 .special-build-indicator .no-trade-hint {
   display: block;
-  font-size: 0.75rem;
+  font-size: 0.65rem;
   font-weight: normal;
   color: var(--text-muted);
-  margin-top: 0.2rem;
+  margin-top: 0.1rem;
 }
 
 .action-section h4 .disabled-hint {
-  font-size: 0.65rem;
+  font-size: 0.6rem;
   color: var(--text-muted);
   font-weight: normal;
   font-style: italic;

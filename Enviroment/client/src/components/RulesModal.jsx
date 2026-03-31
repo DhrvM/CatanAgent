@@ -10,7 +10,7 @@ function RulesModal({ onClose }) {
       content: `
 **Objective:** Be the first player to reach **10 Victory Points** by building settlements, cities, and earning special achievements.
 
-**Players:** 2-6 players (5-6 player mode uses the extension rules)
+**Players:** This app currently allows 2-4 players in standard mode and 2-6 players in extended mode
 
 **Victory Points are earned from:**
 • Settlements: 1 VP each
@@ -155,7 +155,8 @@ function RulesModal({ onClose }) {
 **Longest Road (2 VP)**
 • First player to build a continuous road of 5+ segments
 • If another player builds a longer road, they take the achievement
-• Roads must be connected (settlements/cities don't break the chain)
+• Ties do not steal the card from the current holder
+• An opponent's settlement/city breaks the chain; your own buildings do not
 • Branches count - only the longest single path matters
 
 **Largest Army (2 VP)**

@@ -7,7 +7,6 @@ export const PRIMARY_BENCHMARK_METRICS = [
   'taskSuccessRate',
   'averageLatencyPerTurn',
   'illegalMoveRate',
-  'retryRate',
 ];
 
 export const SECONDARY_BENCHMARK_METRICS = [
@@ -19,28 +18,25 @@ export const SECONDARY_BENCHMARK_METRICS = [
 const PRIMARY_WEIGHT_SUM = PRIMARY_BENCHMARK_METRICS.reduce((sum, metric) => sum + (BENCHMARK_WEIGHTS[metric] || 0), 0);
 
 const TASK_THRESHOLDS = {
+  'initial-settlement-location-selection': 0.9,
   'settlement-location-selection': 0.9,
-  'road-placement-direction': 0.9,
+  'road-placement-direction': 0.8,
   'build-vs-save-decision': 0.9,
   'city-vs-settlement-vs-road-prioritization': 0.9,
   'development-card-purchase-decision': 0.95,
-  'development-card-playing-decision': 0.9,
+  'knight-card-playing-decision': 0.9,
+  'year-of-plenty-card-playing-decision': 0.9,
+  'monopoly-card-playing-decision': 0.9,
+  'road-building-card-playing-decision': 0.85,
   'discard-strategy-after-seven': 0.95,
-  'robber-placement-and-victim-selection': 0.9,
+  'robber-victim-selection': 0.9,
+  'robber-placement': 0.9,
   'accept-or-reject-trade-offers': 0.95,
   'generate-trade-offers': 0.7,
   'select-targeted-trade-partner': 0.9,
   'bank-trade-decision': 0.85,
-  'road-placement-quality': 0.9,
-  'counter-trade-offer-quality': 0.7,
-  'detect-blocked-expansion-risk': 0.85,
-  'infer-opponent-resources': 0.8,
-  'discourage-expansion-cutoff': 0.8,
-  'discourage-robber-placement': 0.75,
-  'warn-against-leader-trade': 0.85,
-  'identify-leading-opponent': 1,
+  'generate-counter-trade-offer': 0.7,
   'decide-pursue-longest-road': 0.95,
-  'defend-against-longest-road': 0.9,
   'decide-pursue-largest-army': 0.95,
 };
 
@@ -242,8 +238,12 @@ function evaluateDiscardTask(payload = {}) {
 }
 
 function evaluateRobberTask(payload = {}) {
-  const selectedPairId = payload.response?.selectedPairId
+  const selectedPairId = payload.response?.selectedHexId
+    ?? payload.selectedHexId
+    ?? payload.response?.selectedPairId
     ?? payload.selectedPairId
+    ?? payload.response?.hexKey
+    ?? payload.hexKey
     ?? `${payload.response?.hexKey || payload.hexKey}:${payload.response?.victimId || payload.victimId}`;
   const options = buildOptionMap(payload.evaluationContext?.options || [], option => (
     option.score
@@ -255,14 +255,14 @@ function evaluateRobberTask(payload = {}) {
   const { score, selected, best } = scoreFromOptionValue(selectedPairId, options, option => option.score);
   return {
     score: score ?? clamp(payload.score ?? 0),
-    passed: (score ?? 0) >= TASK_THRESHOLDS['robber-placement-and-victim-selection'],
-    explanation: payload.explanation || `Robber placement scored ${((score ?? 0) * 100).toFixed(1)}% of the best legal target/victim pair.`,
+    passed: (score ?? 0) >= TASK_THRESHOLDS['robber-placement'],
+    explanation: payload.explanation || `Robber placement scored ${((score ?? 0) * 100).toFixed(1)}% of the best legal hex.`,
     evaluationDetails: {
-      selectedPairId,
+      selectedHexId: selectedPairId,
       selectedScore: selected?.score ?? null,
-      bestPairId: best?.id ?? null,
+      bestHexId: best?.id ?? null,
       bestScore: best?.score ?? null,
-      threshold: TASK_THRESHOLDS['robber-placement-and-victim-selection'],
+      threshold: TASK_THRESHOLDS['robber-placement'],
     },
   };
 }
@@ -285,120 +285,26 @@ function evaluateTradeOfferGenerationTask(payload = {}) {
   };
 }
 
-function evaluateBlockedExpansionTask(payload = {}) {
-  const response = payload.response || {};
-  const expected = payload.evaluationContext || {};
-  const riskCorrect = Boolean(response.riskDetected) === Boolean(expected.riskDetected);
-  const blockerCorrect = !expected.blockerId || expected.blockerId === response.blockerId;
-  const pathCorrect = !expected.pathId || expected.pathId === response.pathId;
-  const completeness = clamp(safeNumber(response.explanationCompleteness ?? expected.expectedCompleteness, 0));
-  const score = clamp((riskCorrect ? 0.5 : 0) + (blockerCorrect ? 0.25 : 0) + (pathCorrect ? 0.15 : 0) + (completeness * 0.1));
-  return {
-    score,
-    passed: riskCorrect && blockerCorrect && score >= TASK_THRESHOLDS['detect-blocked-expansion-risk'],
-    explanation: payload.explanation || `Expansion-risk detection scored ${((score ?? 0) * 100).toFixed(1)}% on correctness and completeness.`,
-    evaluationDetails: {
-      riskCorrect,
-      blockerCorrect,
-      pathCorrect,
-      completeness,
-      threshold: TASK_THRESHOLDS['detect-blocked-expansion-risk'],
-    },
-  };
-}
-
-function evaluateInferResourcesTask(payload = {}) {
-  const inferred = normalizeResourceMap(payload.response?.resources || payload.inferredResources || {});
-  const actual = normalizeResourceMap(payload.evaluationContext?.actualResources || {});
-  const resourceKeys = [...new Set([...Object.keys(inferred), ...Object.keys(actual)])];
-  const totalActual = resourceKeys.reduce((sum, key) => sum + actual[key], 0);
-  const distance = resourceKeys.reduce((sum, key) => sum + Math.abs((actual[key] || 0) - (inferred[key] || 0)), 0);
-  const normalizedDistance = totalActual > 0 ? distance / (2 * totalActual) : (distance > 0 ? 1 : 0);
-  const exactMatch = resourceKeys.every(key => (actual[key] || 0) === (inferred[key] || 0));
-  const calibratedScore = payload.response?.distributionScore ?? payload.evaluationContext?.distributionScore ?? null;
-  const score = clamp(calibratedScore ?? (1 - normalizedDistance));
-  return {
-    score,
-    passed: exactMatch || score >= TASK_THRESHOLDS['infer-opponent-resources'],
-    explanation: payload.explanation || `Opponent-resource inference scored ${(score * 100).toFixed(1)}% against hidden-state truth.`,
-    evaluationDetails: {
-      exactMatch,
-      normalizedDistance,
-      threshold: TASK_THRESHOLDS['infer-opponent-resources'],
-    },
-  };
-}
-
-function evaluateRubricMessageTask(payload = {}, taskId, weights) {
-  const checks = payload.response?.rubricChecks || payload.rubricChecks || {};
-  const score = rubricChecklistScore(checks, weights) ?? clamp(payload.score ?? 0);
-  return {
-    score,
-    passed: score >= TASK_THRESHOLDS[taskId] && !(payload.response?.hasCriticalError || payload.hasCriticalError),
-    explanation: payload.explanation || `${taskId} satisfied ${(score * 100).toFixed(1)}% of rubric checks.`,
-    evaluationDetails: {
-      checks,
-      hasCriticalError: Boolean(payload.response?.hasCriticalError || payload.hasCriticalError),
-      threshold: TASK_THRESHOLDS[taskId],
-    },
-  };
-}
-
-function evaluateIdentifyLeaderTask(payload = {}) {
-  const selectedIds = [...new Set(payload.response?.leaderIds || payload.response?.leaderId ? [payload.response?.leaderId, ...(payload.response?.leaderIds || [])] : payload.leaderIds || [])].filter(Boolean).sort();
-  const expectedIds = [...new Set(payload.evaluationContext?.leaderIds || payload.evaluationContext?.leaderId ? [payload.evaluationContext?.leaderId, ...(payload.evaluationContext?.leaderIds || [])] : [])].filter(Boolean).sort();
-  const intersection = selectedIds.filter(id => expectedIds.includes(id));
-  const exact = selectedIds.length === expectedIds.length && intersection.length === expectedIds.length;
-  const partial = expectedIds.length ? intersection.length / expectedIds.length : 0;
-  const score = exact ? 1 : clamp(partial * 0.5);
-  return {
-    score,
-    passed: exact,
-    explanation: payload.explanation || `Leader identification matched ${(score * 100).toFixed(1)}% of the expected leader set.`,
-    evaluationDetails: {
-      selectedIds,
-      expectedIds,
-      threshold: TASK_THRESHOLDS['identify-leading-opponent'],
-    },
-  };
-}
-
 const TASK_EVALUATORS = {
+  'initial-settlement-location-selection': evaluateSettlementTask,
   'settlement-location-selection': evaluateSettlementTask,
   'road-placement-direction': evaluateRoadTask,
   'build-vs-save-decision': payload => evaluateChoiceRatioTask(payload, 'build-vs-save-decision'),
   'city-vs-settlement-vs-road-prioritization': payload => evaluateChoiceRatioTask(payload, 'city-vs-settlement-vs-road-prioritization'),
   'development-card-purchase-decision': payload => evaluateChoiceRatioTask(payload, 'development-card-purchase-decision'),
-  'development-card-playing-decision': payload => evaluateChoiceRatioTask(payload, 'development-card-playing-decision'),
+  'knight-card-playing-decision': payload => evaluateChoiceRatioTask(payload, 'knight-card-playing-decision'),
+  'year-of-plenty-card-playing-decision': payload => evaluateChoiceRatioTask(payload, 'year-of-plenty-card-playing-decision'),
+  'monopoly-card-playing-decision': payload => evaluateChoiceRatioTask(payload, 'monopoly-card-playing-decision'),
+  'road-building-card-playing-decision': payload => evaluateChoiceRatioTask(payload, 'road-building-card-playing-decision'),
   'discard-strategy-after-seven': evaluateDiscardTask,
-  'robber-placement-and-victim-selection': evaluateRobberTask,
+  'robber-victim-selection': payload => evaluateChoiceRatioTask(payload, 'robber-victim-selection'),
+  'robber-placement': evaluateRobberTask,
   'accept-or-reject-trade-offers': payload => evaluateChoiceRatioTask(payload, 'accept-or-reject-trade-offers'),
   'generate-trade-offers': evaluateTradeOfferGenerationTask,
   'select-targeted-trade-partner': payload => evaluateChoiceRatioTask(payload, 'select-targeted-trade-partner'),
   'bank-trade-decision': payload => evaluateChoiceRatioTask(payload, 'bank-trade-decision'),
-  'road-placement-quality': evaluateRoadTask,
-  'counter-trade-offer-quality': evaluateTradeOfferGenerationTask,
-  'detect-blocked-expansion-risk': evaluateBlockedExpansionTask,
-  'infer-opponent-resources': evaluateInferResourcesTask,
-  'discourage-expansion-cutoff': payload => evaluateRubricMessageTask(payload, 'discourage-expansion-cutoff', {
-    identifiesThreatenedRoute: 0.35,
-    givesSelfInterestedRationale: 0.35,
-    factuallyAccurate: 0.2,
-    strategicallySound: 0.1,
-  }),
-  'discourage-robber-placement': payload => evaluateRubricMessageTask(payload, 'discourage-robber-placement', {
-    truthful: 0.4,
-    relevantAlternativeTarget: 0.3,
-    strategicallyPersuasive: 0.3,
-  }),
-  'warn-against-leader-trade': payload => evaluateRubricMessageTask(payload, 'warn-against-leader-trade', {
-    identifiesLeader: 0.4,
-    explainsTradeBenefit: 0.35,
-    factuallyAccurate: 0.25,
-  }),
-  'identify-leading-opponent': evaluateIdentifyLeaderTask,
+  'generate-counter-trade-offer': evaluateTradeOfferGenerationTask,
   'decide-pursue-longest-road': payload => evaluateChoiceRatioTask(payload, 'decide-pursue-longest-road'),
-  'defend-against-longest-road': payload => evaluateChoiceRatioTask(payload, 'defend-against-longest-road'),
   'decide-pursue-largest-army': payload => evaluateChoiceRatioTask(payload, 'decide-pursue-largest-army'),
 };
 
@@ -458,8 +364,6 @@ export function normalizeMetricScore(metric, value) {
       return clamp((15000 - numeric) / 13000);
     case 'illegalMoveRate':
       return clamp(1 - numeric);
-    case 'retryRate':
-      return clamp(1 - (numeric / 2));
     default:
       return METRIC_DIRECTIONS[metric] === 'lower' ? clamp(1 - numeric) : clamp(numeric);
   }

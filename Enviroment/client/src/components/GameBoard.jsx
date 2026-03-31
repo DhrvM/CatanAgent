@@ -391,9 +391,10 @@ function GameBoard({ socket, gameState, playerId, gameCode, chatMessages, onLeav
 
   const getStatusMessage = () => {
     const maxPlayers = gameState.maxPlayers || 4;
+    const minPlayers = gameState.minPlayers || (gameState.isExtended ? 5 : 3);
     if (gameState.phase === 'waiting') {
-      const modeText = gameState.isExtended ? '(5-6 Player Mode)' : '';
-      return `Board Preview ${modeText} - Waiting for players... (${gameState.players.length}/${maxPlayers})`;
+      const modeText = gameState.isExtended ? '(5-6 Player Mode)' : '(3-4 Player Mode)';
+      return `Board Preview ${modeText} - Waiting for players... (${gameState.players.length}/${minPlayers}-${maxPlayers})`;
     }
     if (gameState.phase === 'finished') {
       const winner = gameState.players.find(p => p.id === gameState.winner);
@@ -508,9 +509,9 @@ function GameBoard({ socket, gameState, playerId, gameCode, chatMessages, onLeav
                   <button 
                     className="start-game-btn"
                     onClick={handleStartGame}
-                    disabled={gameState.players.length < 2}
+                    disabled={gameState.players.length < (gameState.minPlayers || (gameState.isExtended ? 5 : 3))}
                   >
-                    ▶️ Start Game ({gameState.players.length}/4)
+                    {`▶️ Start Game (${gameState.players.length}/${gameState.minPlayers || (gameState.isExtended ? 5 : 3)}-${gameState.maxPlayers || (gameState.isExtended ? 6 : 4)})`}
                   </button>
                 </>
               )}
@@ -592,15 +593,6 @@ function GameBoard({ socket, gameState, playerId, gameCode, chatMessages, onLeav
             </>
           )}
           
-          <button 
-            className="chat-toggle"
-            onClick={() => setShowChat(!showChat)}
-          >
-            💬 Chat
-            {unreadMessages > 0 && (
-              <span className="chat-notification-dot">{unreadMessages}</span>
-            )}
-          </button>
         </div>
       </div>
 
@@ -618,6 +610,15 @@ function GameBoard({ socket, gameState, playerId, gameCode, chatMessages, onLeav
             <span className="new-badge">+{myPlayer.newDevCards.length} new</span>
           )}
         </div>
+        <button 
+          className="chat-toggle"
+          onClick={() => setShowChat(!showChat)}
+        >
+          💬 Chat
+          {unreadMessages > 0 && (
+            <span className="chat-notification-dot">{unreadMessages}</span>
+          )}
+        </button>
       </div>
 
       {/* Robber Phase Banner - shows when player needs to move the robber */}

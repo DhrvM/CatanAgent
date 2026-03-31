@@ -270,6 +270,26 @@ export function edgeKey(hexQ, hexR, direction) {
   return `e_${hexQ}_${hexR}_${direction}`;
 }
 
+function sortCoordinateTriples(left, right) {
+  return left.q - right.q || left.r - right.r || left.dir - right.dir;
+}
+
+function getCanonicalVertexKey(vKey) {
+  const match = String(vKey || '').match(/^v_(-?\d+)_(-?\d+)_(\d+)$/);
+  if (!match) return null;
+  const equivalents = getEquivalentVertices(Number(match[1]), Number(match[2]), Number(match[3])).sort(sortCoordinateTriples);
+  const canonical = equivalents[0];
+  return canonical ? vertexKey(canonical.q, canonical.r, canonical.dir) : null;
+}
+
+function getCanonicalEdgeKey(eKey) {
+  const match = String(eKey || '').match(/^e_(-?\d+)_(-?\d+)_(\d+)$/);
+  if (!match) return null;
+  const equivalents = getEquivalentEdges(Number(match[1]), Number(match[2]), Number(match[3])).sort(sortCoordinateTriples);
+  const canonical = equivalents[0];
+  return canonical ? edgeKey(canonical.q, canonical.r, canonical.dir) : null;
+}
+
 // ============================================================================
 // COORDINATE SYSTEM - VERTEX AND EDGE RELATIONSHIPS
 // ============================================================================
@@ -722,8 +742,8 @@ export function getAdjacentVertices(vKey, hexes) {
  * 
  * @param gameId - Unique game identifier (usually a 6-char code)
  * @param hostPlayer - Player object {id, name} for the host
- * @param isExtended - Whether to use 5-6 player expansion board
- * @param enableSpecialBuild - Whether to enable special building phase (5-6 player rule)
+ * @param isExtended - Whether to use the extended board
+ * @param enableSpecialBuild - Whether to enable special building phase
  * @returns Complete game state object
  */
 export function createGame(gameId, hostPlayer, isExtended = false, enableSpecialBuild = true) {
@@ -733,6 +753,7 @@ export function createGame(gameId, hostPlayer, isExtended = false, enableSpecial
   const NUMBER_TOKENS = isExtended ? NUMBER_TOKENS_EXTENDED : NUMBER_TOKENS_STANDARD;
   const PORT_POSITIONS = isExtended ? PORT_POSITIONS_EXTENDED : PORT_POSITIONS_STANDARD;
   const MAX_PLAYERS = isExtended ? 6 : 4;
+  const MIN_PLAYERS = 2;
   
   // Extended game has more development cards
   const devCards = isExtended 
@@ -801,6 +822,7 @@ export function createGame(gameId, hostPlayer, isExtended = false, enableSpecial
     turnPhase: 'roll', // roll, main, robber, discard, specialBuild
     isExtended, // 5-6 player extension flag
     maxPlayers: MAX_PLAYERS,
+    minPlayers: MIN_PLAYERS,
     enableSpecialBuild, // Whether special building phase is enabled (optional rule)
     specialBuildingPhase: false, // True during special building phase
     specialBuildIndex: 0, // Which player is currently in special build phase
@@ -879,11 +901,17 @@ export function addPlayer(game, player) {
 
 /** 
  * Start the game - randomizes player order and begins setup phase
- * Requires at least 2 players
+ * Uses the app's current player-count rules for the selected mode
  */
 export function startGame(game) {
-  if (game.players.length < 2) {
-    return { success: false, error: 'Need at least 2 players' };
+  const minimumPlayers = game.minPlayers || 2;
+  if (game.players.length < minimumPlayers) {
+    return {
+      success: false,
+      error: game.isExtended
+        ? 'Extended mode requires 2-6 players'
+        : 'Standard mode requires 2-4 players',
+    };
   }
   
   // Randomize player order
@@ -1825,9 +1853,9 @@ export function counterTrade(game, playerId, offer, request) {
     return { success: false, error: 'Player not found' };
   }
   
-  // Only the recipient (target) can counter
-  if (game.tradeOffer.to === undefined || game.tradeOffer.to !== playerIndex) {
-    return { success: false, error: 'Only the recipient can counter this offer' };
+  // For targeted offers, only the target can counter. For broadcasts, any non-offerer recipient can.
+  if (game.tradeOffer.to !== undefined && game.tradeOffer.to !== playerIndex) {
+    return { success: false, error: 'Only the targeted recipient can counter this offer' };
   }
   
   if (game.turnPhase !== 'main') {
@@ -2079,83 +2107,112 @@ function hasOpponentBuildingAtVertex(game, vKey, playerIndex) {
 // DFS to find the longest connected road for a player
 function getLongestConnectedRoad(game, playerId) {
   const playerIndex = game.players.findIndex(p => p.id === playerId);
-  const playerEdges = Object.entries(game.edges)
-    .filter(([_, edge]) => edge.road && edge.owner === playerIndex)
-    .map(([key, _]) => key);
-  if (playerEdges.length === 0) return 0;
+  if (playerIndex === -1) return 0;
+
+  const canonicalEdges = new Map();
+  Object.entries(game.edges)
+    .filter(([_, edge]) => edge?.road && edge.owner === playerIndex)
+    .forEach(([rawEdgeKey]) => {
+      const canonicalEdgeKey = getCanonicalEdgeKey(rawEdgeKey);
+      if (!canonicalEdgeKey || canonicalEdges.has(canonicalEdgeKey)) return;
+      const match = canonicalEdgeKey.match(/^e_(-?\d+)_(-?\d+)_(\d+)$/);
+      if (!match) return;
+      const endpoints = getEdgeVertices(Number(match[1]), Number(match[2]), Number(match[3]))
+        .map(getCanonicalVertexKey)
+        .filter(Boolean);
+      if (endpoints.length !== 2) return;
+      canonicalEdges.set(canonicalEdgeKey, {
+        key: canonicalEdgeKey,
+        vertices: endpoints,
+      });
+    });
+
+  if (!canonicalEdges.size) return 0;
+
+  const adjacency = new Map();
+  for (const edge of canonicalEdges.values()) {
+    edge.vertices.forEach(vertex => {
+      if (!adjacency.has(vertex)) {
+        adjacency.set(vertex, new Set());
+      }
+      adjacency.get(vertex).add(edge.key);
+    });
+  }
+
+  function dfsFromVertex(vertexKeyValue, visitedEdges) {
+    const adjacentEdges = adjacency.get(vertexKeyValue);
+    if (!adjacentEdges?.size) return 0;
+
+    let bestExtension = 0;
+    for (const adjacentEdge of adjacentEdges) {
+      if (visitedEdges.has(adjacentEdge)) continue;
+
+      visitedEdges.add(adjacentEdge);
+      const edge = canonicalEdges.get(adjacentEdge);
+      const nextVertex = edge.vertices[0] === vertexKeyValue ? edge.vertices[1] : edge.vertices[0];
+      const extension = hasOpponentBuildingAtVertex(game, nextVertex, playerIndex)
+        ? 0
+        : dfsFromVertex(nextVertex, visitedEdges);
+      bestExtension = Math.max(bestExtension, 1 + extension);
+      visitedEdges.delete(adjacentEdge);
+    }
+    return bestExtension;
+  }
+
   let maxLength = 0;
-  const visitedEdges = new Set();
-  // Track visited vertices to prevent cycles
-  function dfs(edgeKey, prevVertex, length) {
-    visitedEdges.add(edgeKey);
-    const match = edgeKey.match(/e_(-?\d+)_(-?\d+)_(\d+)/);
-    if (!match) return;
-    const vertices = getEdgeVertices(parseInt(match[1]), parseInt(match[2]), parseInt(match[3]));
-    for (const vKey of vertices) {
-      // Only continue from the vertex that was not the previous one
-      if (prevVertex && vKey === prevVertex) continue;
-      // If opponent building at this vertex, stop traversal
-      if (hasOpponentBuildingAtVertex(game, vKey, playerIndex)) continue;
-      // Find adjacent edges from this vertex
-      const adjEdges = getVertexEdges(vKey);
-      for (const adjEdge of adjEdges) {
-        if (adjEdge === edgeKey) continue;
-        if (!visitedEdges.has(adjEdge) && hasPlayerRoadAtEdge(game, adjEdge, playerIndex)) {
-          dfs(adjEdge, vKey, length + 1);
-        }
-      }
-    }
-    maxLength = Math.max(maxLength, length);
-    visitedEdges.delete(edgeKey);
+  for (const vertex of adjacency.keys()) {
+    maxLength = Math.max(maxLength, dfsFromVertex(vertex, new Set()));
   }
-  // Try DFS from both ends of each edge
-  for (const startEdge of playerEdges) {
-    const match = startEdge.match(/e_(-?\d+)_(-?\d+)_(\d+)/);
-    if (!match) continue;
-    const vertices = getEdgeVertices(parseInt(match[1]), parseInt(match[2]), parseInt(match[3]));
-    for (const vKey of vertices) {
-      if (!hasOpponentBuildingAtVertex(game, vKey, playerIndex)) {
-        dfs(startEdge, vKey, 1);
-      }
-    }
-  }
+
   return maxLength;
 }
 
 export function updateLongestRoad(game) {
-  let bestPlayer = null;
-  let bestLength = 0;
-  let prevHolder = game.longestRoadPlayer;
-  let prevLength = game.longestRoadLength;
-  game.players.forEach((player, idx) => {
-    const length = getLongestConnectedRoad(game, player.id);
-    player.roadLength = length;
-    if (length > bestLength) {
-      bestPlayer = idx;
-      bestLength = length;
-    }
+  const previousHolder = game.longestRoadPlayer;
+  const previousAwardedPlayers = new Set(
+    game.players
+      .map((player, index) => (player.hasLongestRoad ? index : null))
+      .filter(index => index !== null)
+  );
+  if (previousHolder !== null) {
+    previousAwardedPlayers.add(previousHolder);
+  }
+
+  const lengths = game.players.map(player => getLongestConnectedRoad(game, player.id));
+  lengths.forEach((length, index) => {
+    game.players[index].roadLength = length;
   });
-  // Award longest road only if bestLength >= 5 and strictly greater than previous
-  if (bestLength >= 5 && bestLength > prevLength) {
-    if (prevHolder !== null && prevHolder !== bestPlayer) {
-      game.players[prevHolder].hasLongestRoad = false;
-      game.players[prevHolder].victoryPoints -= 2;
-    }
-    game.longestRoadPlayer = bestPlayer;
+
+  const bestLength = Math.max(0, ...lengths);
+  const tiedLeaders = bestLength >= 5
+    ? lengths
+      .map((length, index) => ({ length, index }))
+      .filter(entry => entry.length === bestLength)
+      .map(entry => entry.index)
+    : [];
+
+  let newHolder = null;
+  if (tiedLeaders.length === 1) {
+    newHolder = tiedLeaders[0];
+  } else if (tiedLeaders.length > 1 && previousHolder !== null && tiedLeaders.includes(previousHolder)) {
+    newHolder = previousHolder;
+  }
+
+  previousAwardedPlayers.forEach(index => {
+    game.players[index].victoryPoints -= 2;
+  });
+  game.players.forEach(player => {
+    player.hasLongestRoad = false;
+  });
+
+  if (newHolder !== null) {
+    game.players[newHolder].hasLongestRoad = true;
+    game.players[newHolder].victoryPoints += 2;
+    game.longestRoadPlayer = newHolder;
     game.longestRoadLength = bestLength;
-    game.players.forEach((player, idx) => {
-      player.hasLongestRoad = idx === bestPlayer;
-    });
-    game.players[bestPlayer].victoryPoints += 2;
-  } else if (prevHolder !== null && (bestLength < prevLength || game.players[prevHolder].roadLength < prevLength)) {
-    // Remove longest road if no one exceeds previous length, or previous holder's road is cut
-    game.players[prevHolder].hasLongestRoad = false;
-    game.players[prevHolder].victoryPoints -= 2;
+  } else {
     game.longestRoadPlayer = null;
     game.longestRoadLength = 4;
-    game.players.forEach(player => {
-      player.hasLongestRoad = false;
-    });
   }
 }
 
@@ -2172,57 +2229,48 @@ export function updateLongestRoad(game) {
  * - Worth 2 Victory Points
  */
 function updateLargestArmy(game) {
-  // Find the maximum knights played among all players
-  const maxKnights = Math.max(...game.players.map(p => p.knightsPlayed));
-  
-  // Must have at least 3 knights to claim largest army
-  if (maxKnights < 3) {
-    return;
+  const previousHolder = game.largestArmyPlayer;
+  const previousAwardedPlayers = new Set(
+    game.players
+      .map((player, index) => (player.hasLargestArmy ? index : null))
+      .filter(index => index !== null)
+  );
+  if (previousHolder !== null) {
+    previousAwardedPlayers.add(previousHolder);
   }
-  
-  // Find all players with the maximum knights
-  const playersWithMax = game.players
-    .map((p, idx) => ({ playerIndex: idx, knights: p.knightsPlayed }))
-    .filter(p => p.knights === maxKnights);
-  
-  // Check if current holder still has the max (they keep it on ties)
-  const currentHolderHasMax = game.largestArmyPlayer !== null && 
-    game.players[game.largestArmyPlayer].knightsPlayed === maxKnights;
-  
-  if (currentHolderHasMax) {
-    // Current holder keeps it, but update the stored size
-    game.largestArmySize = maxKnights;
-    return;
+
+  const maxKnights = Math.max(...game.players.map(player => player.knightsPlayed));
+  const tiedLeaders = maxKnights >= 3
+    ? game.players
+      .map((player, index) => ({ index, knights: player.knightsPlayed }))
+      .filter(entry => entry.knights === maxKnights)
+      .map(entry => entry.index)
+    : [];
+
+  let newHolder = null;
+  if (tiedLeaders.length === 1) {
+    newHolder = tiedLeaders[0];
+  } else if (tiedLeaders.length > 1 && previousHolder !== null && tiedLeaders.includes(previousHolder)) {
+    newHolder = previousHolder;
   }
-  
-  // If only one player has max, they get it
-  if (playersWithMax.length === 1) {
-    const newHolder = playersWithMax[0].playerIndex;
-    
-    // New player takes largest army
-    if (game.largestArmyPlayer !== null) {
-      game.players[game.largestArmyPlayer].hasLargestArmy = false;
-      game.players[game.largestArmyPlayer].victoryPoints -= 2;
-    }
-    
-    game.largestArmyPlayer = newHolder;
-    game.largestArmySize = maxKnights;
+
+  previousAwardedPlayers.forEach(index => {
+    game.players[index].victoryPoints -= 2;
+  });
+  game.players.forEach(player => {
+    player.hasLargestArmy = false;
+  });
+
+  if (newHolder !== null) {
     game.players[newHolder].hasLargestArmy = true;
     game.players[newHolder].victoryPoints += 2;
-    
-    checkWinner(game);
-  } else if (playersWithMax.length > 1 && game.largestArmyPlayer !== null && 
-             !currentHolderHasMax) {
-    // Tie between multiple players and current holder is NOT one of them
-    // Current holder loses it, but no one gets it (disputed)
-    game.players[game.largestArmyPlayer].hasLargestArmy = false;
-    game.players[game.largestArmyPlayer].victoryPoints -= 2;
-    game.largestArmyPlayer = null;
+    game.largestArmyPlayer = newHolder;
     game.largestArmySize = maxKnights;
-    
     checkWinner(game);
+  } else {
+    game.largestArmyPlayer = null;
+    game.largestArmySize = 2;
   }
-  // If tie and no current holder, no one gets it (stays null)
 }
 
 // ============================================================================

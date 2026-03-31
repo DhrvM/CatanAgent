@@ -268,7 +268,7 @@ function TradeModal({ socket, gameState, myPlayer, isMyTurn, onClose, addNotific
           <div className="trade-actions">
             <button className="accept-btn" onClick={handleAcceptTrade}>✓ Accept</button>
             <button className="decline-btn" onClick={handleDeclineTrade}>✗ Decline</button>
-            {pendingTrade.to === gameState.myIndex && (
+            {(pendingTrade.to === undefined || pendingTrade.to === gameState.myIndex) && (
               <button type="button" className="counter-offer-btn" onClick={() => setShowCounterForm(true)}>
                 ↩ Counter offer
               </button>
