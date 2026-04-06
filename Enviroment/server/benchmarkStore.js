@@ -27,6 +27,7 @@ const STORE_FILES = {
   runs: 'runs',
   games: 'games',
   tasks: 'tasks',
+  pendingLongTermTasks: 'pending-long-term-tasks',
   telemetry: 'telemetry',
   snapshots: 'snapshots',
 };
@@ -119,6 +120,7 @@ export class BenchmarkStore {
     this.runs = new Map();
     this.games = new Map();
     this.tasks = new Map();
+    this.pendingLongTermTasks = new Map();
     this.telemetry = new Map();
     this.snapshots = {
       updatedAt: null,
@@ -138,6 +140,7 @@ export class BenchmarkStore {
       this.#loadCollection(this.dirMap.runs, this.runs),
       this.#loadCollection(this.dirMap.games, this.games),
       this.#loadCollection(this.dirMap.tasks, this.tasks),
+      this.#loadCollection(this.dirMap.pendingLongTermTasks, this.pendingLongTermTasks),
       this.#loadCollection(this.dirMap.telemetry, this.telemetry),
     ]);
     await this.#loadSnapshot();
@@ -179,6 +182,14 @@ export class BenchmarkStore {
 
   async #persistTask(task) {
     await this.#writeJson(path.join(this.dirMap.tasks, `${task.id}.json`), task);
+  }
+
+  async #persistPendingLongTermTask(task) {
+    await this.#writeJson(path.join(this.dirMap.pendingLongTermTasks, `${task.id}.json`), task);
+  }
+
+  async #deletePendingLongTermTask(id) {
+    await fsp.unlink(path.join(this.dirMap.pendingLongTermTasks, `${id}.json`)).catch(() => {});
   }
 
   async #persistTelemetry(gameId) {
@@ -253,6 +264,7 @@ export class BenchmarkStore {
     this.runs.clear();
     this.games.clear();
     this.tasks.clear();
+    this.pendingLongTermTasks.clear();
     this.telemetry.clear();
     this.snapshots = {
       updatedAt: null,
@@ -267,6 +279,7 @@ export class BenchmarkStore {
       this.#clearJsonFiles(this.dirMap.runs),
       this.#clearJsonFiles(this.dirMap.games),
       this.#clearJsonFiles(this.dirMap.tasks),
+      this.#clearJsonFiles(this.dirMap.pendingLongTermTasks),
       this.#clearJsonFiles(this.dirMap.telemetry),
       this.#clearJsonFiles(this.dirMap.snapshots),
     ]);
@@ -549,6 +562,59 @@ export class BenchmarkStore {
     ]);
     await this.rebuildSnapshots();
     return taskResult;
+  }
+
+  async createPendingLongTermTask(payload = {}) {
+    const definition = getTaskDefinition(payload.taskId);
+    const id = payload.id || uuidv4();
+    const pendingTask = {
+      id,
+      runId: payload.runId || null,
+      benchmarkId: payload.benchmarkId || null,
+      baselineAgentId: payload.baselineAgentId || null,
+      gameId: payload.gameId || null,
+      taskId: payload.taskId,
+      taskName: definition?.name || payload.taskName || payload.taskId,
+      taskCategory: definition?.category || payload.taskCategory || null,
+      difficulty: definition?.difficulty || payload.difficulty || 'unknown',
+      playerKey: payload.playerKey || null,
+      playerId: payload.playerId || null,
+      playerName: payload.playerName || null,
+      agentId: payload.agentId || null,
+      agentVersion: payload.agentVersion || null,
+      startingSeat: payload.startingSeat ?? 0,
+      mapLayoutId: payload.mapLayoutId || null,
+      opponentPolicySet: payload.opponentPolicySet || null,
+      scenarioTags: sortScenarioTags(payload.scenarioTags || []),
+      selectedOptionId: payload.selectedOptionId || null,
+      decisionTurn: payload.decisionTurn ?? null,
+      decisionTurnCount: payload.decisionTurnCount ?? null,
+      horizonTurns: payload.horizonTurns ?? null,
+      snapshot: payload.snapshot || null,
+      evaluationContext: payload.evaluationContext || null,
+      metadata: payload.metadata || {},
+      createdAt: payload.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    this.pendingLongTermTasks.set(id, pendingTask);
+    await this.#persistPendingLongTermTask(pendingTask);
+    return pendingTask;
+  }
+
+  listPendingLongTermTasks(filters = {}) {
+    return [...this.pendingLongTermTasks.values()].filter(task => {
+      if (filters.gameId && task.gameId !== filters.gameId) return false;
+      if (filters.taskId && task.taskId !== filters.taskId) return false;
+      if (filters.playerId && task.playerId !== filters.playerId) return false;
+      if (filters.playerKey && task.playerKey !== filters.playerKey) return false;
+      return true;
+    });
+  }
+
+  async removePendingLongTermTask(id) {
+    this.pendingLongTermTasks.delete(id);
+    await this.#deletePendingLongTermTask(id);
   }
 
   collectFilters() {
@@ -1032,6 +1098,39 @@ export class BenchmarkStore {
     );
     const overallScore = computeWeightedMetricScore(normalizedMetrics);
 
+    const fullTaskBreakdown = BENCHMARK_TASKS.map(definition => {
+      const task = entity.taskBreakdown.get(definition.id) || {
+        taskId: definition.id,
+        taskName: definition.name,
+        taskCategory: definition.category,
+        difficulty: definition.difficulty,
+        attempts: 0,
+        successes: 0,
+        scores: [],
+        latencies: [],
+        failureReasons: new Map(),
+      };
+
+      return {
+        taskId: task.taskId,
+        taskName: task.taskName,
+        taskCategory: task.taskCategory,
+        difficulty: task.difficulty,
+        description: definition.description,
+        scoring: definition.scoring,
+        attempts: task.attempts,
+        successes: task.successes,
+        successRate: safeDivide(task.successes, task.attempts),
+        averageLatencyMs: average(task.latencies),
+        averageScore: average(task.scores),
+        implemented: task.attempts > 0,
+        commonFailureReasons: [...task.failureReasons.entries()]
+          .sort((left, right) => right[1] - left[1])
+          .slice(0, 3)
+          .map(([reason, count]) => ({ reason, count })),
+      };
+    });
+
     return {
       entityType: entity.entityType,
       entityKey: entity.entityKey,
@@ -1072,21 +1171,7 @@ export class BenchmarkStore {
       consistencyVariance: secondaryMetrics.consistencyVariance,
       sliceCount: finalizedSlices.length,
       slices: finalizedSlices,
-      taskBreakdown: [...entity.taskBreakdown.values()].map(task => ({
-        taskId: task.taskId,
-        taskName: task.taskName,
-        taskCategory: task.taskCategory,
-        difficulty: task.difficulty,
-        attempts: task.attempts,
-        successes: task.successes,
-        successRate: safeDivide(task.successes, task.attempts),
-        averageLatencyMs: average(task.latencies),
-        averageScore: average(task.scores),
-        commonFailureReasons: [...task.failureReasons.entries()]
-          .sort((left, right) => right[1] - left[1])
-          .slice(0, 3)
-          .map(([reason, count]) => ({ reason, count })),
-      })),
+      taskBreakdown: fullTaskBreakdown,
       games: entity.games.sort((left, right) => String(right.finishedAt || '').localeCompare(String(left.finishedAt || ''))),
       taskResults: entity.taskResults.sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || ''))),
     };

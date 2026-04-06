@@ -23,6 +23,7 @@ import cors from 'cors';
 import { v4 as uuidv4 } from 'uuid';
 import * as GameLogic from './gameLogic.js';
 import { benchmarkStore } from './benchmarkStore.js';
+import { computeGoalAwareResourceMetrics, PLAN_COSTS, RESOURCE_TYPES } from './resourceHeuristics.js';
 import {
   BENCHMARK_TASKS,
   BENCHMARK_WEIGHTS,
@@ -369,6 +370,20 @@ function roadPlacementPriorityScore(score = {}) {
   );
 }
 
+function bestSettlementPlanScore(game, playerId) {
+  const settlementOptions = Object.keys(game.vertices || {})
+    .filter(vKey => GameLogic.canPlaceSettlement(game, playerId, vKey, false).valid)
+    .map(vKey => settlementPlacementScore(scoreVertexPlacement(game, vKey)));
+  return settlementOptions.length ? Math.max(...settlementOptions) : 0;
+}
+
+function bestRoadPlanScore(game, playerId) {
+  const roadOptions = Object.keys(game.edges || {})
+    .filter(eKey => GameLogic.canPlaceRoad(game, playerId, eKey, false, null).valid)
+    .map(eKey => roadPlacementPriorityScore(scoreRoadPlacement(game, eKey, null)));
+  return roadOptions.length ? Math.max(...roadOptions) : 0;
+}
+
 function cityUpgradeScore(game, vKey) {
   const baseScore = scoreVertexPlacement(game, vKey);
   return clamp01(
@@ -390,6 +405,131 @@ function buildSettlementEvaluationContext(game, playerId) {
   return {
     legalOptions,
   };
+}
+
+function bestCityPlanScore(game, playerId) {
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  if (playerIndex === -1) return 0;
+
+  const player = game.players[playerIndex];
+  if (!player?.cities) return 0;
+
+  const cityOptions = Object.entries(game.vertices || {})
+    .filter(([, vertex]) => vertex?.building === 'settlement' && vertex.owner === playerIndex)
+    .map(([vKey]) => cityUpgradeScore(game, vKey));
+
+  return cityOptions.length ? Math.max(...cityOptions) : 0;
+}
+
+function countMissingResources(resources = {}, cost = {}) {
+  return RESOURCE_TYPES.reduce((sum, resource) => (
+    sum + Math.max(0, (Number(cost[resource]) || 0) - (Number(resources[resource]) || 0))
+  ), 0);
+}
+
+function normalizeResourceSnapshot(resources = {}) {
+  return Object.fromEntries(RESOURCE_TYPES.map(resource => [resource, Math.max(0, Number(resources[resource]) || 0)]));
+}
+
+function buildPlanDecisionData(game, playerId, resourcesOverride = null) {
+  const player = game.players.find(candidate => candidate.id === playerId);
+  if (!player) return [];
+
+  const resources = normalizeResourceSnapshot(resourcesOverride || player.resources || {});
+  const devDeckAvailable = Array.isArray(game.devDeck) ? game.devDeck.length > 0 : true;
+  const roadPlanScore = bestRoadPlanScore(game, playerId);
+  const settlementPlanScore = bestSettlementPlanScore(game, playerId);
+  const cityPlanScore = bestCityPlanScore(game, playerId);
+  const devCardPlanScore = devDeckAvailable
+    ? Math.max(0.2, 0.55 * (0.5 + (cityPlanScore * 0.5)))
+    : 0;
+
+  return [
+    { id: 'road', type: 'road', cost: PLAN_COSTS.road, baseScore: roadPlanScore },
+    { id: 'settlement', type: 'settlement', cost: PLAN_COSTS.settlement, baseScore: settlementPlanScore },
+    { id: 'city', type: 'city', cost: PLAN_COSTS.city, baseScore: cityPlanScore },
+    { id: 'devCard', type: 'devCard', cost: PLAN_COSTS.devCard, baseScore: devCardPlanScore },
+  ].map(plan => {
+    const missingCount = countMissingResources(resources, plan.cost);
+    return {
+      ...plan,
+      resources,
+      missingCount,
+      affordable: missingCount === 0,
+      effectiveScore: plan.baseScore / (1 + (0.75 * missingCount)),
+    };
+  });
+}
+
+function scoreSaveOption(planDecisionData = [], resourceTotal = 0) {
+  const bestFutureScore = Math.max(0, ...planDecisionData
+    .filter(plan => plan.missingCount > 0)
+    .map(plan => plan.effectiveScore));
+  return clamp01(Math.max(0.35, bestFutureScore + (resourceTotal > 7 ? 0.1 : 0)));
+}
+
+function buildBuildVsSaveTaskPayload(game, playerId, selectedOptionId) {
+  const player = game.players.find(candidate => candidate.id === playerId);
+  if (!player) return null;
+
+  const planDecisionData = buildPlanDecisionData(game, playerId);
+  const options = planDecisionData
+    .filter(plan => plan.affordable && plan.baseScore > 0)
+    .map(plan => ({
+      id: plan.id,
+      score: clamp01(plan.baseScore),
+    }));
+
+  options.push({
+    id: 'save',
+    score: scoreSaveOption(planDecisionData, sumResources(player.resources)),
+  });
+
+  if (!options.some(option => option.id === selectedOptionId)) return null;
+
+  return {
+    taskId: 'build-vs-save-decision',
+    selectedOptionId,
+    evaluationContext: {
+      options,
+    },
+  };
+}
+
+function buildDevelopmentCardPurchaseTaskPayload(game, playerId, selectedOptionId) {
+  const planDecisionData = buildPlanDecisionData(game, playerId);
+  const devCardPlan = planDecisionData.find(plan => plan.id === 'devCard');
+  const player = game.players.find(candidate => candidate.id === playerId);
+  if (!player || !devCardPlan) return null;
+
+  if (!devCardPlan.affordable && selectedOptionId === 'buy-dev-card') return null;
+  if (!devCardPlan.affordable && selectedOptionId === 'skip-dev-card') return null;
+
+  const alternativeScore = Math.max(
+    scoreSaveOption(planDecisionData, sumResources(player.resources)),
+    ...planDecisionData
+      .filter(plan => plan.id !== 'devCard' && plan.affordable)
+      .map(plan => plan.baseScore)
+  );
+
+  return {
+    taskId: 'development-card-purchase-decision',
+    selectedOptionId,
+    evaluationContext: {
+      options: [
+        { id: 'buy-dev-card', score: clamp01(devCardPlan.baseScore) },
+        { id: 'skip-dev-card', score: clamp01(alternativeScore) },
+      ],
+    },
+  };
+}
+
+function buildGoalAwarePlanCandidates(game, playerId) {
+  return buildPlanDecisionData(game, playerId).map(plan => ({
+    type: plan.type,
+    cost: plan.cost,
+    basePlanWeight: plan.baseScore,
+  })).filter(plan => plan.basePlanWeight > 0);
 }
 
 function buildBuildPrioritizationTaskPayload(game, playerId, selectedOptionId) {
@@ -464,26 +604,20 @@ function scoreRoadPlacement(game, edgeKeyValue, lastSettlement) {
   };
 }
 
-function scoreResourceNeed(player = {}) {
-  const resources = player.resources || {};
-  const values = Object.values(resources).map(value => Number(value) || 0);
-  const total = values.reduce((sum, value) => sum + value, 0) || 1;
-  return Object.fromEntries(
-    Object.entries(resources).map(([resource, amount]) => [resource, Math.max(0, 1 - ((Number(amount) || 0) / total))])
-  );
-}
-
 function hasRequiredResources(player = {}, cost = {}) {
   return Object.entries(cost).every(([resource, amount]) => (Number(player.resources?.[resource]) || 0) >= amount);
 }
 
-function scoreResourceSurplus(player = {}) {
-  const resources = player.resources || {};
-  const values = Object.values(resources).map(value => Number(value) || 0);
-  const maxValue = Math.max(1, ...values);
-  return Object.fromEntries(
-    Object.entries(resources).map(([resource, amount]) => [resource, Math.max(0, (Number(amount) || 0) / maxValue)])
-  );
+function scoreResourceNeed(game, playerId) {
+  const player = game.players.find(candidate => candidate.id === playerId);
+  if (!player) return {};
+  return computeGoalAwareResourceMetrics(player.resources || {}, buildGoalAwarePlanCandidates(game, playerId)).need;
+}
+
+function scoreResourceSurplus(game, playerId) {
+  const player = game.players.find(candidate => candidate.id === playerId);
+  if (!player) return {};
+  return computeGoalAwareResourceMetrics(player.resources || {}, buildGoalAwarePlanCandidates(game, playerId)).surplus;
 }
 
 function identifyLeaderIndex(game) {
@@ -607,8 +741,8 @@ function tradeBundleValue(bundle = {}, scoreMap = {}) {
 }
 
 function scoreTradeOfferForPlayer(game, fromPlayer, toPlayer, offer = {}, request = {}) {
-  const needMap = scoreResourceNeed(fromPlayer);
-  const surplusMap = scoreResourceSurplus(fromPlayer);
+  const needMap = scoreResourceNeed(game, fromPlayer?.id);
+  const surplusMap = scoreResourceSurplus(game, fromPlayer?.id);
   const giveCost = tradeBundleValue(offer, surplusMap);
   const requestValue = tradeBundleValue(request, needMap);
   const leaderIndex = identifyLeaderIndex(game);
@@ -646,8 +780,8 @@ function buildRoadPlacementTaskPayload(game, playerId, edgeKeyValue, isSetup, la
 function buildBankTradeTaskPayload(game, playerId, giveResource, giveAmount, getResource) {
   const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
   const player = game.players[playerIndex];
-  const needMap = scoreResourceNeed(player);
-  const surplusMap = scoreResourceSurplus(player);
+  const needMap = scoreResourceNeed(game, playerId);
+  const surplusMap = scoreResourceSurplus(game, playerId);
   const candidateOptions = [];
 
   Object.keys(player.resources || {}).forEach(resourceToGive => {
@@ -754,6 +888,509 @@ function buildRoadEvaluationContext(game, playerId, lastSettlement) {
   };
 }
 
+function ensureBenchmarkTaskState(game) {
+  if (!game.benchmarkTaskState) {
+    game.benchmarkTaskState = {
+      turnDecisions: {},
+      turnCounts: {},
+      longTermStats: {},
+      yearOfPlenty: {},
+    };
+  }
+  return game.benchmarkTaskState;
+}
+
+function getCurrentBenchmarkTurnKey(game) {
+  return `${game.id}:${Number(game.roundNumber) || 0}:${Number(game.currentPlayerIndex) || 0}`;
+}
+
+function getPlayerTurnDecisionState(game, playerId) {
+  const state = ensureBenchmarkTaskState(game);
+  const turnKey = getCurrentBenchmarkTurnKey(game);
+  if (!state.turnDecisions[playerId] || state.turnDecisions[playerId].turnKey !== turnKey) {
+    state.turnDecisions[playerId] = {
+      turnKey,
+      buildVsSaveRecorded: false,
+      devPurchaseRecorded: false,
+      knightRecorded: false,
+      roadBuildingRecorded: false,
+      longestRoadRecorded: false,
+      largestArmyRecorded: false,
+    };
+  }
+  return state.turnDecisions[playerId];
+}
+
+function markTurnDecisionRecorded(game, playerId, key) {
+  getPlayerTurnDecisionState(game, playerId)[key] = true;
+}
+
+function hasTurnDecisionRecorded(game, playerId, key) {
+  return Boolean(getPlayerTurnDecisionState(game, playerId)[key]);
+}
+
+function incrementBenchmarkTurnCount(game, playerId) {
+  const state = ensureBenchmarkTaskState(game);
+  state.turnCounts[playerId] = (state.turnCounts[playerId] || 0) + 1;
+  getPlayerTurnDecisionState(game, playerId);
+  return state.turnCounts[playerId];
+}
+
+function getBenchmarkTurnCount(game, playerId) {
+  return ensureBenchmarkTaskState(game).turnCounts[playerId] || 0;
+}
+
+function incrementLongTermStat(game, playerId, statKey, amount = 1) {
+  const state = ensureBenchmarkTaskState(game);
+  if (!state.longTermStats[playerId]) {
+    state.longTermStats[playerId] = {
+      roadsBuilt: 0,
+      devCardsBought: 0,
+    };
+  }
+  state.longTermStats[playerId][statKey] = (state.longTermStats[playerId][statKey] || 0) + amount;
+}
+
+function getLongTermStatSnapshot(game, playerId) {
+  const stats = ensureBenchmarkTaskState(game).longTermStats[playerId] || {};
+  return {
+    roadsBuilt: stats.roadsBuilt || 0,
+    devCardsBought: stats.devCardsBought || 0,
+  };
+}
+
+function getPlayerIndex(game, playerId) {
+  return game.players.findIndex(candidate => candidate.id === playerId);
+}
+
+function scoreKnightPlayOption(game, playerId) {
+  const playerIndex = getPlayerIndex(game, playerId);
+  if (playerIndex === -1) return null;
+  const player = game.players[playerIndex];
+  const robberHex = game.robber ? game.hexes?.[game.robber] : null;
+  const selfOnRobber = game.robber ? (GameLogic.getPlayersOnHex(game, game.robber, null) || []).includes(playerIndex) : false;
+  const robberThreatLevel = selfOnRobber ? clamp01((DICE_PROBABILITY_WEIGHTS[robberHex?.number] || 3) / 5) : 0.15;
+  const needMap = scoreResourceNeed(game, playerId);
+  const resourceNeed = Math.max(0, ...Object.values(needMap));
+  const bestOpponentKnights = Math.max(0, ...game.players
+    .filter(candidate => candidate.id !== playerId)
+    .map(candidate => candidate.knightsPlayed || 0));
+  const armyProgressRatio = clamp01((player.knightsPlayed + 1) / Math.max(3, bestOpponentKnights + 1));
+  const safeHandSize = clamp01(sumResources(player.resources) / 10);
+  return clamp01(
+    (robberThreatLevel * 0.4)
+    + (resourceNeed * 0.3)
+    + (armyProgressRatio * 0.2)
+    + (safeHandSize * 0.1)
+  );
+}
+
+function buildKnightDecisionTaskPayload(game, playerId, selectedOptionId) {
+  const playNowScore = scoreKnightPlayOption(game, playerId);
+  if (playNowScore === null) return null;
+  const holdScore = clamp01(0.25 + ((1 - playNowScore) * 0.75));
+  return {
+    taskId: 'knight-card-playing-decision',
+    selectedOptionId,
+    evaluationContext: {
+      options: [
+        { id: 'play-now', score: playNowScore },
+        { id: 'hold', score: holdScore },
+      ],
+    },
+  };
+}
+
+function scoreRoadBuildingPlayOption(game, playerId) {
+  const playerIndex = getPlayerIndex(game, playerId);
+  if (playerIndex === -1) return null;
+  const player = game.players[playerIndex];
+  const roadScores = Object.keys(game.edges || {})
+    .filter(eKey => GameLogic.canPlaceRoad(game, playerId, eKey, false, null).valid)
+    .map(eKey => roadPlacementPriorityScore(scoreRoadPlacement(game, eKey, null)))
+    .sort((left, right) => right - left);
+  const topTwoAverage = roadScores.length
+    ? roadScores.slice(0, 2).reduce((sum, value) => sum + value, 0) / Math.min(2, roadScores.length)
+    : 0;
+  const bestOpponentRoad = Math.max(0, ...game.players
+    .filter(candidate => candidate.id !== playerId)
+    .map(candidate => candidate.roadLength || 0));
+  const longestRoadLeverage = clamp01(((player.roadLength || 0) + 2 - bestOpponentRoad + 3) / 6);
+  return clamp01((topTwoAverage * 0.7) + (longestRoadLeverage * 0.3));
+}
+
+function buildRoadBuildingDecisionTaskPayload(game, playerId, selectedOptionId) {
+  const playNowScore = scoreRoadBuildingPlayOption(game, playerId);
+  if (playNowScore === null) return null;
+  return {
+    taskId: 'road-building-card-playing-decision',
+    selectedOptionId,
+    evaluationContext: {
+      options: [
+        { id: 'play-now', score: playNowScore },
+        { id: 'hold', score: clamp01(0.3 + ((1 - playNowScore) * 0.7)) },
+      ],
+    },
+  };
+}
+
+function countDistinctPositiveResources(resources = {}) {
+  return RESOURCE_TYPES.filter(resource => (Number(resources[resource]) || 0) > 0).length;
+}
+
+function getBestAffordablePlanScoreFromData(planDecisionData = []) {
+  return Math.max(0, ...planDecisionData.filter(plan => plan.affordable).map(plan => plan.baseScore));
+}
+
+function buildPlanDecisionDataFromResources(game, playerId, resources) {
+  return buildPlanDecisionData(game, playerId, resources);
+}
+
+function buildYearOfPlentyChoiceTaskPayload(game, playerId, chosenResources = []) {
+  const state = ensureBenchmarkTaskState(game).yearOfPlenty[playerId];
+  if (!state || chosenResources.length !== 2) return null;
+  const snapshotResources = normalizeResourceSnapshot(state.resources);
+  const needMap = state.needMap || {};
+  const beforePlanData = buildPlanDecisionDataFromResources(game, playerId, snapshotResources);
+  const beforeBest = getBestAffordablePlanScoreFromData(beforePlanData);
+
+  const options = [];
+  RESOURCE_TYPES.forEach((left, leftIndex) => {
+    RESOURCE_TYPES.slice(leftIndex).forEach(right => {
+      const afterResources = normalizeResourceSnapshot(snapshotResources);
+      afterResources[left] += 1;
+      afterResources[right] += 1;
+      const afterPlanData = buildPlanDecisionDataFromResources(game, playerId, afterResources);
+      const afterBest = getBestAffordablePlanScoreFromData(afterPlanData);
+      const buildUnlock = clamp01(Math.max(0, afterBest - beforeBest) + (afterBest > beforeBest ? afterBest : 0));
+      const scarcity = clamp01(((needMap[left] || 0) + (needMap[right] || 0)) / 2);
+      const diversityGain = clamp01((countDistinctPositiveResources(afterResources) - countDistinctPositiveResources(snapshotResources)) / 2);
+      options.push({
+        id: [left, right].sort().join('+'),
+        score: clamp01((buildUnlock * 0.5) + (scarcity * 0.35) + (diversityGain * 0.15)),
+      });
+    });
+  });
+
+  return {
+    taskId: 'year-of-plenty-card-playing-decision',
+    selectedOptionId: [...chosenResources].sort().join('+'),
+    evaluationContext: {
+      options,
+    },
+  };
+}
+
+function buildMonopolyTaskPayload(game, playerId, selectedResource) {
+  const player = game.players.find(candidate => candidate.id === playerId);
+  if (!player) return null;
+  const snapshotResources = normalizeResourceSnapshot(player.resources);
+  const needMap = scoreResourceNeed(game, playerId);
+  const beforeBest = getBestAffordablePlanScoreFromData(buildPlanDecisionDataFromResources(game, playerId, snapshotResources));
+  const totalsByResource = Object.fromEntries(RESOURCE_TYPES.map(resource => [resource, 0]));
+  game.players
+    .filter(candidate => candidate.id !== playerId)
+    .forEach(candidate => {
+      RESOURCE_TYPES.forEach(resource => {
+        totalsByResource[resource] += Number(candidate.resources?.[resource]) || 0;
+      });
+    });
+  const maxHolding = Math.max(1, ...Object.values(totalsByResource));
+  const options = RESOURCE_TYPES.map(resource => {
+    const afterResources = normalizeResourceSnapshot(snapshotResources);
+    afterResources[resource] += totalsByResource[resource];
+    const afterBest = getBestAffordablePlanScoreFromData(buildPlanDecisionDataFromResources(game, playerId, afterResources));
+    const estimatedOpponentHoldings = clamp01(totalsByResource[resource] / maxHolding);
+    const personalResourceNeed = clamp01(needMap[resource] || 0);
+    const buildUnlock = clamp01(Math.max(0, afterBest - beforeBest) + (afterBest > beforeBest ? afterBest : 0));
+    return {
+      id: resource,
+      score: clamp01((estimatedOpponentHoldings * 0.55) + (personalResourceNeed * 0.3) + (buildUnlock * 0.15)),
+    };
+  });
+
+  return {
+    taskId: 'monopoly-card-playing-decision',
+    selectedOptionId: selectedResource,
+    evaluationContext: {
+      options,
+    },
+  };
+}
+
+function enumerateDiscardChoices(resources = {}, discardCount) {
+  const normalized = normalizeResourceSnapshot(resources);
+  const options = [];
+
+  function walk(index, remaining, current) {
+    if (index === RESOURCE_TYPES.length - 1) {
+      const resource = RESOURCE_TYPES[index];
+      if (remaining <= normalized[resource]) {
+        const bundle = {
+          ...current,
+          [resource]: remaining,
+        };
+        options.push(bundle);
+      }
+      return;
+    }
+
+    const resource = RESOURCE_TYPES[index];
+    const maxDiscard = Math.min(remaining, normalized[resource]);
+    for (let amount = 0; amount <= maxDiscard; amount += 1) {
+      walk(index + 1, remaining - amount, {
+        ...current,
+        [resource]: amount,
+      });
+    }
+  }
+
+  walk(0, discardCount, {});
+  return options;
+}
+
+function scoreRetainedHandValue(game, playerId, resources) {
+  const planData = buildPlanDecisionDataFromResources(game, playerId, resources);
+  const bestAffordable = getBestAffordablePlanScoreFromData(planData);
+  const bestFuture = Math.max(0, ...planData.map(plan => plan.effectiveScore));
+  const diversity = clamp01(countDistinctPositiveResources(resources) / RESOURCE_TYPES.length);
+  return clamp01((bestAffordable * 0.55) + (bestFuture * 0.3) + (diversity * 0.15));
+}
+
+function buildDiscardTaskPayload(game, playerId, discardedResources = {}) {
+  const player = game.players.find(candidate => candidate.id === playerId);
+  if (!player) return null;
+  const discardCount = Math.floor(sumResources(player.resources) / 2);
+  const discardOptions = enumerateDiscardChoices(player.resources, discardCount).map(bundle => {
+    const retainedResources = normalizeResourceSnapshot(player.resources);
+    RESOURCE_TYPES.forEach(resource => {
+      retainedResources[resource] = Math.max(0, retainedResources[resource] - (bundle[resource] || 0));
+    });
+    const id = RESOURCE_TYPES.map(resource => `${resource}:${bundle[resource] || 0}`).join('|');
+    return {
+      id,
+      discardedResources: bundle,
+      retainedHandValue: scoreRetainedHandValue(game, playerId, retainedResources),
+    };
+  });
+
+  return {
+    taskId: 'discard-strategy-after-seven',
+    selectedDiscardId: RESOURCE_TYPES.map(resource => `${resource}:${discardedResources[resource] || 0}`).join('|'),
+    evaluationContext: {
+      discardOptions,
+    },
+  };
+}
+
+function getLongestRoadRaceSnapshot(game, playerId) {
+  const playerIndex = getPlayerIndex(game, playerId);
+  if (playerIndex === -1) return null;
+  const opponents = game.players
+    .map((player, index) => ({ player, index }))
+    .filter(entry => entry.player.id !== playerId);
+  const target = opponents.sort((left, right) => (right.player.roadLength || 0) - (left.player.roadLength || 0))[0] || null;
+  return {
+    playerRoadLength: game.players[playerIndex].roadLength || 0,
+    targetPlayerId: target?.player.id || null,
+    targetRoadLength: target?.player.roadLength || 0,
+    playerHasLongestRoad: Boolean(game.players[playerIndex].hasLongestRoad),
+    targetHasLongestRoad: Boolean(target?.player?.hasLongestRoad),
+    playerVisibleScore: getPlayerVisibleScore(game.players[playerIndex]),
+    stats: getLongTermStatSnapshot(game, playerId),
+  };
+}
+
+function shouldConsiderLongestRoadRace(game, playerId) {
+  const snapshot = getLongestRoadRaceSnapshot(game, playerId);
+  if (!snapshot) return false;
+  return snapshot.playerRoadLength >= 3 || snapshot.targetRoadLength >= 4 || bestRoadPlanScore(game, playerId) > 0;
+}
+
+function getLargestArmyRaceSnapshot(game, playerId) {
+  const playerIndex = getPlayerIndex(game, playerId);
+  if (playerIndex === -1) return null;
+  const opponents = game.players
+    .map((player, index) => ({ player, index }))
+    .filter(entry => entry.player.id !== playerId);
+  const target = opponents.sort((left, right) => (right.player.knightsPlayed || 0) - (left.player.knightsPlayed || 0))[0] || null;
+  return {
+    playerKnights: game.players[playerIndex].knightsPlayed || 0,
+    targetPlayerId: target?.player.id || null,
+    targetKnights: target?.player.knightsPlayed || 0,
+    playerHasLargestArmy: Boolean(game.players[playerIndex].hasLargestArmy),
+    targetHasLargestArmy: Boolean(target?.player?.hasLargestArmy),
+    playerVisibleScore: getPlayerVisibleScore(game.players[playerIndex]),
+    resourceTotal: sumResources(game.players[playerIndex].resources),
+    stats: getLongTermStatSnapshot(game, playerId),
+  };
+}
+
+function shouldConsiderLargestArmyRace(game, playerId) {
+  const snapshot = getLargestArmyRaceSnapshot(game, playerId);
+  if (!snapshot) return false;
+  const player = game.players.find(candidate => candidate.id === playerId);
+  return snapshot.playerKnights >= 1 || snapshot.targetKnights >= 2 || hasRequiredResources(player, PLAN_COSTS.devCard);
+}
+
+async function maybeCreatePendingLongTermEpisode(game, playerId, taskId, selectedOptionId) {
+  if (!game?.benchmark?.enabled) return null;
+  const player = game.players.find(candidate => candidate.id === playerId);
+  if (!player) return null;
+  const existing = benchmarkStore.listPendingLongTermTasks({ gameId: game.id, playerId, taskId });
+  if (existing.length) return existing[0];
+
+  const stateSnapshot = taskId === 'decide-pursue-longest-road'
+    ? getLongestRoadRaceSnapshot(game, playerId)
+    : getLargestArmyRaceSnapshot(game, playerId);
+  if (!stateSnapshot) return null;
+
+  return benchmarkStore.createPendingLongTermTask({
+    runId: game.benchmark.runId,
+    benchmarkId: game.benchmark.benchmarkId,
+    baselineAgentId: game.benchmark.baselineAgentId,
+    gameId: game.id,
+    taskId,
+    playerKey: player.benchmarkPlayerKey,
+    playerId,
+    playerName: player.name,
+    agentId: player.benchmarkAgentId || player.name,
+    agentVersion: player.benchmarkAgentVersion || 'unknown',
+    startingSeat: player.benchmarkStartingSeat ?? 0,
+    mapLayoutId: game.benchmark.mapLayoutId,
+    opponentPolicySet: game.benchmark.opponentPolicySet,
+    scenarioTags: game.benchmark.scenarioTags || [],
+    selectedOptionId,
+    decisionTurn: game.roundNumber ?? 0,
+    decisionTurnCount: getBenchmarkTurnCount(game, playerId),
+    horizonTurns: 4,
+    snapshot: stateSnapshot,
+  });
+}
+
+function buildLongestRoadFinalizationPayload(game, pendingTask) {
+  const player = game.players.find(candidate => candidate.id === pendingTask.playerId);
+  if (!player) return null;
+  const target = game.players.find(candidate => candidate.id === pendingTask.snapshot?.targetPlayerId) || null;
+  const selfGrowth = Math.max(0, (player.roadLength || 0) - (pendingTask.snapshot?.playerRoadLength || 0));
+  const targetGrowth = Math.max(0, (target?.roadLength || 0) - (pendingTask.snapshot?.targetRoadLength || 0));
+  const roadsBuiltDelta = Math.max(0, (getLongTermStatSnapshot(game, pendingTask.playerId).roadsBuilt || 0) - (pendingTask.snapshot?.stats?.roadsBuilt || 0));
+  const opponentProgressThreat = clamp01((((pendingTask.snapshot?.targetRoadLength || 0) - (pendingTask.snapshot?.playerRoadLength || 0)) + ((pendingTask.snapshot?.targetHasLongestRoad ? 1 : 0) * 2) + 2) / 8);
+  const blockingEffectiveness = clamp01(0.45 + (selfGrowth * 0.18) - (targetGrowth * 0.12) + (player.hasLongestRoad ? 0.25 : 0));
+  const selfRoadSynergy = clamp01((selfGrowth / 4) + (player.hasLongestRoad ? 0.35 : 0));
+  const resourceCost = roadsBuiltDelta <= 0
+    ? (pendingTask.selectedOptionId === 'defer' ? 1 : 0.5)
+    : clamp01((selfGrowth + (player.hasLongestRoad ? 1 : 0.5)) / roadsBuiltDelta);
+  const pursueScore = clamp01(
+    (blockingEffectiveness * 0.45)
+    + (opponentProgressThreat * 0.3)
+    + (selfRoadSynergy * 0.15)
+    + (resourceCost * 0.1)
+  );
+  const deferScore = clamp01(
+    ((1 - opponentProgressThreat) * 0.45)
+    + ((1 - Math.min(1, targetGrowth / 3)) * 0.25)
+    + ((1 - Math.min(1, selfGrowth / 3)) * 0.15)
+    + ((roadsBuiltDelta === 0 ? 1 : 0.2) * 0.15)
+  );
+
+  return {
+    taskId: pendingTask.taskId,
+    selectedOptionId: pendingTask.selectedOptionId,
+    evaluationContext: {
+      options: [
+        { id: 'pursue', score: pursueScore },
+        { id: 'defer', score: deferScore },
+      ],
+    },
+    explanation: `Longest Road episode finalized after ${pendingTask.horizonTurns} turns using threat, growth, and efficiency deltas.`,
+  };
+}
+
+function buildLargestArmyFinalizationPayload(game, pendingTask) {
+  const player = game.players.find(candidate => candidate.id === pendingTask.playerId);
+  if (!player) return null;
+  const target = game.players.find(candidate => candidate.id === pendingTask.snapshot?.targetPlayerId) || null;
+  const devCardsBoughtDelta = Math.max(0, (getLongTermStatSnapshot(game, pendingTask.playerId).devCardsBought || 0) - (pendingTask.snapshot?.stats?.devCardsBought || 0));
+  const knightsGained = Math.max(0, (player.knightsPlayed || 0) - (pendingTask.snapshot?.playerKnights || 0));
+  const gapStart = (pendingTask.snapshot?.playerKnights || 0) - (pendingTask.snapshot?.targetKnights || 0);
+  const gapEnd = (player.knightsPlayed || 0) - (target?.knightsPlayed || 0);
+  const knightCardRatio = devCardsBoughtDelta <= 0 ? (knightsGained > 0 ? 1 : 0) : clamp01(knightsGained / devCardsBoughtDelta);
+  const opponentArmyGap = clamp01(((gapEnd - gapStart) + 3) / 6);
+  const resourceDelta = sumResources(player.resources) - (pendingTask.snapshot?.resourceTotal || 0);
+  const devCardAffordability = clamp01(0.6 + (resourceDelta / 10) - (devCardsBoughtDelta * 0.08));
+  const vpDelta = getPlayerVisibleScore(player) - (pendingTask.snapshot?.playerVisibleScore || 0);
+  const vpImpact = clamp01((vpDelta + (player.hasLargestArmy ? 1 : 0)) / 3);
+  const pursueScore = clamp01(
+    (knightCardRatio * 0.4)
+    + (opponentArmyGap * 0.3)
+    + (devCardAffordability * 0.2)
+    + (vpImpact * 0.1)
+  );
+  const deferScore = clamp01(
+    ((1 - opponentArmyGap) * 0.35)
+    + ((1 - knightCardRatio) * 0.25)
+    + ((resourceDelta >= 0 ? 1 : 0.4) * 0.2)
+    + ((player.hasLargestArmy ? 0 : 1) * 0.2)
+  );
+
+  return {
+    taskId: pendingTask.taskId,
+    selectedOptionId: pendingTask.selectedOptionId,
+    evaluationContext: {
+      options: [
+        { id: 'pursue', score: pursueScore },
+        { id: 'defer', score: deferScore },
+      ],
+    },
+    explanation: `Largest Army episode finalized after ${pendingTask.horizonTurns} turns using knight conversion, race gap, and VP impact.`,
+  };
+}
+
+async function maybeFinalizeLongTermTasks(game) {
+  if (!game?.benchmark?.enabled) return;
+  const pendingTasks = benchmarkStore.listPendingLongTermTasks({ gameId: game.id });
+  for (const pendingTask of pendingTasks) {
+    const player = game.players.find(candidate => candidate.id === pendingTask.playerId);
+    if (!player) continue;
+    const turnsElapsed = getBenchmarkTurnCount(game, pendingTask.playerId) - (pendingTask.decisionTurnCount || 0);
+    const horizonMet = turnsElapsed >= (pendingTask.horizonTurns || 4);
+    const decisiveResolution = pendingTask.taskId === 'decide-pursue-longest-road'
+      ? Boolean(player.hasLongestRoad)
+      : Boolean(player.hasLargestArmy);
+    const shouldFinalize = horizonMet || decisiveResolution || game.phase === 'finished';
+    if (!shouldFinalize) continue;
+
+    const payload = pendingTask.taskId === 'decide-pursue-longest-road'
+      ? buildLongestRoadFinalizationPayload(game, pendingTask)
+      : buildLargestArmyFinalizationPayload(game, pendingTask);
+    if (!payload) continue;
+
+    await benchmarkStore.recordTaskResult({
+      runId: pendingTask.runId,
+      benchmarkId: pendingTask.benchmarkId,
+      baselineAgentId: pendingTask.baselineAgentId,
+      taskId: pendingTask.taskId,
+      playerKey: pendingTask.playerKey,
+      playerName: pendingTask.playerName,
+      agentId: pendingTask.agentId,
+      agentVersion: pendingTask.agentVersion,
+      startingSeat: pendingTask.startingSeat,
+      mapLayoutId: pendingTask.mapLayoutId,
+      opponentPolicySet: pendingTask.opponentPolicySet,
+      scenarioTags: pendingTask.scenarioTags,
+      gameId: pendingTask.gameId,
+      turnNumber: game.roundNumber ?? null,
+      response: {
+        selectedOptionId: payload.selectedOptionId,
+      },
+      evaluationContext: payload.evaluationContext,
+      explanation: payload.explanation,
+    });
+    await benchmarkStore.removePendingLongTermTask(pendingTask.id);
+  }
+}
+
 async function persistBenchmarkTaskPayload(game, playerId, benchmarkTaskPayload, timing = {}) {
   if (!game?.benchmark?.enabled) return null;
   if (!benchmarkTaskPayload) return null;
@@ -832,6 +1469,7 @@ async function recordBenchmarkAction(game, playerId, actionName, payload, result
     await recordBenchmarkTaskFromAction(game, playerId, benchmarkTaskPayload, telemetryRecord || {});
   }
   if (game.phase === 'finished') {
+    await maybeFinalizeLongTermTasks(game);
     await benchmarkStore.completeGame(game);
   }
 }
@@ -845,6 +1483,8 @@ function maybeStartBenchmarkTurn(game) {
   if (!game?.benchmark?.enabled) return;
   const currentPlayer = game.players?.[game.currentPlayerIndex];
   if (!currentPlayer) return;
+  incrementBenchmarkTurnCount(game, currentPlayer.id);
+  void maybeFinalizeLongTermTasks(game);
   benchmarkStore.startTurn(game, currentPlayer.id);
 }
 
@@ -1155,12 +1795,15 @@ io.on('connection', (socket) => {
     }
     
     const game = games.get(playerInfo.gameId);
+    const benchmarkTaskPayload = game?.benchmark?.enabled
+      ? buildDiscardTaskPayload(game, playerInfo.playerId, resources)
+      : null;
     const result = GameLogic.discardCards(game, playerInfo.playerId, resources);
     
     if (result.success) {
       broadcastGameState(playerInfo.gameId);
     }
-    await recordBenchmarkAction(game, playerInfo.playerId, 'discardCards', { resources }, result, requestStartedAt);
+    await recordBenchmarkAction(game, playerInfo.playerId, 'discardCards', { resources }, result, requestStartedAt, benchmarkTaskPayload);
     callback(result);
   });
   
@@ -1246,6 +1889,7 @@ io.on('connection', (socket) => {
             evaluationContext: buildSettlementEvaluationContext(game, playerInfo.playerId),
           }
           : [
+            buildBuildVsSaveTaskPayload(game, playerInfo.playerId, 'settlement'),
             buildBuildPrioritizationTaskPayload(game, playerInfo.playerId, 'settlement'),
             {
               taskId: 'settlement-location-selection',
@@ -1273,6 +1917,9 @@ io.on('connection', (socket) => {
       requestStartedAt,
       benchmarkTaskPayload
     );
+    if (result.success && game?.benchmark?.enabled && !isSetup) {
+      markTurnDecisionRecorded(game, playerInfo.playerId, 'buildVsSaveRecorded');
+    }
     callback(result);
   });
   
@@ -1286,8 +1933,13 @@ io.on('connection', (socket) => {
     }
     
     const game = games.get(playerInfo.gameId);
+    const countsAsSpendDecision = !isSetup && (game?.freeRoads || 0) === 0;
     const benchmarkTaskPayload = game?.benchmark?.enabled
-      ? buildRoadPlacementTaskPayload(game, playerInfo.playerId, edgeKey, Boolean(isSetup), lastSettlement)
+      ? [
+        countsAsSpendDecision ? buildBuildVsSaveTaskPayload(game, playerInfo.playerId, 'road') : null,
+        countsAsSpendDecision ? buildBuildPrioritizationTaskPayload(game, playerInfo.playerId, 'road') : null,
+        buildRoadPlacementTaskPayload(game, playerInfo.playerId, edgeKey, Boolean(isSetup), lastSettlement),
+      ].filter(Boolean)
       : null;
     const result = GameLogic.placeRoad(game, playerInfo.playerId, edgeKey, isSetup, lastSettlement);
     
@@ -1307,6 +1959,16 @@ io.on('connection', (socket) => {
       requestStartedAt,
       benchmarkTaskPayload
     );
+    if (result.success && game?.benchmark?.enabled) {
+      incrementLongTermStat(game, playerInfo.playerId, 'roadsBuilt', 1);
+      if (countsAsSpendDecision) {
+        markTurnDecisionRecorded(game, playerInfo.playerId, 'buildVsSaveRecorded');
+        if (!hasTurnDecisionRecorded(game, playerInfo.playerId, 'longestRoadRecorded') && shouldConsiderLongestRoadRace(game, playerInfo.playerId)) {
+          await maybeCreatePendingLongTermEpisode(game, playerInfo.playerId, 'decide-pursue-longest-road', 'pursue');
+          markTurnDecisionRecorded(game, playerInfo.playerId, 'longestRoadRecorded');
+        }
+      }
+    }
     callback(result);
   });
   
@@ -1321,7 +1983,10 @@ io.on('connection', (socket) => {
     
     const game = games.get(playerInfo.gameId);
     const benchmarkTaskPayload = game?.benchmark?.enabled
-      ? buildBuildPrioritizationTaskPayload(game, playerInfo.playerId, 'city')
+      ? [
+        buildBuildVsSaveTaskPayload(game, playerInfo.playerId, 'city'),
+        buildBuildPrioritizationTaskPayload(game, playerInfo.playerId, 'city'),
+      ].filter(Boolean)
       : null;
     const result = GameLogic.upgradeToCity(game, playerInfo.playerId, vertexKey);
     
@@ -1341,6 +2006,9 @@ io.on('connection', (socket) => {
       requestStartedAt,
       benchmarkTaskPayload
     );
+    if (result.success && game?.benchmark?.enabled) {
+      markTurnDecisionRecorded(game, playerInfo.playerId, 'buildVsSaveRecorded');
+    }
     callback(result);
   });
   
@@ -1358,12 +2026,27 @@ io.on('connection', (socket) => {
     }
     
     const game = games.get(playerInfo.gameId);
+    const benchmarkTaskPayload = game?.benchmark?.enabled
+      ? [
+        buildBuildVsSaveTaskPayload(game, playerInfo.playerId, 'devCard'),
+        buildDevelopmentCardPurchaseTaskPayload(game, playerInfo.playerId, 'buy-dev-card'),
+      ].filter(Boolean)
+      : null;
     const result = GameLogic.buyDevCard(game, playerInfo.playerId);
     
     if (result.success) {
       broadcastGameState(playerInfo.gameId);
     }
-    await recordBenchmarkAction(game, playerInfo.playerId, 'buyDevCard', {}, result, requestStartedAt);
+    await recordBenchmarkAction(game, playerInfo.playerId, 'buyDevCard', {}, result, requestStartedAt, benchmarkTaskPayload);
+    if (result.success && game?.benchmark?.enabled) {
+      incrementLongTermStat(game, playerInfo.playerId, 'devCardsBought', 1);
+      markTurnDecisionRecorded(game, playerInfo.playerId, 'buildVsSaveRecorded');
+      markTurnDecisionRecorded(game, playerInfo.playerId, 'devPurchaseRecorded');
+      if (!hasTurnDecisionRecorded(game, playerInfo.playerId, 'largestArmyRecorded') && shouldConsiderLargestArmyRace(game, playerInfo.playerId)) {
+        await maybeCreatePendingLongTermEpisode(game, playerInfo.playerId, 'decide-pursue-largest-army', 'pursue');
+        markTurnDecisionRecorded(game, playerInfo.playerId, 'largestArmyRecorded');
+      }
+    }
     callback(result);
   });
   
@@ -1377,6 +2060,21 @@ io.on('connection', (socket) => {
     }
     
     const game = games.get(playerInfo.gameId);
+    let benchmarkTaskPayload = null;
+    if (game?.benchmark?.enabled) {
+      if (cardType === 'knight') {
+        benchmarkTaskPayload = buildKnightDecisionTaskPayload(game, playerInfo.playerId, 'play-now');
+      } else if (cardType === 'roadBuilding') {
+        benchmarkTaskPayload = buildRoadBuildingDecisionTaskPayload(game, playerInfo.playerId, 'play-now');
+      } else if (cardType === 'monopoly') {
+        benchmarkTaskPayload = buildMonopolyTaskPayload(game, playerInfo.playerId, params?.resource);
+      } else if (cardType === 'yearOfPlenty') {
+        ensureBenchmarkTaskState(game).yearOfPlenty[playerInfo.playerId] = {
+          resources: normalizeResourceSnapshot(game.players.find(candidate => candidate.id === playerInfo.playerId)?.resources || {}),
+          needMap: scoreResourceNeed(game, playerInfo.playerId),
+        };
+      }
+    }
     const result = GameLogic.playDevCard(game, playerInfo.playerId, cardType, params);
     
     if (result.success) {
@@ -1386,7 +2084,25 @@ io.on('connection', (socket) => {
       });
       broadcastGameState(playerInfo.gameId);
     }
-    await recordBenchmarkAction(game, playerInfo.playerId, 'playDevCard', { cardType, params }, result, requestStartedAt);
+    await recordBenchmarkAction(game, playerInfo.playerId, 'playDevCard', { cardType, params }, result, requestStartedAt, benchmarkTaskPayload);
+    if (result.success && game?.benchmark?.enabled) {
+      if (cardType === 'knight') {
+        markTurnDecisionRecorded(game, playerInfo.playerId, 'knightRecorded');
+        if (!hasTurnDecisionRecorded(game, playerInfo.playerId, 'largestArmyRecorded') && shouldConsiderLargestArmyRace(game, playerInfo.playerId)) {
+          await maybeCreatePendingLongTermEpisode(game, playerInfo.playerId, 'decide-pursue-largest-army', 'pursue');
+          markTurnDecisionRecorded(game, playerInfo.playerId, 'largestArmyRecorded');
+        }
+      }
+      if (cardType === 'roadBuilding') {
+        markTurnDecisionRecorded(game, playerInfo.playerId, 'roadBuildingRecorded');
+        if (!hasTurnDecisionRecorded(game, playerInfo.playerId, 'longestRoadRecorded') && shouldConsiderLongestRoadRace(game, playerInfo.playerId)) {
+          await maybeCreatePendingLongTermEpisode(game, playerInfo.playerId, 'decide-pursue-longest-road', 'pursue');
+          markTurnDecisionRecorded(game, playerInfo.playerId, 'longestRoadRecorded');
+        }
+      }
+    } else if (!result.success && game?.benchmark?.enabled && cardType === 'yearOfPlenty') {
+      delete ensureBenchmarkTaskState(game).yearOfPlenty[playerInfo.playerId];
+    }
     callback(result);
   });
   
@@ -1400,12 +2116,27 @@ io.on('connection', (socket) => {
     }
     
     const game = games.get(playerInfo.gameId);
+    const previousPicksRemaining = game.yearOfPlentyPicks;
     const result = GameLogic.yearOfPlentyPick(game, playerInfo.playerId, resource);
     
     if (result.success) {
       broadcastGameState(playerInfo.gameId);
     }
-    await recordBenchmarkAction(game, playerInfo.playerId, 'yearOfPlentyPick', { resource }, result, requestStartedAt);
+    let benchmarkTaskPayload = null;
+    if (result.success && game?.benchmark?.enabled) {
+      const taskState = ensureBenchmarkTaskState(game);
+      const context = taskState.yearOfPlenty[playerInfo.playerId] || {
+        resources: normalizeResourceSnapshot(game.players.find(candidate => candidate.id === playerInfo.playerId)?.resources || {}),
+        needMap: scoreResourceNeed(game, playerInfo.playerId),
+      };
+      context.selectedResources = [...(context.selectedResources || []), resource];
+      taskState.yearOfPlenty[playerInfo.playerId] = context;
+      if (previousPicksRemaining === 1 || context.selectedResources.length >= 2) {
+        benchmarkTaskPayload = buildYearOfPlentyChoiceTaskPayload(game, playerInfo.playerId, context.selectedResources.slice(0, 2));
+        delete taskState.yearOfPlenty[playerInfo.playerId];
+      }
+    }
+    await recordBenchmarkAction(game, playerInfo.playerId, 'yearOfPlentyPick', { resource }, result, requestStartedAt, benchmarkTaskPayload);
     callback(result);
   });
   
@@ -1620,6 +2351,24 @@ io.on('connection', (socket) => {
     }
     
     const game = games.get(playerInfo.gameId);
+    const player = game?.players?.find(candidate => candidate.id === playerInfo.playerId);
+    const canAffordDevCard = Boolean(player && hasRequiredResources(player, PLAN_COSTS.devCard) && ((Array.isArray(game?.devDeck) ? game.devDeck.length > 0 : true)));
+    const canHoldKnightDecision = Boolean(player && !game?.devCardPlayedThisTurn && player.developmentCards?.includes('knight'));
+    const canHoldRoadBuildingDecision = Boolean(player && !game?.devCardPlayedThisTurn && player.developmentCards?.includes('roadBuilding'));
+    const shouldRecordBuildSave = game?.benchmark?.enabled && !hasTurnDecisionRecorded(game, playerInfo.playerId, 'buildVsSaveRecorded');
+    const shouldRecordDevPurchase = game?.benchmark?.enabled && canAffordDevCard && !hasTurnDecisionRecorded(game, playerInfo.playerId, 'devPurchaseRecorded');
+    const shouldRecordKnightHold = game?.benchmark?.enabled && canHoldKnightDecision && !hasTurnDecisionRecorded(game, playerInfo.playerId, 'knightRecorded');
+    const shouldRecordRoadBuildingHold = game?.benchmark?.enabled && canHoldRoadBuildingDecision && !hasTurnDecisionRecorded(game, playerInfo.playerId, 'roadBuildingRecorded');
+    const shouldRecordLongestRoadDefer = game?.benchmark?.enabled && shouldConsiderLongestRoadRace(game, playerInfo.playerId) && !hasTurnDecisionRecorded(game, playerInfo.playerId, 'longestRoadRecorded');
+    const shouldRecordLargestArmyDefer = game?.benchmark?.enabled && shouldConsiderLargestArmyRace(game, playerInfo.playerId) && !hasTurnDecisionRecorded(game, playerInfo.playerId, 'largestArmyRecorded');
+    const benchmarkTaskPayload = game?.benchmark?.enabled
+      ? [
+        shouldRecordBuildSave ? buildBuildVsSaveTaskPayload(game, playerInfo.playerId, 'save') : null,
+        shouldRecordDevPurchase ? buildDevelopmentCardPurchaseTaskPayload(game, playerInfo.playerId, 'skip-dev-card') : null,
+        shouldRecordKnightHold ? buildKnightDecisionTaskPayload(game, playerInfo.playerId, 'hold') : null,
+        shouldRecordRoadBuildingHold ? buildRoadBuildingDecisionTaskPayload(game, playerInfo.playerId, 'hold') : null,
+      ].filter(Boolean)
+      : null;
     const result = GameLogic.endTurn(game, playerInfo.playerId);
     
     if (result.success) {
@@ -1634,7 +2383,29 @@ io.on('connection', (socket) => {
       maybeStartBenchmarkTurn(game);
       broadcastGameState(playerInfo.gameId);
     }
-    await recordBenchmarkAction(game, playerInfo.playerId, 'endTurn', {}, result, requestStartedAt);
+    await recordBenchmarkAction(game, playerInfo.playerId, 'endTurn', {}, result, requestStartedAt, benchmarkTaskPayload);
+    if (result.success && game?.benchmark?.enabled) {
+      if (shouldRecordBuildSave) {
+        markTurnDecisionRecorded(game, playerInfo.playerId, 'buildVsSaveRecorded');
+      }
+      if (shouldRecordDevPurchase) {
+        markTurnDecisionRecorded(game, playerInfo.playerId, 'devPurchaseRecorded');
+      }
+      if (shouldRecordKnightHold) {
+        markTurnDecisionRecorded(game, playerInfo.playerId, 'knightRecorded');
+      }
+      if (shouldRecordRoadBuildingHold) {
+        markTurnDecisionRecorded(game, playerInfo.playerId, 'roadBuildingRecorded');
+      }
+      if (shouldRecordLongestRoadDefer) {
+        await maybeCreatePendingLongTermEpisode(game, playerInfo.playerId, 'decide-pursue-longest-road', 'defer');
+        markTurnDecisionRecorded(game, playerInfo.playerId, 'longestRoadRecorded');
+      }
+      if (shouldRecordLargestArmyDefer) {
+        await maybeCreatePendingLongTermEpisode(game, playerInfo.playerId, 'decide-pursue-largest-army', 'defer');
+        markTurnDecisionRecorded(game, playerInfo.playerId, 'largestArmyRecorded');
+      }
+    }
     callback(result);
   });
   

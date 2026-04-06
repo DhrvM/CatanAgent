@@ -441,9 +441,11 @@ function ObservationDeck({ serverUrl, onBack }) {
                       {detail.taskBreakdown.map(task => (
                         <div key={task.taskId} className="deck-list__item">
                           <strong>{task.taskName}</strong>
+                          <span>{`${task.taskCategory} | ${task.difficulty}`}</span>
                           <span>{task.attempts} attempts</span>
-                          <span>{formatPercent(task.successRate)} success</span>
+                          <span>{task.attempts > 0 ? `${formatPercent(task.successRate)} success` : 'No evaluations yet'}</span>
                           <span>{task.averageScore?.toFixed(2) ?? 'N/A'} avg rubric score</span>
+                          <span>{task.scoring || task.description || 'No rubric description'}</span>
                           <span>{task.commonFailureReasons?.[0]?.reason || 'No common failure reason'}</span>
                         </div>
                       ))}
@@ -503,7 +505,8 @@ function ObservationDeck({ serverUrl, onBack }) {
                   <div key={task.id} className="deck-list__item">
                     <strong>{task.name}</strong>
                     <span>{task.id}</span>
-                    <span>{task.category}</span>
+                    <span>{`${task.category} | ${task.difficulty}`}</span>
+                    <span>{task.scoring}</span>
                   </div>
                 ))}
               </div>
