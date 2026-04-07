@@ -370,6 +370,94 @@ function roadPlacementPriorityScore(score = {}) {
   );
 }
 
+function getRoadOwnerAtEdge(game, edgeKeyValue) {
+  const parsed = parseEdgeKey(edgeKeyValue);
+  if (!parsed) return null;
+  const equivalents = GameLogic.getEquivalentEdges(parsed.q, parsed.r, parsed.dir);
+  for (const equivalent of equivalents) {
+    const equivalentKey = GameLogic.edgeKey(equivalent.q, equivalent.r, equivalent.dir);
+    const edge = game.edges?.[equivalentKey];
+    if (edge?.road) {
+      return edge.owner;
+    }
+  }
+  return null;
+}
+
+function areEdgeKeysEquivalent(leftEdgeKey, rightEdgeKey) {
+  const left = parseEdgeKey(leftEdgeKey);
+  const right = parseEdgeKey(rightEdgeKey);
+  if (!left || !right) return false;
+  return GameLogic.getEquivalentEdges(left.q, left.r, left.dir)
+    .some(candidate => candidate.q === right.q && candidate.r === right.r && candidate.dir === right.dir);
+}
+
+function getBuildingAtVertex(game, vKey) {
+  for (const [vertexKey, vertex] of Object.entries(game.vertices || {})) {
+    if (!vertex?.building) continue;
+    if (GameLogic.areVerticesEqual(vertexKey, vKey)) {
+      return {
+        key: vertexKey,
+        ...vertex,
+      };
+    }
+  }
+  return null;
+}
+
+function isOpenSettlementVertex(game, vKey) {
+  if (getBuildingAtVertex(game, vKey)) return false;
+  const adjacentVertices = GameLogic.getAdjacentVertices(vKey, game.hexes);
+  return !adjacentVertices.some(adjacentVertex => getBuildingAtVertex(game, adjacentVertex));
+}
+
+function scoreRoadBlockingValue(game, playerId, edgeKeyValue) {
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  if (playerIndex === -1) return 0;
+
+  const endpoints = getEdgeVerticesFromKey(edgeKeyValue);
+  const opponents = game.players
+    .map((player, index) => ({ player, index }))
+    .filter(({ index }) => index !== playerIndex);
+
+  let bestBlockingScore = 0;
+
+  endpoints.forEach(vKey => {
+    const building = getBuildingAtVertex(game, vKey);
+    if (building?.owner === playerIndex) return;
+
+    const vertexEdges = GameLogic.getVertexEdges(vKey);
+    const remainingOpenBranches = vertexEdges.filter(candidateEdge => (
+      !areEdgeKeysEquivalent(candidateEdge, edgeKeyValue) && getRoadOwnerAtEdge(game, candidateEdge) === null
+    )).length;
+    const branchScarcity = clamp01((2 - remainingOpenBranches) / 2);
+    const openSettlementValue = isOpenSettlementVertex(game, vKey) ? 1 : 0.35;
+
+    opponents.forEach(({ player, index }) => {
+      if (building && building.owner !== index) return;
+
+      const opponentAdjacentRoads = vertexEdges.filter(candidateEdge => getRoadOwnerAtEdge(game, candidateEdge) === index).length;
+      const opponentPresence = opponentAdjacentRoads + (building?.owner === index ? 1 : 0);
+      if (opponentPresence <= 0) return;
+
+      const vertexOpportunity = building?.owner === index ? 0.8 : openSettlementValue;
+      const roadPressure = clamp01(((player.roadLength || 0) + (player.hasLongestRoad ? 2 : 0)) / 8);
+      const presenceStrength = clamp01(opponentPresence / 2);
+
+      const blockingScore = clamp01(
+        (branchScarcity * 0.5)
+        + (vertexOpportunity * 0.3)
+        + (presenceStrength * 0.1)
+        + (roadPressure * 0.1)
+      );
+
+      bestBlockingScore = Math.max(bestBlockingScore, blockingScore);
+    });
+  });
+
+  return bestBlockingScore;
+}
+
 function bestSettlementPlanScore(game, playerId) {
   const settlementOptions = Object.keys(game.vertices || {})
     .filter(vKey => GameLogic.canPlaceSettlement(game, playerId, vKey, false).valid)
@@ -571,6 +659,7 @@ function buildBuildPrioritizationTaskPayload(game, playerId, selectedOptionId) {
 }
 
 function scoreRoadPlacement(game, edgeKeyValue, lastSettlement) {
+  const actingPlayerId = game.currentPlayer;
   const endpoints = getEdgeVerticesFromKey(edgeKeyValue);
   const forwardVertex = lastSettlement
     ? (endpoints.find(vKey => !GameLogic.areVerticesEqual(vKey, lastSettlement)) || endpoints[0] || null)
@@ -600,7 +689,7 @@ function scoreRoadPlacement(game, edgeKeyValue, lastSettlement) {
       + (forwardVertexScore.resourceDiversity * 0.3)
       + (forwardVertexScore.portSynergy * 0.2)
     ),
-    blockingValue: 0,
+    blockingValue: actingPlayerId ? scoreRoadBlockingValue(game, actingPlayerId, edgeKeyValue) : 0,
   };
 }
 
@@ -758,6 +847,30 @@ function scoreTradeOfferForPlayer(game, fromPlayer, toPlayer, offer = {}, reques
   };
 }
 
+function canPlayerFulfillTradeBundle(player, bundle = {}) {
+  return Object.entries(bundle || {}).every(([resource, amount]) => (
+    (player?.resources?.[resource] || 0) >= (Number(amount) || 0)
+  ));
+}
+
+function scoreTargetedTradePartner(game, fromPlayer, toPlayer, offer = {}, request = {}) {
+  const offerScore = scoreTradeOfferForPlayer(game, fromPlayer, toPlayer, offer, request);
+  const availabilityBonus = canPlayerFulfillTradeBundle(toPlayer, request) ? 0.25 : 0;
+  return {
+    id: toPlayer.id,
+    score: Math.max(
+      0,
+      Math.min(
+        1,
+        offerScore.selfGain + availabilityBonus - (offerScore.leaderHelpPenalty * 0.4)
+      )
+    ),
+    canFulfillRequest: canPlayerFulfillTradeBundle(toPlayer, request),
+    selfGain: offerScore.selfGain,
+    leaderHelpPenalty: offerScore.leaderHelpPenalty,
+  };
+}
+
 function buildRoadPlacementTaskPayload(game, playerId, edgeKeyValue, isSetup, lastSettlement) {
   const evaluationContext = isSetup
     ? buildRoadEvaluationContext(game, playerId, lastSettlement)
@@ -814,13 +927,13 @@ function buildBankTradeTaskPayload(game, playerId, giveResource, giveAmount, get
 function buildTradeProposalTaskPayload(game, playerId, offer, request, targetPlayerId) {
   const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
   const fromPlayer = game.players[playerIndex];
+  const possiblePartners = game.players.filter(candidate => candidate.id !== playerId);
   const recipients = targetPlayerId
     ? game.players.filter(candidate => candidate.id === targetPlayerId)
-    : game.players.filter(candidate => candidate.id !== playerId);
-  const scoredTargets = recipients.map(candidate => ({
-    id: candidate.id,
-    score: Math.max(0, Math.min(1, scoreTradeOfferForPlayer(game, fromPlayer, candidate, offer, request).selfGain + 0.25 - (scoreTradeOfferForPlayer(game, fromPlayer, candidate, offer, request).leaderHelpPenalty * 0.4))),
-  }));
+    : possiblePartners;
+  const scoredTargets = possiblePartners.map(candidate => (
+    scoreTargetedTradePartner(game, fromPlayer, candidate, offer, request)
+  ));
   const selectedTargetId = targetPlayerId || recipients[0]?.id || 'all-opponents';
   const selectedTarget = recipients.find(candidate => candidate.id === selectedTargetId) || recipients[0] || null;
 
@@ -976,12 +1089,10 @@ function scoreKnightPlayOption(game, playerId) {
     .filter(candidate => candidate.id !== playerId)
     .map(candidate => candidate.knightsPlayed || 0));
   const armyProgressRatio = clamp01((player.knightsPlayed + 1) / Math.max(3, bestOpponentKnights + 1));
-  const safeHandSize = clamp01(sumResources(player.resources) / 10);
   return clamp01(
-    (robberThreatLevel * 0.4)
-    + (resourceNeed * 0.3)
+    (robberThreatLevel * 0.45)
+    + (resourceNeed * 0.35)
     + (armyProgressRatio * 0.2)
-    + (safeHandSize * 0.1)
   );
 }
 

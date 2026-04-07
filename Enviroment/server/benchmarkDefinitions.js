@@ -51,7 +51,7 @@ export const BENCHMARK_TASKS = [
     category: 'shortTerm',
     difficulty: 'easy',
     description: 'Decide whether to play a Knight now instead of holding it.',
-    scoring: '0.40 robberThreatLevel + 0.30 resourceNeed + 0.20 armyProgressRatio + 0.10 safeHandSize',
+    scoring: '0.45 robberThreatLevel + 0.35 resourceNeed + 0.20 armyProgressRatio',
   },
   {
     id: 'year-of-plenty-card-playing-decision',

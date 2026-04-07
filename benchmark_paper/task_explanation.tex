@@ -1,0 +1,845 @@
+\documentclass[letter,  12 pt]{article}
+\usepackage{comment} % enables the use of multi-line comments (\ifx \fi) 
+\usepackage{lipsum} %This package just generates Lorem Ipsum filler text. 
+\usepackage{fullpage} % changes the margin
+\usepackage{commath}
+\usepackage{amsmath}
+\usepackage{mathtools}
+\usepackage[margin=0.75 in]{geometry}
+\usepackage{amssymb}
+\usepackage{setspace}
+\usepackage{listings}
+\usepackage{amsfonts}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{float}
+\usepackage{url}
+\usepackage{subcaption}
+\usepackage{courier}
+\usepackage{enumitem}
+\usepackage{ragged2e}
+\usepackage{fancyhdr}
+\usepackage{pgf,tikz}
+\usepackage{mathrsfs}
+\usetikzlibrary{automata,positioning,arrows.meta}
+\usetikzlibrary{arrows}
+\usetikzlibrary{calc}
+\usepackage{pgfplots}
+\setlist{noitemsep}
+
+\newcommand{\xlr}[2]{ #1 \left( #2 \right) }
+\newcommand*{\QEDA}{\hfill\ensuremath{\blacksquare}}
+\newcommand*{\QEDB}{\hfill\ensuremath{\square}}
+\newcommand{\fxlr}[3]{ #1 \left( #2, #3 \right) }
+\newcommand{\dcls}[2]{ \mathcal{#1}^{#2} }
+\newcommand{\opd}[3]{\left[\partial #1 / \partial #3 \right] #1 \left(#2\right)}
+\newcommand{\ad}[2]{\left(\mathrm{ad } #1 \right)^ #2}
+\newcommand{\es}{\enskip}
+\newcommand{\mcc}[1]{\mathcal{#1}}
+\newcommand{\mbb}[1]{\mathbb{#1}}
+\newcommand{\grad}[3]{\nabla^{#3} {#1} \left( #2 \right)}
+\newcommand{\hess}[2]{\nabla^2 {#1} \left( #2 \right)}
+
+\begin{document}
+
+\appendix
+
+\section{Benchmark Task Explanations}
+\label{app:benchmark-task-explanations}
+
+\subsection{Design Principles}
+
+The benchmark uses three families of tasks:
+\begin{itemize}
+    \item \textbf{Short-term tasks}: immediate tactical choices with direct board consequences.
+    \item \textbf{Medium-term tasks}: action prioritization and resource conversion decisions.
+    \item \textbf{Long-term tasks}: strategic race commitments whose value unfolds over several turns.
+\end{itemize}
+
+The main design goal is to compare decisions with the best legal alternative available at that moment (based on a heuristic approach), while keeping a threshold value to determine success or failure on the invidiual task.  
+This system rewards near-optimal play when several choices are reasonable, and avoids placing fail labels on decisions that were reasonable but not perfectly aligned with the benchmark heuristic. 
+
+\subsection{Shared Heuristic Building Blocks}
+\label{app:shared-heuristic-building-blocks}
+
+\subsubsection{Production expectancy}
+\label{app:production-expectancy}
+Some dice numbers have a higher probability of being rolled than others. Specifically, the probability weights are:
+\[
+2,12 \mapsto 1,\quad 3,11 \mapsto 2,\quad 4,10 \mapsto 3,\quad 5,9 \mapsto 4,\quad 6,8 \mapsto 5.
+\]
+7 is a number used for the robber and does not produce resources. To compute the expected value of the resources gained on the next turn from a current settlement vertex, 
+
+\[
+\texttt{productionWeight} = \sum \texttt{adjacent\_hex\_probability\_weights},
+\]
+\[
+\texttt{resourceProductionExpectancy} = \min\left(1, \frac{\texttt{productionWeight}}{15}\right).
+\]
+The denominator $15$ is the theoretical maximum because a vertex touches at most three hexes and the maximum per-hex weight is $5$.
+
+\subsubsection{Resource diversity}
+\label{app:resource-diversity}
+
+Each settlement vertex is adjacent to up to three hexes, which can produce up to three different resource types (\texttt{distinct\_adjacent\_resource\_types}).
+
+Resource diversity is defined as
+\[
+\texttt{resourceDiversity} = \min\left(1, \frac{\texttt{distinct\_adjacent\_resource\_types}}{3}\right).
+\]
+It matters because diverse starts reduce dependency on trading, improve build robustness, and lower the risk of bottlenecking on a single missing resource.
+
+\subsubsection{Expansion access}
+\label{app:expansion-access}
+In crowded boards, some settlement locations have more future legal road placements than others, which translates into better expansion potential and better survivability in case of unfavorable dice rolls or robber placements.
+For a settlement candidate, the evaluator computes incident edges, keeps only edges where a road could legally be placed, and defines
+\[
+\texttt{expansionAccess} = \min\left(1, \frac{\texttt{legal\_outgoing\_edges}}{3}\right).
+\]
+
+\subsubsection{Port synergy}
+\label{app:port-synergy}
+We use a discrete port heuristic:
+\begin{itemize}
+    \item specific $2{:}1$ port $\rightarrow 1.0$
+    \item generic $3{:}1$ port $\rightarrow 0.7$
+    \item no port $\rightarrow 0.0$
+\end{itemize}
+Ports matter because they convert surplus resources into missing ones; specific ports are usually stronger due to higher exchange efficiency.
+
+\subsubsection{Build plan base scores}
+\label{app:build-plan-base-scores}
+Several tasks construct plan candidates for \texttt{road}, \texttt{settlement}, \texttt{city}, and \texttt{devCard}. Each plan has a \texttt{baseScore}: the current heuristic value of that build family before applying affordability or distance-to-completion discounts. The shared definitions are:
+\begin{itemize}
+    \item \texttt{road}: the maximum score among currently legal road placements under the road-placement rubric from Section~\ref{app:task-road-placement-direction}.
+    \item \texttt{settlement}: the maximum score among currently legal settlement placements under the settlement rubric from Section~\ref{app:task-settlement-location-selection}.
+    \item \texttt{city}: the maximum score among legal city upgrades using $0.65 \cdot \texttt{production} + 0.10 \cdot \texttt{diversity} + 0.05 \cdot \texttt{portSynergy} + 0.20$.
+    \item \texttt{devCard}: $0$ if the development-card deck is unavailable; otherwise $\max(0.2,\ 0.55 \cdot (0.5 + 0.5 \cdot \texttt{cityPlanScore}))$, where \texttt{cityPlanScore} is the current best city-upgrade score computed with the city formula in this list.
+\end{itemize}
+
+\subsubsection{Resource need and surplus}
+\label{app:resource-need-and-surplus}
+Resource need and surplus are used in trade and bank-trade scoring. 
+
+For each candidate plan and resource $r$, \texttt{cost[r]} is the number of cards of resource $r$ required by the plan, \texttt{hand[r]} is the player's current count of resource $r$, and
+\[
+\texttt{missing}[r] = \max(0,\ \texttt{cost[r]} - \texttt{hand[r]}).
+\]
+\texttt{totalMissing} is the total number of resource cards still needed for the plan:
+\[
+\texttt{totalMissing} = \sum_r \texttt{missing}[r].
+\]
+Each plan is weighted according to how many resources are needed to achieve the plan:
+\[
+\texttt{planWeight} = \frac{\texttt{baseScore}}{1 + 0.75 \cdot \texttt{totalMissing}},
+\]
+where \texttt{baseScore} uses the shared build-plan definition from Section~\ref{app:build-plan-base-scores}.
+For each resource $r$,
+\[
+\texttt{need}[r] {+}{=} \texttt{planWeight} \cdot \frac{\texttt{missing}[r]}{\max(1,\texttt{totalMissing})}.
+\]
+For surplus, the evaluator reserves part of the current hand for weighted plans:
+\[
+\texttt{reserved}[r] = \min(\texttt{hand}[r], \sum \texttt{planWeight} \cdot \texttt{cost}[r]),
+\]
+then treats any unreserved cards of resource $r$ as surplus. The surplus map is normalized by the largest unreserved resource count in the hand:
+\[
+\texttt{surplus}[r] =
+\frac{\max(0, \texttt{hand}[r] - \texttt{reserved}[r])}
+{\max(1,\ \max_s \max(0,\ \texttt{hand}[s] - \texttt{reserved}[s]))},
+\]
+where $s$ ranges over all resource types. This avoids earlier failure modes where a resource such as ore looked important merely because it was scarce in hand, even when the board strongly favored early road and settlement expansion.
+
+\subsection{Task-by-Task Explanations}
+
+\subsubsection{\texttt{initial-settlement-location-selection}}
+\label{app:task-initial-settlement-location-selection}
+\[
+\text{Score} = 
+0.40 \cdot \texttt{production} +
+0.25 \cdot \texttt{diversity} +
+0.20 \cdot \texttt{expansionAccess} +
+0.15 \cdot \texttt{portSynergy}.
+\]
+
+This rubric uses the shared \texttt{production}, \texttt{diversity}, \texttt{expansionAccess}, and \texttt{portSynergy} definitions from Sections~\ref{app:production-expectancy}--\ref{app:port-synergy}. Production receives the highest weight because early income determines the opening trajectory, while the other terms preserve resource mix, expansion geometry, and port upside.
+The evaluator applies the rubric above to the shared settlement-quality quantities and clamps the final score to $[0,1]$. 
+
+\subsubsection{\texttt{settlement-location-selection}}
+\label{app:task-settlement-location-selection}
+This task uses the same scoring system as the initial-settlement task in Section~\ref{app:task-initial-settlement-location-selection}.
+The core difference between initial and subsequent location selection is that the initial settlement location selection task has a much higher weightage in the overall benchmark.
+This reflects the fact that the first settlement sets the foundation for the entire game and is a critical decision point, while subsequent settlement placements, although still important, are often more constrained by the existing board state and may have less impact on the overall game trajectory.
+
+\subsubsection{\texttt{road-placement-direction}}
+\label{app:task-road-placement-direction}
+\[
+\begin{aligned}
+\text{Score} &=
+0.50 \cdot \texttt{futureReachability}
++ 0.35 \cdot \texttt{reachableValue} \\
+&\quad + 0.15 \cdot \texttt{blockingValue}.
+\end{aligned}
+\]
+
+Where:
+\begin{itemize}
+    \item \texttt{futureReachability} is the forward vertex's onward legal-road count, clamped after division by $3$.
+    \item \texttt{reachableValue} is the forward vertex's weighted settlement value:
+    \[
+    \texttt{reachableValue}
+    = 0.5 \cdot \texttt{production}
+    + 0.3 \cdot \texttt{diversity}
+    + 0.2 \cdot \texttt{portSynergy}.
+    \]
+    \item \texttt{blockingValue} is the maximum blocking score over the candidate road's two endpoints and all opponents present at those endpoints.
+\end{itemize}
+For each endpoint-opponent pair, the evaluator ignores endpoints occupied by the acting player and endpoints occupied by a different opponent. It then computes:
+\[
+O_{\text{branch}} =
+\text{open incident edges excluding the candidate road},
+\]
+\[
+\texttt{branchScarcity}
+= \texttt{clamp}\left(\frac{2 - O_{\text{branch}}}{2}\right),
+\]
+\[
+\texttt{vertexOpportunity} =
+\begin{cases}
+0.8, & \text{if the opponent already owns the endpoint},\\
+1.0, & \text{if the endpoint is an open legal settlement site},\\
+0.35, & \text{otherwise}
+\end{cases}
+\]
+Let $R_{\text{adj}}$ be the number of opponent roads adjacent to the endpoint, $B_{\text{opp}}$ be $1$ if the opponent owns the endpoint and $0$ otherwise, $L_{\text{opp}}$ be the opponent's road length, and $H_{\text{opp}}$ be $1$ if the opponent has Longest Road and $0$ otherwise.
+\[
+\begin{aligned}
+\texttt{presenceStrength}
+&= \texttt{clamp}\left(
+\frac{R_{\text{adj}} + B_{\text{opp}}}{2}
+\right),
+\end{aligned}
+\]
+\[
+\begin{aligned}
+\texttt{roadPressure}
+&= \texttt{clamp}\left(
+\frac{L_{\text{opp}} + 2 \cdot H_{\text{opp}}}{8}
+\right).
+\end{aligned}
+\]
+The candidate blocking score is
+\[
+\begin{aligned}
+\texttt{candidateBlocking}
+&= \texttt{clamp}(
+0.50 \cdot \texttt{branchScarcity}
++ 0.30 \cdot \texttt{vertexOpportunity} \\
+&\quad + 0.10 \cdot \texttt{presenceStrength}
++ 0.10 \cdot \texttt{roadPressure}).
+\end{aligned}
+\]
+and \texttt{blockingValue} is the largest \texttt{candidateBlocking}, or $0$ if no opponent is present at either endpoint.
+The current implementation therefore recognizes common denial plays without running a full tactical search.
+Future reachability is weighted highest because roads are primarily investment moves. Reachable intersection value matters because roads derive value from the future settlement points they unlock. Blocking value is tactical and useful, but not every road is a denial move.
+
+\subsubsection{\texttt{knight-card-playing-decision}}
+\label{app:task-knight-card-playing-decision}
+Define:
+\begin{itemize}
+    \item \texttt{robberThreatLevel} measures how costly the current robber placement is for the player.
+    \item \texttt{resourceNeed} is the largest entry in the goal-aware resource-need map from Section~\ref{app:resource-need-and-surplus}.
+    \item \texttt{armyProgressRatio} measures progress toward Largest Army after playing the Knight:
+\end{itemize}
+\[
+\texttt{robberThreatLevel} =
+\begin{cases}
+\texttt{clamp}(\texttt{robberNumberWeight} / 5), & \text{if the robber blocks the player}\\
+0.15, & \text{otherwise}
+\end{cases}
+\]
+\[
+\texttt{resourceNeed} = \max_r \texttt{need}[r].
+\]
+This captures how valuable a Knight steal is when the player is missing an important resource for a near-term plan.
+Let $K_{\text{self}}$ be the player's current Knight count and $K_{\text{opp}}$ be the largest opponent Knight count. Then:
+\[
+\texttt{armyProgressRatio}
+=
+\texttt{clamp}\left(
+\frac{K_{\text{self}} + 1}
+{\max(3,\ K_{\text{opp}} + 1)}
+\right).
+\]
+
+Playing a Knight is most valuable when the robber is harming the player, when stealing a needed resource is likely to matter, and when Largest Army progress matters. The score does not include resource hand size because the Knight card has already been purchased and playing it does not reduce seven-risk for the player's resource hand.
+
+The live scores are
+\[
+\begin{aligned}
+\texttt{playNowScore} &= 0.45 \cdot \texttt{robberThreatLevel} + 0.35 \cdot \texttt{resourceNeed} \\
+&\quad + 0.20 \cdot \texttt{armyProgressRatio}
+\end{aligned}
+\]
+\[
+\texttt{holdScore} = \texttt{clamp}(0.25 + 0.75 \cdot (1 - \texttt{playNowScore})).
+\]
+
+\subsubsection{\texttt{build-vs-save-decision}}
+\label{app:task-build-vs-save-decision}
+This decision compares the expected value of spending now against preserving option value for later, incorporating immediate gains, future unlock potential, and seven-risk.
+The runtime constructs plan candidates for \texttt{road}, \texttt{settlement}, \texttt{city}, and \texttt{devCard}. Each plan uses the shared \texttt{baseScore} definitions from Section~\ref{app:build-plan-base-scores}, a cost vector, and a \texttt{missingCount}. \texttt{missingCount} is the total number of missing resource cards for the plan's cost vector. The discounted future value is
+\[
+\texttt{effectiveScore} = \frac{\texttt{baseScore}}{1 + 0.75 \cdot \texttt{missingCount}}.
+\]
+Each affordable build option gets \texttt{score = clamp(baseScore)}. The save alternative is
+\[
+B_{\text{eff}} = \texttt{best unaffordable effectiveScore}.
+\]
+\[
+\begin{aligned}
+\texttt{saveScore}
+&= \texttt{clamp}\Bigl(
+\max\bigl(0.35,\ B_{\text{eff}} + S_7\bigr)
+\Bigr),
+\end{aligned}
+\]
+where $S_7$ is \texttt{0.1} when \texttt{resourceTotal > 7} and $0$ otherwise.
+
+\subsubsection{\texttt{year-of-plenty-card-playing-decision}}
+\label{app:task-year-of-plenty-card-playing-decision}
+Year of Plenty is strongest when it immediately unlocks a valuable build, repairs bottlenecks, and improves future resource flexibility.
+The runtime waits until both chosen resources are known, then scores every unordered resource pair using the shared plan table from Section~\ref{app:build-plan-base-scores}. It computes \texttt{beforeBest} as the largest \texttt{baseScore} affordable before the card, or $0$ if no plan is affordable. It then simulates each candidate resource pair and computes \texttt{afterBest} the same way from the simulated post-card hand. For each pair:
+\[
+\begin{aligned}
+\texttt{buildUnlock}
+&= \texttt{clamp}\bigl(
+\max(0,\ \texttt{afterBest} - \texttt{beforeBest}) + U_{\text{imm}}
+\bigr),
+\end{aligned}
+\]
+where $U_{\text{imm}}$ is \texttt{afterBest} if \texttt{afterBest > beforeBest} and $0$ otherwise.
+\[
+\texttt{resourceScarcity}
+= \texttt{clamp}\left(\frac{\texttt{need}[r_1] + \texttt{need}[r_2]}{2}\right),
+\]
+where $r_1$ and $r_2$ are the two resources in the candidate pair.
+\[
+\texttt{longtermDiversityGain}
+= \texttt{clamp}\left(\frac{\texttt{distinctAfter} - \texttt{distinctBefore}}{2}\right).
+\]
+The final score is
+\[
+\begin{aligned}
+\texttt{Score}
+&= \texttt{clamp}(
+0.50 \cdot \texttt{buildUnlock}
++ 0.35 \cdot \texttt{resourceScarcity} \\
+&\quad + 0.15 \cdot \texttt{longtermDiversityGain}).
+\end{aligned}
+\]
+
+\subsubsection{\texttt{monopoly-card-playing-decision}}
+\label{app:task-monopoly-card-playing-decision}
+
+Monopoly is strongest when opponents likely hold a concentrated resource, the acting player currently needs that resource, and the resulting swing unlocks a build.
+For each candidate called resource, the server sums opponents' actual holdings of that resource, computes \texttt{beforeBest}, simulates adding all stolen copies, and recomputes \texttt{afterBest}. It then uses:
+\[
+\texttt{estimatedOpponentHoldings}
+= \texttt{clamp}\left(\frac{C_r}{C_{\max}}\right),
+\]
+where $C_r$ is the total opponent copies of the called resource and $C_{\max}$ is the largest opponent holding count across any resource.
+\[
+\texttt{personalResourceNeed} = \texttt{clamp}(\texttt{need}[r]).
+\]
+\[
+\begin{aligned}
+\texttt{buildUnlock}
+&= \texttt{clamp}\bigl(
+\max(0,\ \texttt{afterBest} - \texttt{beforeBest}) + U_{\text{imm}}
+\bigr),
+\end{aligned}
+\]
+where $U_{\text{imm}}$ is \texttt{afterBest} if \texttt{afterBest > beforeBest} and $0$ otherwise.
+The resource score is
+\[
+\begin{aligned}
+\texttt{resourceScore}
+&= \texttt{clamp}(
+0.55 \cdot \texttt{estimatedOpponentHoldings}
++ 0.30 \cdot \texttt{personalResourceNeed} \\
+&\quad + 0.15 \cdot \texttt{buildUnlock}).
+\end{aligned}
+\]
+Monopoly plays emit a benchmark payload over the five possible resource calls. The implementation uses actual hidden-opponent holdings available on the server.
+
+\subsubsection{\texttt{road-building-card-playing-decision}}
+\label{app:task-road-building-card-playing-decision}
+The central question is whether playing Road Building now is more valuable than holding it for a better timing window.
+The evaluator scores every currently legal road placement using the road-placement heuristic from Section~\ref{app:task-road-placement-direction}, sorts scores descending, averages the best two legal road scores (or one if only one exists), and computes
+\[
+\begin{aligned}
+\texttt{playNowScore}
+&= \texttt{clamp}(
+0.70 \cdot \texttt{topTwoAverage}
++ 0.30 \cdot \texttt{longestRoadLeverage}),
+\end{aligned}
+\]
+where
+\[
+\texttt{longestRoadLeverage}
+= \texttt{clamp}\left(\frac{(L_{\text{self}} + 2) - L_{\text{opp}} + 3}{6}\right).
+\]
+Here $L_{\text{self}}$ is the player's current road length and $L_{\text{opp}}$ is the best opponent road length.
+The hold alternative is
+\[
+\begin{aligned}
+\texttt{holdScore}
+&= \texttt{clamp}\bigl(
+0.30 + 0.70 \cdot (1 - \texttt{playNowScore})
+\bigr).
+\end{aligned}
+\]
+
+\subsubsection{\texttt{robber-victim-selection}}
+\label{app:task-robber-victim-selection}
+This task is evaluated as an option ratio over legal victims.
+Victim selection is a discrete choice whose value depends on leader pressure, theft value, and visible board strength.
+The visible leader is the player with the highest public score:
+\[
+\texttt{visibleLeaderScore}
+= \texttt{visibleVP}
++ 2 \cdot \texttt{hasLongestRoad}
++ 2 \cdot \texttt{hasLargestArmy}.
+\]
+If multiple players tie, the implementation keeps the first tied player in turn-order/index order.
+For each legal victim $v$, the score is
+\[
+\texttt{victimScore}(v) =
+\texttt{clamp}\left(
+\texttt{leaderBase}(v)
++ \texttt{handValue}(v)
++ \texttt{visibleStrength}(v)
+\right),
+\]
+where
+\[
+\texttt{leaderBase}(v) =
+\begin{cases}
+0.55, & \text{if } v \text{ is the visible leader},\\
+0.25, & \text{otherwise},
+\end{cases}
+\]
+\[
+\texttt{handValue}(v) =
+\min\left(0.35,\ \frac{\texttt{resourceTotal}(v)}{20}\right),
+\]
+\[
+\texttt{visibleStrength}(v) =
+\min\left(0.10,\ \frac{\texttt{visibleScore}(v)}{20}\right).
+\]
+
+\subsubsection{\texttt{robber-placement}}
+\label{app:task-robber-placement}
+\[
+\begin{aligned}
+\texttt{Score}
+&= 0.35 \cdot \texttt{hurtLeader}
++ 0.30 \cdot \texttt{productionDamage} \\
+&\quad + 0.20 \cdot \texttt{theftValue}
++ 0.15 \cdot \texttt{selfHarmAvoidance}.
+\end{aligned}
+\]
+For a candidate hex $h$, the evaluator uses the same visible leader definition from Section~\ref{app:task-robber-victim-selection}. It identifies all opponents on that hex and computes each opponent's strength proxy:
+\[
+\texttt{strength}(p)
+= \min\left(1,\ \frac{\texttt{visibleVP}(p) + \texttt{resourceTotal}(p)/8}{5}\right).
+\]
+Let $w(h)$ be the dice-number probability weight of the hex. The damage terms are:
+\[
+\texttt{hurtLeader}
+= \min\left(1,\ \frac{w(h) \sum_{p \in h,\ p=\text{visible leader}}\texttt{strength}(p)}{3}\right),
+\]
+\[
+\texttt{productionDamage}
+= \min\left(1,\ \frac{w(h) \sum_{p \in h,\ p \ne \text{self}}\texttt{strength}(p)}{5}\right),
+\]
+\[
+\texttt{theftValue}
+= \max_{p \in h,\ p \ne \text{self}}\min\left(1,\ \frac{\texttt{resourceTotal}(p)}{7}\right),
+\]
+\[
+\texttt{selfHarmAvoidance}
+=
+\begin{cases}
+0, & \text{if the acting player has a building on } h,\\
+1, & \text{otherwise}.
+\end{cases}
+\]
+Hurting the leader is the anti-runaway term, production damage captures future income suppression, theft value captures immediate swing, and self-harm avoidance prevents obvious placements on the acting player's own production.
+
+\subsubsection{\texttt{accept-or-reject-trade-offers}}
+\label{app:task-accept-or-reject-trade-offers}
+\[
+\begin{aligned}
+\texttt{targetAcceptScore}
+&= 0.50 \cdot \texttt{selfGain}
++ 0.25 \cdot \texttt{leaderPenalty} \\
+&\quad + 0.15 \cdot \texttt{resourceUrgency}
++ 0.10 \cdot \texttt{fairnessBalance}.
+\end{aligned}
+\]
+The current implementation approximates this as a two-option ratio over \texttt{accept} and \texttt{reject}. The accept score is the responder's simplified self-gain:
+\[
+\texttt{acceptScore} = \texttt{selfGain}
+= \texttt{requestValue} - 0.5 \cdot \texttt{giveCost},
+\]
+where \texttt{requestValue} uses the responder's need map and \texttt{giveCost} uses the responder's surplus map. The reject score is
+\[
+\texttt{rejectScore} = \texttt{clamp}(1 - \texttt{acceptScore} + 0.1).
+\]
+
+\subsubsection{\texttt{generate-trade-offers}}
+\label{app:task-generate-trade-offers}
+\[
+\begin{aligned}
+\texttt{tradeOfferScore}
+&= 0.35 \cdot \texttt{legality}
++ 0.45 \cdot \texttt{selfGain} \\
+&\quad + 0.15 \cdot (1 - \texttt{leaderPenalty})
++ 0.05 \cdot (1 - \texttt{fairnessPenalty}).
+\end{aligned}
+\]
+A trade must first be legal. Its main purpose is to improve the acting player's position. Helping the leader is strategically risky, and highly unfair offers are less plausible and less likely to be accepted.
+The components are:
+\[
+\texttt{selfGain} = \texttt{clamp}(\texttt{requestValue} - 0.5 \cdot \texttt{giveCost}),
+\]
+\[
+\texttt{fairnessPenalty}
+= \min(1,\ \max(0,\ \texttt{giveCost} - \texttt{requestValue})),
+\]
+\[
+\texttt{legality} =
+\begin{cases}
+0, & \text{if the offer gives resources the player does not own},\\
+1, & \text{otherwise},
+\end{cases}
+\]
+\[
+\texttt{leaderPenalty} =
+\begin{cases}
+1, & \text{if the target is the visible leader},\\
+0, & \text{otherwise}.
+\end{cases}
+\]
+The generated offer is compared against the benchmark-best score via a ratio.
+
+\subsubsection{\texttt{select-targeted-trade-partner}}
+\label{app:task-select-targeted-trade-partner}
+This task is evaluated as an option ratio.
+Each candidate partner is scored as
+\[
+\texttt{partnerScore}
+= \texttt{selfGain} + \texttt{availabilityBonus}
+- 0.4 \cdot \texttt{leaderHelpPenalty},
+\]
+where
+\[
+\texttt{availabilityBonus} =
+\begin{cases}
+0.25, & \text{if the partner can provide the requested resources},\\
+0, & \text{otherwise},
+\end{cases}
+\]
+\[
+\texttt{leaderHelpPenalty} =
+\begin{cases}
+1, & \text{if the partner is the visible leader},\\
+0, & \text{otherwise}.
+\end{cases}
+\]
+This favors partners that produce good value and can satisfy the request, while discounting trades with the leader.
+Targeted trade proposals emit this task at runtime, and the selected target is compared against all opponent candidates rather than only against itself.
+
+\subsubsection{\texttt{generate-counter-trade-offer}}
+\label{app:task-generate-counter-trade-offer}
+\[
+\begin{aligned}
+\texttt{counterTradeScore}
+&= 0.35 \cdot \texttt{legality}
++ 0.45 \cdot \texttt{selfGain} \\
+&\quad + 0.15 \cdot (1 - \texttt{leaderPenalty})
++ 0.05 \cdot (1 - \texttt{fairnessPenalty}).
+\end{aligned}
+\]
+The structural reasoning follows the generated-trade-offer task from Section~\ref{app:task-generate-trade-offers}, but now from the responder's perspective relative to an incoming offer.
+The payload reuses the trade-quality subscores from Section~\ref{app:task-generate-trade-offers}:
+\[
+\texttt{selfGain} = \texttt{clamp}(\texttt{requestValue} - 0.5 \cdot \texttt{giveCost}),
+\]
+\[
+\texttt{fairnessPenalty}
+= \min(1,\ \max(0,\ \texttt{giveCost} - \texttt{requestValue})),
+\]
+\[
+\texttt{legality} =
+\begin{cases}
+0, & \text{if the responder gives resources they do not own},\\
+1, & \text{otherwise},
+\end{cases}
+\]
+\[
+\texttt{leaderPenalty} =
+\begin{cases}
+1, & \text{if the original proposer is the visible leader},\\
+0, & \text{otherwise}.
+\end{cases}
+\]
+The benchmark payload stores this through \texttt{offerContext} with \texttt{bestOfferScore = 1} rather than logging each candidate counteroffer separately.
+
+\subsubsection{\texttt{city-vs-settlement-vs-road-prioritization}}
+\label{app:task-city-vs-settlement-vs-road-prioritization}
+This task is evaluated as an option ratio.
+It compares build classes rather than board coordinates and asks which legal build family has the highest strategic value at the current state. Let the maxima below range over the currently legal options:
+\[
+\texttt{settlementScore} = \max \texttt{settlementScore}(v),
+\]
+\[
+\texttt{roadScore} = \max \texttt{roadScore}(e),
+\]
+where settlement scores use Section~\ref{app:task-settlement-location-selection} and road scores use Section~\ref{app:task-road-placement-direction}.
+\[
+\texttt{cityScore}
+= 0.65 \cdot \texttt{production}
++ 0.10 \cdot \texttt{diversity}
++ 0.05 \cdot \texttt{portSynergy}
++ 0.20.
+\]
+Production dominates because a city doubles an existing production site; diversity and port access still matter because they determine how valuable that amplification is, and the constant \texttt{0.20} reflects the guaranteed VP and output increase.
+The task is emitted for settlement, city, and normal road-building choices. Free roads from Road Building are intentionally excluded.
+
+\subsubsection{\texttt{development-card-purchase-decision}}
+\label{app:task-development-card-purchase-decision}
+This task is evaluated as an option ratio.
+Buying a development card is an investment choice against competing uses of resources and should be favored when hidden VP, Knight access, or tactical flexibility outweigh immediate board development.
+This decision is derived from the shared \texttt{devCard} plan \texttt{baseScore} from Section~\ref{app:build-plan-base-scores}:
+\[
+\texttt{devCardBaseScore}
+= \max(0.2,\ 0.55 \cdot (0.5 + 0.5 \cdot \texttt{cityPlanScore}))
+\]
+if the development deck is available, otherwise $0$. The two options are
+\[
+\texttt{buy-dev-card} = \texttt{clamp}(\texttt{devCardBaseScore}),
+\]
+\[
+\texttt{skip-dev-card}
+= \texttt{clamp}(\max(\texttt{saveScore},\ B_{\text{nondev}})),
+\]
+where $B_{\text{nondev}}$ is the best affordable non-development-card plan \texttt{baseScore}.
+\texttt{buyDevCard} emits this task directly. If development-card purchase was affordable but skipped for the full turn, the negative case is recorded at turn end.
+
+\subsubsection{\texttt{discard-strategy-after-seven}}
+\label{app:task-discard-strategy-after-seven}
+This task is scored as
+\[
+\frac{\texttt{RetainedHandValue}}{\texttt{BestRetainedValue}}.
+\]
+Discarding is constrained by a fixed number of cards to lose, and the actual strategic objective is to maximize the value of the retained hand rather than the discarded hand.
+The evaluator enumerates all legal discard bundles summing to $\lfloor \texttt{total\_hand\_size} / 2 \rfloor$, subtracts each from the current hand, and scores the retained hand with:
+\[
+\texttt{bestAffordable} = \max \text{ affordable plan } \texttt{baseScore},
+\]
+\[
+\texttt{bestFuture} = \max \text{ plan } \texttt{effectiveScore},
+\]
+\[
+\texttt{diversity}
+= \texttt{clamp}\left(\frac{\texttt{distinctPositiveResources}}{5}\right).
+\]
+\[
+\begin{aligned}
+\texttt{retainedHandValue}
+&= \texttt{clamp}(
+0.55 \cdot \texttt{bestAffordable}
++ 0.30 \cdot \texttt{bestFuture} \\
+&\quad + 0.15 \cdot \texttt{diversity}).
+\end{aligned}
+\]
+The final task score is the selected retained-hand value divided by the best legal retained-hand value.
+Candidate discard bundles are generated directly from the player hand and required discard count.
+
+\subsubsection{\texttt{bank-trade-decision}}
+\label{app:task-bank-trade-decision}
+\[
+0.50 \cdot \texttt{resourceValueDelta} +
+0.30 \cdot \texttt{buildUnlock} +
+0.20 \cdot \texttt{opportunityCost}.
+\]
+This task is currently approximated through a choice ratio over candidate bank/port trades plus a \texttt{no-trade} option. For each candidate trade, the evaluator computes the trade ratio using \texttt{GameLogic.getTradeRatio} and scores the candidate as
+\[
+\texttt{tradeScore}
+= \texttt{clamp}\left(
+\texttt{need[get]} - 0.5 \cdot \texttt{surplus[give]} + 0.5
+\right),
+\]
+and includes a fixed baseline
+\[
+\texttt{no-trade} = 0.45.
+\]
+Acquiring a needed resource is valuable, paying with a surplus resource is less painful than paying with a scarce one, and the \texttt{no-trade} baseline prevents weak legal trades from looking attractive by default.
+The named rubric components are not yet separately logged; they are compressed into a single trade desirability heuristic.
+
+\subsubsection{\texttt{decide-pursue-longest-road}}
+\label{app:task-decide-pursue-longest-road}
+\[
+\begin{aligned}
+\texttt{legacyScore}
+&= 0.40 \cdot \texttt{roadProgressRatio}
++ 0.30 \cdot \texttt{opponentRoadGap} \\
+&\quad + 0.20 \cdot \texttt{resourceAffordability}
++ 0.10 \cdot \texttt{VPImpact}.
+\end{aligned}
+\]
+The stronger formulation is to record a pending task episode, wait $4$--$6$ turns for the evaluated player, and score using snapshot-plus-outcome evidence:
+\[
+\begin{aligned}
+\texttt{pursueScore}
+&= 0.45 \cdot \texttt{blockingEffectiveness}
++ 0.30 \cdot \texttt{opponentProgressThreat} \\
+&\quad + 0.15 \cdot \texttt{selfRoadSynergy}
++ 0.10 \cdot \texttt{resourceCost}.
+\end{aligned}
+\]
+This redesign is preferable because Longest Road decisions are not fully observable from a single action.
+The live system already uses the delayed v2-style episode. At decision time it snapshots player road length, strongest opponent road rival and their road length, whether either player currently holds Longest Road, player visible score, and roads built so far in benchmark long-term stats.
+
+After a four-turn horizon, decisive resolution, or game end, it computes:
+\[
+G_{\text{self}} = \max(0,\ L_{\text{self,end}} - L_{\text{self,start}}),
+\quad
+G_{\text{target}} = \max(0,\ L_{\text{target,end}} - L_{\text{target,start}}),
+\]
+\[
+R_{\Delta} = \max(0,\ \texttt{roadsBuiltSinceSnapshot}),
+\]
+\[
+\texttt{opponentProgressThreat}
+= \texttt{clamp}\left(
+\frac{(L_{\text{target,start}} - L_{\text{self,start}}) + 2H_{\text{target,start}} + 2}{8}
+\right),
+\]
+\[
+\texttt{blockingEffectiveness}
+= \texttt{clamp}(0.45 + 0.18G_{\text{self}} - 0.12G_{\text{target}} + 0.25H_{\text{self,end}}),
+\]
+\[
+\texttt{selfRoadSynergy}
+= \texttt{clamp}\left(\frac{G_{\text{self}}}{4} + 0.35H_{\text{self,end}}\right).
+\]
+Here each $H$ indicator is $1$ when that player has Longest Road at the named time and $0$ otherwise. The resource-cost term is
+\[
+\texttt{resourceCost} =
+\begin{cases}
+1, & \text{successful defer and } R_{\Delta}=0,\\
+0.5, & \text{pursue and } R_{\Delta}=0,\\
+\texttt{clamp}\left(\frac{G_{\text{self}} + \texttt{longestRoadBonus}}{R_{\Delta}}\right), & \text{otherwise}.
+\end{cases}
+\]
+The final alternatives are
+\[
+\begin{aligned}
+\texttt{pursueScore}
+&= \texttt{clamp}(
+0.45 \cdot \texttt{blockingEffectiveness}
++ 0.30 \cdot \texttt{opponentProgressThreat} \\
+&\quad + 0.15 \cdot \texttt{selfRoadSynergy}
++ 0.10 \cdot \texttt{resourceCost}),
+\end{aligned}
+\]
+\[
+\begin{aligned}
+\texttt{deferScore}
+&= \texttt{clamp}\bigl(
+0.45 \cdot (1 - \texttt{opponentProgressThreat}) \\
+&\quad + 0.25 \cdot \left(1 - \min\left(1,\frac{G_{\text{target}}}{3}\right)\right) \\
+&\quad + 0.15 \cdot \left(1 - \min\left(1,\frac{G_{\text{self}}}{3}\right)\right)
++ 0.15D_0\bigr).
+\end{aligned}
+\]
+Here $D_0$ is $1$ if $R_{\Delta}=0$ and $0.2$ otherwise.
+This task now runs as a pending long-horizon episode, and finalization writes one ordinary benchmark task result after the horizon, decisive resolution, or game end.
+
+\subsubsection{\texttt{decide-pursue-largest-army}}
+\label{app:task-decide-pursue-largest-army}
+\[
+\begin{aligned}
+\texttt{pursueScore}
+&= 0.40 \cdot \texttt{knightCardRatio}
++ 0.30 \cdot \texttt{opponentArmyGap} \\
+&\quad + 0.20 \cdot \texttt{devCardAffordability}
++ 0.10 \cdot \texttt{VPImpact}.
+\end{aligned}
+\]
+The rubric stated at the start of Section~\ref{app:task-decide-pursue-largest-army} remains appropriate, but it should be evaluated over a $4$--$6$ turn future window rather than immediately. Largest Army is not about one development-card purchase or one Knight; it is about whether a multi-turn commitment improves the player's race standing without unacceptable economic damage. A hybrid intent-plus-outcome model is appropriate because pure outcome scoring would overreact to deck order and dice luck, while pure immediate scoring would ignore whether the strategic plan materialized.
+Like Longest Road, this task is implemented as a pending long-horizon episode. At decision time it snapshots player knights played, strongest opponent army rival and their knights played, whether either player currently has Largest Army, player visible score, player hand size, and development cards bought so far in benchmark long-term stats.
+
+At finalization it computes:
+\[
+C_{\Delta} = \max(0,\ \texttt{devCardsBoughtSinceSnapshot}),
+\quad
+K_{\Delta} = \max(0,\ K_{\text{self,end}} - K_{\text{self,start}}),
+\]
+\[
+G_{\text{start}} = K_{\text{self,start}} - K_{\text{target,start}},
+\quad
+G_{\text{end}} = K_{\text{self,end}} - K_{\text{target,end}},
+\]
+\[
+\texttt{knightCardRatio} =
+\begin{cases}
+1, & K_{\Delta}>0 \text{ and } C_{\Delta}=0,\\
+0, & K_{\Delta}=0,\\
+\texttt{clamp}\left(\frac{K_{\Delta}}{C_{\Delta}}\right), & \text{otherwise},
+\end{cases}
+\]
+\[
+\texttt{opponentArmyGap}
+= \texttt{clamp}\left(\frac{(G_{\text{end}} - G_{\text{start}}) + 3}{6}\right),
+\]
+\[
+\Delta R = \texttt{currentHandSize} - \texttt{snapshotHandSize},
+\]
+\[
+\texttt{devCardAffordability}
+= \texttt{clamp}\left(0.6 + \frac{\Delta R}{10} - 0.08C_{\Delta}\right),
+\]
+\[
+\texttt{vpImpact}
+= \texttt{clamp}\left(\frac{\Delta \texttt{visibleVP} + H_{\text{army,end}}}{3}\right).
+\]
+Here $H_{\text{army,end}}$ is $1$ if the player has Largest Army at finalization and $0$ otherwise.
+The final alternatives are
+\[
+\begin{aligned}
+\texttt{pursueScore}
+&= \texttt{clamp}(
+0.40 \cdot \texttt{knightCardRatio}
++ 0.30 \cdot \texttt{opponentArmyGap} \\
+&\quad + 0.20 \cdot \texttt{devCardAffordability}
++ 0.10 \cdot \texttt{vpImpact}),
+\end{aligned}
+\]
+\[
+\begin{aligned}
+\texttt{deferScore}
+&= \texttt{clamp}\bigl(
+0.35 \cdot (1 - \texttt{opponentArmyGap})
++ 0.25 \cdot (1 - \texttt{knightCardRatio}) \\
+&\quad + 0.20 \cdot R_{\text{safe}}
++ 0.20 \cdot (1 - H_{\text{army,end}})\bigr).
+\end{aligned}
+\]
+Here $R_{\text{safe}}$ is $1$ if $\Delta R \ge 0$ and $0.4$ otherwise.
+
+\end{document}
