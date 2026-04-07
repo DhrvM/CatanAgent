@@ -18,7 +18,7 @@ export const SECONDARY_BENCHMARK_METRICS = [
 const PRIMARY_WEIGHT_SUM = PRIMARY_BENCHMARK_METRICS.reduce((sum, metric) => sum + (BENCHMARK_WEIGHTS[metric] || 0), 0);
 
 const TASK_THRESHOLDS = {
-  'initial-settlement-location-selection': 0.9,
+  'initial-settlement-location-selection': 0.75,
   'settlement-location-selection': 0.9,
   'road-placement-direction': 0.8,
   'build-vs-save-decision': 0.9,
