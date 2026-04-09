@@ -102,6 +102,18 @@ class OpenAIClient:
         return msg.content or ""
 
     @staticmethod
+    def extract_usage(response: Any) -> Dict[str, int]:
+        """Return {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}."""
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        return {
+            "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+            "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+            "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+        }
+
+    @staticmethod
     def build_tool_result_message(tool_call_id: str, result: Any) -> Dict[str, Any]:
         """Create a 'tool' role message to feed the result back to GPT-4o."""
         return {

@@ -14,6 +14,7 @@ from Agent.utils.socket_client import CatanSocketClient
 from Agent.utils.game_state_processor import GameStateProcessor
 from Agent.utils.openai_client import OpenAIClient
 from Agent.utils.ollama_client import OllamaChat, OllamaConfig
+from Agent.utils.stats_tracker import AgentStatsTracker
 from Agent.tools.registry import ToolRegistry, build_tool_registry
 from Agent.react_agent.summarizer import MoveSummarizer
 from Agent.react_agent.prompts import SYSTEM_PROMPT, MAX_STEPS_PER_TURN, build_turn_message
@@ -62,6 +63,10 @@ class ReactCatanAgent:
         # tool registry (built after connect)
         self._registry: Optional[ToolRegistry] = None
 
+        # statistics tracker
+        self.stats = AgentStatsTracker(agent_name=player_name)
+        self._turn_counter = 0
+
         # setup tracking
         self._last_setup_settlement: Optional[str] = None
         self._setup_placements_done = 0
@@ -83,29 +88,39 @@ class ReactCatanAgent:
         self._registry = build_tool_registry(self.client, self.processor)
         print(f"✅ {self.player_name} agent running (game {self.game_code})")
 
-        while True:
-            state = self.client.latest_state()
-            if not state:
-                time.sleep(0.25)
-                continue
+        try:
+            while True:
+                state = self.client.latest_state()
+                if not state:
+                    time.sleep(0.25)
+                    continue
 
-            if not is_my_turn(state):
-                # Even when not our turn, feed server events to summarizer
-                self._sync_events()
-                time.sleep(0.25)
-                continue
+                if not is_my_turn(state):
+                    # Even when not our turn, feed server events to summarizer
+                    self._sync_events()
+                    time.sleep(0.25)
+                    continue
 
-            phase = state.get("phase")
+                phase = state.get("phase")
 
-            # ── SETUP (heuristic, no LLM) ─────────────────────
-            if phase == "setup":
-                self._handle_setup(state)
+                # ── SETUP (heuristic, no LLM) ─────────────────────
+                if phase == "setup":
+                    self._handle_setup(state)
+                    time.sleep(0.15)
+                    continue
+
+                # ── PLAYING: ReAct loop ───────────────────────────
+                self._react_turn(state)
                 time.sleep(0.15)
-                continue
-
-            # ── PLAYING: ReAct loop ───────────────────────────
-            self._react_turn(state)
-            time.sleep(0.15)
+        except KeyboardInterrupt:
+            print("\n⏹  Agent interrupted.")
+        except Exception as e:
+            print(f"\n❌ Agent error: {e}")
+        finally:
+            paths = self.stats.export_all("./logs/Agent")
+            print(f"📊 Stats saved:")
+            print(f"   JSON: {paths['json']}")
+            print(f"   CSV:  {paths['csv']}")
 
     # ──────────────────────────────────────────────────────────────
     # ReAct loop
@@ -113,6 +128,10 @@ class ReactCatanAgent:
     def _react_turn(self, initial_state: Dict[str, Any]) -> None:
         """Run the multi-step ReAct loop for one turn."""
         assert self._registry is not None
+
+        self._turn_counter += 1
+        turn_phase = initial_state.get("turnPhase", "main")
+        self.stats.start_turn(self._turn_counter, phase=turn_phase)
 
         # 1. Observe
         processed = self.processor.process(initial_state)
@@ -150,6 +169,13 @@ class ReactCatanAgent:
             # 3. Call GPT-4o
             try:
                 response = self.openai.chat_with_tools(messages, tools)
+                # Record token usage
+                usage = self.openai.extract_usage(response)
+                self.stats.record_llm_call(
+                    prompt_tokens=usage["prompt_tokens"],
+                    completion_tokens=usage["completion_tokens"],
+                    model=self.openai.model,
+                )
             except Exception as e:
                 print(f"  [react] GPT-4o error: {e}")
                 self._fallback_action(state)
@@ -197,10 +223,14 @@ class ReactCatanAgent:
                 result = self._registry.execute(name, args)
                 print(f"  [result] {json.dumps(result, default=str)[:200]}")
 
+                # Record stats
+                success = result.get("success", True)
+                self.stats.record_tool_call(name, success=bool(success))
+
                 # Record event
                 self.summarizer.record_event(name, {
                     "args": args,
-                    "success": result.get("success", True),
+                    "success": success,
                 })
 
                 # Feed result back to GPT-4o
@@ -217,13 +247,19 @@ class ReactCatanAgent:
         if steps >= MAX_STEPS_PER_TURN and not turn_ended:
             print("  [react] max steps reached, forcing end_turn")
             self._registry.execute("end_turn", {})
+            self.stats.record_tool_call("end_turn", success=True)
             self.summarizer.record_event("end_turn", {"forced": True})
+
+        self.stats.end_turn()
 
     # ──────────────────────────────────────────────────────────────
     # Setup phase (heuristic, no LLM)
     # ──────────────────────────────────────────────────────────────
     def _handle_setup(self, state: Dict[str, Any]) -> None:
         """Brute-force settlement + road placement during setup."""
+        self._turn_counter += 1
+        self.stats.start_turn(self._turn_counter, phase="setup")
+
         if self._last_setup_settlement is None:
             ranked = _ranked_setup_settlements(state, top_k=120)
             for vk in ranked:
@@ -233,9 +269,14 @@ class ReactCatanAgent:
                 if isinstance(resp, dict) and resp.get("success"):
                     self._last_setup_settlement = vk
                     print(f"  [setup] settlement at {vk}")
+                    self.stats.record_tool_call("placeSettlement", success=True)
                     self.summarizer.record_event("placeSettlement", {"vertex": vk, "setup": True})
+                    self.stats.end_turn()
                     return
+                else:
+                    self.stats.record_tool_call("placeSettlement", success=False)
             print("  [setup] no legal settlement found")
+            self.stats.end_turn()
             return
 
         # Place road
@@ -248,13 +289,19 @@ class ReactCatanAgent:
             })
             if isinstance(resp, dict) and resp.get("success"):
                 print(f"  [setup] road at {ek}")
+                self.stats.record_tool_call("placeRoad", success=True)
                 self.summarizer.record_event("placeRoad", {"edge": ek, "setup": True})
                 adv = self._safe_call("advanceSetup")
+                self.stats.record_tool_call("advanceSetup", success=bool(isinstance(adv, dict) and adv.get("success")))
                 print(f"  [setup] advanceSetup => {adv}")
                 self._last_setup_settlement = None
                 self._setup_placements_done += 1
+                self.stats.end_turn()
                 return
+            else:
+                self.stats.record_tool_call("placeRoad", success=False)
         print("  [setup] no legal road found")
+        self.stats.end_turn()
 
     # ──────────────────────────────────────────────────────────────
     # Fallback

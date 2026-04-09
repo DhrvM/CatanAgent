@@ -59,3 +59,36 @@ class OllamaChat:
                 except Exception:
                     return None
             return None
+
+    def chat_with_usage(
+        self, messages: List[Dict[str, str]], json_only: bool = True
+    ) -> tuple:
+        """
+        Like ``chat()`` but also returns token counts.
+        Returns ``(text, {"prompt_tokens": int, "completion_tokens": int})``.
+        """
+        url = f"{self.cfg.host}/api/chat"
+        payload: Dict[str, Any] = {
+            "model": self.cfg.model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": self.cfg.temperature,
+                "num_ctx": self.cfg.num_ctx,
+            },
+        }
+        if json_only:
+            payload["format"] = "json"
+
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=self.cfg.timeout_s) as resp:
+            raw = resp.read().decode("utf-8")
+
+        obj = json.loads(raw)
+        text = obj.get("message", {}).get("content", "")
+        usage = {
+            "prompt_tokens": obj.get("prompt_eval_count", 0) or 0,
+            "completion_tokens": obj.get("eval_count", 0) or 0,
+        }
+        return text, usage
