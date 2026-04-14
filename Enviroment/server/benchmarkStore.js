@@ -12,7 +12,6 @@ import {
 } from './benchmarkDefinitions.js';
 import {
   computePrimaryComposite,
-  computeSecondaryMetricsFromSlices,
   computeWeightedMetricScore,
   evaluateBenchmarkTask,
   metricStatus,
@@ -43,12 +42,6 @@ function safeNumber(value, fallback = 0) {
 function average(values) {
   if (!values.length) return null;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-function variance(values) {
-  if (values.length < 2) return 0;
-  const mean = average(values);
-  return average(values.map(value => (value - mean) ** 2)) || 0;
 }
 
 function safeDivide(numerator, denominator) {
@@ -940,7 +933,6 @@ export class BenchmarkStore {
       taskSuccessRate: safeDivide(slice.successes, slice.tasks),
       averageTaskScore: average(slice.taskScores),
       averageLatencyPerTurn: average(slice.latencies),
-      illegalMoveRate: safeDivide(slice.illegalAttempts, slice.totalAttempts),
     };
   }
 
@@ -1056,7 +1048,6 @@ export class BenchmarkStore {
     const taskSuccessRate = safeDivide(entity.reasoning.successes, entity.reasoning.tasks);
     const averageTaskScore = average(entity.reasoning.scores);
     const averageLatencyPerTurn = average(entity.operations.latencies);
-    const illegalMoveRate = safeDivide(entity.operations.illegalAttempts, entity.operations.totalAttempts);
 
     const finalizedSlices = [...entity.slices.values()].map(slice => {
       const sliceMetrics = this.#finalizeSliceMetrics(slice);
@@ -1079,7 +1070,6 @@ export class BenchmarkStore {
       };
     });
 
-    const secondaryMetrics = computeSecondaryMetricsFromSlices(finalizedSlices, this.#buildRunSlices(entity));
     const rawMetrics = {
       winRate,
       averageFinalVictoryPoints,
@@ -1087,10 +1077,6 @@ export class BenchmarkStore {
       taskSuccessRate,
       averageTaskScore,
       averageLatencyPerTurn,
-      illegalMoveRate,
-      robustness: secondaryMetrics.robustness,
-      consistency: secondaryMetrics.consistency,
-      generalization: secondaryMetrics.generalization,
     };
 
     const normalizedMetrics = Object.fromEntries(
@@ -1153,22 +1139,13 @@ export class BenchmarkStore {
           normalizedMetrics.averageRoundsToWin,
         ]),
         reasoning: normalizedMetrics.taskSuccessRate,
-        operations: average([
-          normalizedMetrics.averageLatencyPerTurn,
-          normalizedMetrics.illegalMoveRate,
-        ]),
-        secondary: average([
-          normalizedMetrics.robustness,
-          normalizedMetrics.consistency,
-          normalizedMetrics.generalization,
-        ]),
+        operations: normalizedMetrics.averageLatencyPerTurn,
       },
       metricDeltas: normalizedMetrics,
       metricStatuses: Object.fromEntries(
         Object.entries(normalizedMetrics).map(([metric, score]) => [metric, metricStatus(metric, score, rawMetrics[metric])])
       ),
       overallScore,
-      consistencyVariance: secondaryMetrics.consistencyVariance,
       sliceCount: finalizedSlices.length,
       slices: finalizedSlices,
       taskBreakdown: fullTaskBreakdown,

@@ -4,22 +4,14 @@ export const METRIC_DIRECTIONS = {
   averageRoundsToWin: 'lower',
   taskSuccessRate: 'higher',
   averageLatencyPerTurn: 'lower',
-  illegalMoveRate: 'lower',
-  robustness: 'higher',
-  consistency: 'higher',
-  generalization: 'higher',
 };
 
 export const BENCHMARK_WEIGHTS = {
-  winRate: 0.2,
-  averageFinalVictoryPoints: 0.1,
-  averageRoundsToWin: 0.1,
-  taskSuccessRate: 0.2,
-  averageLatencyPerTurn: 0.075,
-  illegalMoveRate: 0.075,
-  robustness: 0.075,
-  consistency: 0.075,
-  generalization: 0.1,
+  winRate: 0.3,
+  averageFinalVictoryPoints: 0.15,
+  averageRoundsToWin: 0.15,
+  taskSuccessRate: 0.3,
+  averageLatencyPerTurn: 0.1,
 };
 
 export const TASK_CATEGORIES = {
@@ -190,11 +182,6 @@ export const BENCHMARK_TASKS = [
     scoring: '0.40 knightCardRatio + 0.30 opponentArmyGap + 0.20 devCardAffordability + 0.10 VPImpact',
   },
 ];
-
-export const SECONDARY_SLICE_TAGS = {
-  robustness: ['resource-scarcity', 'limited-expansion', 'late-game-trade', 'anti-leader'],
-  generalization: ['alternate-map', 'seat-variation', 'opponent-policy-variation'],
-};
 
 export function getTaskDefinition(taskId) {
   return BENCHMARK_TASKS.find(task => task.id === taskId) || null;

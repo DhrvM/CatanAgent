@@ -156,7 +156,6 @@ assert.strictEqual(normalizeMetricScore('winRate', 0.75), 0.75, 'Win rate normal
 assert.strictEqual(normalizeMetricScore('averageFinalVictoryPoints', 8), 0.8, 'VP normalization uses /10');
 assert.strictEqual(normalizeMetricScore('averageRoundsToWin', 8), 1, 'Rounds-to-win normalization caps at 1');
 assert(normalizeMetricScore('averageLatencyPerTurn', 5000) < 1, 'Latency normalization penalizes slow turns');
-assert.strictEqual(normalizeMetricScore('illegalMoveRate', 0.2), 0.8, 'Illegal move normalization inverts error rate');
 
 const metricScores = {
   winRate: 0.8,
@@ -164,10 +163,6 @@ const metricScores = {
   averageRoundsToWin: 0.9,
   taskSuccessRate: 0.6,
   averageLatencyPerTurn: 0.75,
-  illegalMoveRate: 0.9,
-  robustness: 0.7,
-  consistency: 0.6,
-  generalization: 0.65,
 };
 const overallScore = computeWeightedMetricScore(metricScores, BENCHMARK_WEIGHTS);
 const primaryComposite = computePrimaryComposite(metricScores);

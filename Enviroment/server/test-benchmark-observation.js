@@ -177,7 +177,6 @@ async function main() {
   assert.strictEqual(challenger.rawMetrics.winRate, 1, 'Challenger win rate computed');
   assert.strictEqual(baseline.rawMetrics.winRate, 0, 'Baseline win rate computed');
   assert(challenger.rawMetrics.averageLatencyPerTurn >= 0, 'Latency telemetry aggregated');
-  assert.strictEqual(challenger.rawMetrics.illegalMoveRate, 0, 'Illegal move rate aggregated');
   assert(challenger.normalizedMetrics.taskSuccessRate > 0, 'Task success normalized absolutely');
   assert(challenger.metricStatuses.taskSuccessRate === 'excellent', 'Absolute metric status assigned');
 

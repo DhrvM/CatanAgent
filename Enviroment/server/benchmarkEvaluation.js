@@ -1,4 +1,4 @@
-import { BENCHMARK_WEIGHTS, METRIC_DIRECTIONS, SECONDARY_SLICE_TAGS } from './benchmarkDefinitions.js';
+import { BENCHMARK_WEIGHTS, METRIC_DIRECTIONS } from './benchmarkDefinitions.js';
 
 export const PRIMARY_BENCHMARK_METRICS = [
   'winRate',
@@ -6,13 +6,6 @@ export const PRIMARY_BENCHMARK_METRICS = [
   'averageRoundsToWin',
   'taskSuccessRate',
   'averageLatencyPerTurn',
-  'illegalMoveRate',
-];
-
-export const SECONDARY_BENCHMARK_METRICS = [
-  'robustness',
-  'consistency',
-  'generalization',
 ];
 
 const PRIMARY_WEIGHT_SUM = PRIMARY_BENCHMARK_METRICS.reduce((sum, metric) => sum + (BENCHMARK_WEIGHTS[metric] || 0), 0);
@@ -58,16 +51,6 @@ function safeDivide(numerator, denominator) {
 function average(values) {
   if (!values.length) return null;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-function variance(values) {
-  if (values.length < 2) return 0;
-  const mean = average(values);
-  return average(values.map(value => (value - mean) ** 2)) || 0;
-}
-
-function standardDeviation(values) {
-  return Math.sqrt(variance(values));
 }
 
 function sortScenarioTags(tags = []) {
@@ -350,9 +333,6 @@ export function normalizeMetricScore(metric, value) {
   switch (metric) {
     case 'winRate':
     case 'taskSuccessRate':
-    case 'robustness':
-    case 'consistency':
-    case 'generalization':
       return clamp(numeric);
     case 'averageFinalVictoryPoints':
       return clamp(numeric / 10);
@@ -362,8 +342,6 @@ export function normalizeMetricScore(metric, value) {
       if (numeric <= 2000) return 1;
       if (numeric >= 15000) return 0;
       return clamp((15000 - numeric) / 13000);
-    case 'illegalMoveRate':
-      return clamp(1 - numeric);
     default:
       return METRIC_DIRECTIONS[metric] === 'lower' ? clamp(1 - numeric) : clamp(numeric);
   }
@@ -386,62 +364,4 @@ export function computeWeightedMetricScore(metricScores, weights = BENCHMARK_WEI
 
 export function computePrimaryComposite(metricScores) {
   return computeWeightedMetricScore(metricScores, BENCHMARK_WEIGHTS, PRIMARY_BENCHMARK_METRICS, true);
-}
-
-export function computeSecondaryMetricsFromSlices(slices = [], runSlices = []) {
-  const slicePrimaryScores = slices
-    .map(slice => slice.primaryCompositeScore)
-    .filter(score => score !== null && score !== undefined);
-
-  const robustnessSliceScores = slices
-    .filter(slice => slice.scenarioTags.some(tag => SECONDARY_SLICE_TAGS.robustness.includes(tag)))
-    .map(slice => slice.primaryCompositeScore)
-    .filter(score => score !== null && score !== undefined);
-
-  const robustness = robustnessSliceScores.length ? average(robustnessSliceScores) : null;
-
-  const groupedByConfig = new Map();
-  runSlices.forEach(slice => {
-    const current = groupedByConfig.get(slice.configKey) || [];
-    current.push(slice.primaryCompositeScore);
-    groupedByConfig.set(slice.configKey, current);
-  });
-
-  const consistencyBuckets = [...groupedByConfig.values()]
-    .filter(scores => scores.length >= 3)
-    .map(scores => 1 / (1 + variance(scores)));
-  const consistency = consistencyBuckets.length ? average(consistencyBuckets) : null;
-
-  const familyGroups = {
-    mapLayoutId: new Map(),
-    startingSeat: new Map(),
-    opponentPolicySet: new Map(),
-  };
-  slices.forEach(slice => {
-    const families = [
-      ['mapLayoutId', slice.mapLayoutId],
-      ['startingSeat', slice.startingSeat],
-      ['opponentPolicySet', slice.opponentPolicySet],
-    ];
-    families.forEach(([family, rawValue]) => {
-      const value = rawValue ?? null;
-      if (value === null) return;
-      const scores = familyGroups[family].get(value) || [];
-      scores.push(slice.primaryCompositeScore);
-      familyGroups[family].set(value, scores);
-    });
-  });
-
-  const generalizationFamilies = Object.values(familyGroups)
-    .map(group => [...group.values()].map(values => average(values.filter(value => value !== null && value !== undefined))).filter(value => value !== null))
-    .filter(values => values.length >= 2)
-    .map(values => clamp((average(values) ?? 0) - standardDeviation(values)));
-  const generalization = generalizationFamilies.length ? average(generalizationFamilies) : null;
-
-  return {
-    robustness,
-    consistency,
-    generalization,
-    consistencyVariance: variance(slicePrimaryScores),
-  };
 }
