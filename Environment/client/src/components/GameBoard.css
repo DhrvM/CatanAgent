@@ -75,6 +75,28 @@
   color: white;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.delete-game-btn {
+  padding: 0.5rem 1rem;
+  background: transparent;
+  border: 1px solid #c0392b;
+  color: #e74c3c;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.delete-game-btn:hover {
+  background: #c0392b;
+  color: white;
+}
+
 .game-main {
   flex: 1;
   display: flex;
