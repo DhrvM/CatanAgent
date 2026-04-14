@@ -48,6 +48,7 @@ class ToolDefinition:
     parameters: List[ToolParameter] = field(default_factory=list)
     handler: Optional[Callable[..., Dict[str, Any]]] = None
     phases: Optional[List[str]] = None  # turn phases where this tool is available
+    agents: Optional[List[str]] = None  # agent names that can use this tool
 
 
 # ── Registry ──────────────────────────────────────────────────────
@@ -67,14 +68,17 @@ class ToolRegistry:
     def get_openai_schemas(
         self,
         phase_filter: Optional[str] = None,
+        agent_filter: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Return tool definitions in OpenAI function-calling format.
-        Optionally filter by the current turn phase.
+        Optionally filter by the current turn phase and/or agent name.
         """
         schemas: List[Dict[str, Any]] = []
         for t in self._tools.values():
             if phase_filter and t.phases and phase_filter not in t.phases:
+                continue
+            if agent_filter and t.agents and agent_filter not in t.agents:
                 continue
             schema = self._tool_to_openai(t)
             schemas.append(schema)
@@ -172,6 +176,7 @@ def build_tool_registry(
         parameters=[],
         handler=_roll_dice,
         phases=["roll"],
+        agents=["strategy"],
     ))
 
     # ── 2. place_settlement ───────────────────────────────────────
@@ -194,6 +199,7 @@ def build_tool_registry(
         ],
         handler=_place_settlement,
         phases=["main", "setup"],
+        agents=["development"],
     ))
 
     # ── 3. place_road ─────────────────────────────────────────────
@@ -220,6 +226,7 @@ def build_tool_registry(
         ],
         handler=_place_road,
         phases=["main", "setup"],
+        agents=["development"],
     ))
 
     # ── 4. upgrade_to_city ────────────────────────────────────────
@@ -234,6 +241,7 @@ def build_tool_registry(
         ],
         handler=_upgrade_to_city,
         phases=["main"],
+        agents=["development"],
     ))
 
     # ── 5. buy_dev_card ───────────────────────────────────────────
@@ -246,6 +254,7 @@ def build_tool_registry(
         parameters=[],
         handler=_buy_dev_card,
         phases=["main"],
+        agents=["development"],
     ))
 
     # ── 6. play_dev_card ──────────────────────────────────────────
@@ -272,6 +281,7 @@ def build_tool_registry(
         ],
         handler=_play_dev_card,
         phases=["roll", "main"],
+        agents=["development"],
     ))
 
     # ── 7. bank_trade ─────────────────────────────────────────────
@@ -295,6 +305,7 @@ def build_tool_registry(
         ],
         handler=_bank_trade,
         phases=["main"],
+        agents=["trading"],
     ))
 
     # ── 8. propose_trade ──────────────────────────────────────────
@@ -313,6 +324,7 @@ def build_tool_registry(
         ],
         handler=_propose_trade,
         phases=["main"],
+        agents=["trading"],
     ))
 
     # ── 9. respond_to_trade ───────────────────────────────────────
@@ -327,6 +339,7 @@ def build_tool_registry(
         ],
         handler=_respond_to_trade,
         phases=["main"],
+        agents=["trading"],
     ))
 
     # ── 10. discard_cards ─────────────────────────────────────────
@@ -342,6 +355,7 @@ def build_tool_registry(
         ],
         handler=_discard_cards,
         phases=["discard"],
+        agents=["development"],
     ))
 
     # ── 11. move_robber ───────────────────────────────────────────
@@ -364,6 +378,7 @@ def build_tool_registry(
         ],
         handler=_move_robber,
         phases=["robber"],
+        agents=["development"],
     ))
 
     # ── 12. end_turn ──────────────────────────────────────────────
@@ -376,6 +391,7 @@ def build_tool_registry(
         parameters=[],
         handler=_end_turn,
         phases=["main"],
+        agents=["strategy"],
     ))
 
     # ── 13. get_building_spots ────────────────────────────────────
@@ -420,6 +436,7 @@ def build_tool_registry(
         ],
         handler=_get_building_spots,
         phases=["main", "setup"],
+        agents=["strategy", "development"],
     ))
 
     # ── 14. get_trade_options ─────────────────────────────────────
@@ -458,6 +475,7 @@ def build_tool_registry(
         parameters=[],
         handler=_get_trade_options,
         phases=["main"],
+        agents=["strategy", "trading"],
     ))
 
     # ── 15. get_game_summary ──────────────────────────────────────
@@ -472,6 +490,7 @@ def build_tool_registry(
         parameters=[],
         handler=_get_game_summary,
         phases=["roll", "main", "robber", "discard", "setup", "specialBuild"],
+        agents=["strategy", "development", "trading"],
     ))
 
     # ── 16. advance_setup ─────────────────────────────────────────
@@ -484,6 +503,7 @@ def build_tool_registry(
         parameters=[],
         handler=_advance_setup,
         phases=["setup"],
+        agents=["strategy"],
     ))
 
     # ── 17. year_of_plenty_pick ───────────────────────────────────
@@ -498,6 +518,7 @@ def build_tool_registry(
         ],
         handler=_year_of_plenty_pick,
         phases=["main"],
+        agents=["development"],
     ))
 
     return reg
