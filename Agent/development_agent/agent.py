@@ -1,22 +1,50 @@
 """
-Development Agent — STUB implementation.
+Development Agent — build queue execution, discard, and robber handling.
 
-Provides no-op methods so StrategyAgent.call_agent("development", ...)
-works without crashing.  Replace with real GPT-4o build-queue execution,
-discard handling, and robber placement.
+Called by Strategy via ``call_agent`` per TODO.md. Uses tools from the registry
+(``agent_filter="development"``) and queries Risk for robber / building EV when useful.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+import json
+from typing import Any, Dict, List, Optional, Tuple
 
 from Agent.shared.base_agent import BaseAgent
-from Agent.shared.scratchpad import Scratchpad, ActionRecord
+from Agent.shared.scratchpad import ActionRecord, Scratchpad, StrategyPlan
+from Agent.development_agent.prompts import (
+    DEVELOPMENT_SYSTEM_PROMPT,
+    build_discard_user_message,
+    build_robber_user_message,
+)
+from Agent.tools.game_tools import (
+    RESOURCES,
+    _build_discard_action,
+)
+from Agent.utils.game_state_processor import (
+    _adjacent_hex_coords,
+    _parse_vertex_key,
+)
+
+_LLM_ROBBER_ROUNDS = 2
+_LLM_DISCARD_ROUNDS = 2
+
+
+def _vertex_touches_hex(vertex_key: str, hex_key: str) -> bool:
+    parsed = _parse_vertex_key(vertex_key)
+    if not parsed:
+        return False
+    q, r, d = parsed
+    for hq, hr in _adjacent_hex_coords(q, r, d):
+        if f"{hq},{hr}" == hex_key:
+            return True
+    return False
 
 
 class DevelopmentAgent(BaseAgent):
     """
-    Stub Development Agent.  All methods are no-ops.
-    Real implementation should execute build_queue, handle_discard, handle_robber.
+    Executes Strategy's build queue and handles discard / robber phases.
+
+    Peers: Strategy (required), Risk (optional — register for robber EV / targets).
     """
 
     def __init__(
@@ -26,34 +54,509 @@ class DevelopmentAgent(BaseAgent):
         self.openai = openai
         self.registry = registry
 
+    # ── Build queue ───────────────────────────────────────────────
+
     def execute_build_queue(self) -> List[ActionRecord]:
         """
-        Execute Strategy's build queue using tools.
-        Called by Strategy via call_agent("development", "execute_build_queue").
-
-        STUB: no-op, returns empty list.
+        Execute Strategy's build queue using registry tools in order.
+        Skips failed actions and continues (per TODO).
         """
-        print("  [development] (stub) execute_build_queue — no actions taken")
-        self.send_message("strategy", "inform", {
-            "build_results": [],
-            "note": "Development agent is a stub — no builds executed.",
-        })
-        return []
+        plan = self.scratchpad.strategy_plan
+        if not isinstance(plan, StrategyPlan):
+            plan = StrategyPlan()
+
+        queue = list(plan.build_queue or [])
+        queue.sort(key=lambda x: int(x.get("priority", 0)) if isinstance(x, dict) else 0)
+
+        results: List[ActionRecord] = []
+        if not queue:
+            print("  [development] build_queue empty — nothing to execute")
+            self._inform_strategy_build(results)
+            return results
+
+        if self.registry is None:
+            print("  [development] registry missing — cannot execute build queue")
+            self._inform_strategy_build(results)
+            return results
+
+        for item in queue:
+            if not isinstance(item, dict):
+                continue
+            action, args = self._queue_item_to_tool(item)
+            if not action:
+                rec = ActionRecord(
+                    agent="development",
+                    action="skip",
+                    args={"item": item},
+                    result={"error": "unknown queue item"},
+                    success=False,
+                )
+                self.scratchpad.append_build_action(rec)
+                results.append(rec)
+                continue
+
+            print(f"  [development] {action}({args})")
+            result = self.registry.execute(action, args)
+            ok = bool(isinstance(result, dict) and result.get("success", True))
+            rec = ActionRecord(
+                agent="development",
+                action=action,
+                args=args,
+                result=dict(result) if isinstance(result, dict) else {"raw": result},
+                success=ok,
+            )
+            self.scratchpad.append_build_action(rec)
+            results.append(rec)
+
+        self._inform_strategy_build(results)
+        return results
+
+    def _queue_item_to_tool(self, item: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any]]:
+        """Map strategy plan build_queue entry to registry tool name + args."""
+        raw = item.get("action") or item.get("tool") or item.get("type")
+        if raw is None:
+            return None, {}
+        name = str(raw).strip()
+        key = name.lower().replace("-", "_")
+
+        aliases = {
+            "placesettlement": "place_settlement",
+            "place_road": "place_road",
+            "placeroad": "place_road",
+            "upgrade_to_city": "upgrade_to_city",
+            "upgradetocity": "upgrade_to_city",
+            "buy_dev_card": "buy_dev_card",
+            "buydevcard": "buy_dev_card",
+            "play_dev_card": "play_dev_card",
+            "playdevcard": "play_dev_card",
+        }
+        key = aliases.get(key, key)
+
+        target = item.get("target")
+        extra = item.get("args") if isinstance(item.get("args"), dict) else {}
+
+        if key == "place_settlement":
+            vk = target or extra.get("vertex_key")
+            if not vk:
+                return None, {}
+            return "place_settlement", {
+                "vertex_key": str(vk),
+                "is_setup": bool(extra.get("is_setup", False)),
+            }
+
+        if key == "place_road":
+            ek = target or extra.get("edge_key")
+            if not ek:
+                return None, {}
+            out: Dict[str, Any] = {
+                "edge_key": str(ek),
+                "is_setup": bool(extra.get("is_setup", False)),
+            }
+            if extra.get("last_settlement"):
+                out["last_settlement"] = str(extra["last_settlement"])
+            return "place_road", out
+
+        if key == "upgrade_to_city":
+            vk = target or extra.get("vertex_key")
+            if not vk:
+                return None, {}
+            return "upgrade_to_city", {"vertex_key": str(vk)}
+
+        if key == "buy_dev_card":
+            return "buy_dev_card", {}
+
+        if key == "play_dev_card":
+            ct = item.get("card_type") or extra.get("card_type") or target
+            if not ct:
+                return None, {}
+            params = extra.get("params")
+            if params is None and isinstance(item.get("params"), dict):
+                params = item.get("params")
+            out = {"card_type": str(ct)}
+            if isinstance(params, dict):
+                out["params"] = params
+            return "play_dev_card", out
+
+        return None, {}
+
+    def _inform_strategy_build(self, results: List[ActionRecord]) -> None:
+        payload = {
+            "build_results": [
+                {
+                    "action": r.action,
+                    "success": r.success,
+                    "args": r.args,
+                    "result": r.result,
+                }
+                for r in results
+            ],
+        }
+        self.send_message("strategy", "inform", payload)
+        try:
+            self.call_agent("strategy", "report_build_results", results=results)
+        except Exception:
+            pass
+
+    # ── Discard ───────────────────────────────────────────────────
 
     def handle_discard(self) -> None:
         """
-        Discard cards guided by strategy_plan.priority_resources.
-        Called by Strategy via call_agent("development", "handle_discard").
-
-        STUB: no-op.
+        Discard down to the legal count, preferring to keep Strategy's priority_resources.
+        Tries LLM + discard_cards tool first when OpenAI is available; else heuristic.
         """
-        print("  [development] (stub) handle_discard — no action taken")
+        state = self.scratchpad.game_state
+        plan = self.scratchpad.strategy_plan
+        priorities = list(plan.priority_resources or []) if isinstance(plan, StrategyPlan) else []
+
+        if self.registry and self.openai:
+            tools = self.registry.get_openai_schemas(
+                phase_filter="discard", agent_filter="development",
+            )
+            if tools:
+                done = self._handle_discard_with_llm(state, priorities, tools)
+                if done:
+                    return
+
+        # Deterministic: priority-aware, else game_tools default
+        payload = self._discard_resources_dict(state, priorities)
+        if not payload:
+            actions = _build_discard_action(state)
+            if actions:
+                payload = actions[0].payload.get("resources") or {}
+
+        if not payload:
+            print("  [development] handle_discard: could not compute discard set")
+            self.send_message("strategy", "inform", {"discard": "failed", "reason": "no valid discard"})
+            return
+
+        result = self.registry.execute("discard_cards", {"resources": payload}) if self.registry else {"success": False}
+        ok = bool(isinstance(result, dict) and result.get("success", True))
+        print(f"  [development] discard_cards => {ok} {payload}")
+        self.send_message("strategy", "inform", {"discard": payload, "result": result, "success": ok})
+        self.scratchpad.append_action(ActionRecord(
+            agent="development",
+            action="discard_cards",
+            args={"resources": payload},
+            result=dict(result) if isinstance(result, dict) else {},
+            success=ok,
+        ))
+
+    def _discard_resources_dict(
+        self, state: Dict[str, Any], keep_first: List[str],
+    ) -> Dict[str, int]:
+        """Build resource -> count to discard, preferring to lose non-priority cards."""
+        discarding = state.get("discardingPlayers")
+        myi = state.get("myIndex")
+        if not isinstance(discarding, list) or not isinstance(myi, int):
+            return {}
+        entry = next((d for d in discarding if isinstance(d, dict) and d.get("playerIndex") == myi), None)
+        if not entry:
+            return {}
+        k = entry.get("cardsToDiscard")
+        if not isinstance(k, int) or k <= 0:
+            return {}
+
+        players = state.get("players")
+        if not isinstance(players, list) or myi < 0 or myi >= len(players):
+            return {}
+        me = players[myi] if isinstance(players[myi], dict) else {}
+        res = me.get("resources")
+        if not isinstance(res, dict):
+            return {}
+
+        hand = {r: int(res.get(r, 0) or 0) for r in RESOURCES}
+        total = sum(hand.values())
+        if total <= 0:
+            return {}
+
+        keep_set = {str(x).lower() for x in keep_first if x}
+        order: List[str] = []
+        for r in RESOURCES:
+            if r not in keep_set:
+                order.append(r)
+        for r in RESOURCES:
+            if r in keep_set:
+                order.append(r)
+
+        to_discard: Dict[str, int] = {r: 0 for r in RESOURCES}
+        remaining = k
+        for r in order:
+            if remaining <= 0:
+                break
+            take = min(hand.get(r, 0), remaining)
+            if take > 0:
+                to_discard[r] = take
+                remaining -= take
+        if remaining != 0:
+            return {}
+        return {r: v for r, v in to_discard.items() if v > 0}
+
+    def _handle_discard_with_llm(
+        self,
+        state: Dict[str, Any],
+        priorities: List[str],
+        tools: List[Dict[str, Any]],
+    ) -> bool:
+        """Return True if discard was executed via LLM."""
+        hint = self._discard_hint_text(state)
+        user = build_discard_user_message(
+            self.scratchpad.state_json or {},
+            priorities,
+            hint,
+        )
+        messages: List[Dict[str, Any]] = [
+            {"role": "system", "content": DEVELOPMENT_SYSTEM_PROMPT},
+            {"role": "user", "content": user},
+        ]
+        for _ in range(_LLM_DISCARD_ROUNDS):
+            try:
+                response = self.openai.chat_with_tools(messages, tools=tools, temperature=0.2)
+            except Exception as e:
+                print(f"  [development] discard LLM error: {e}")
+                return False
+
+            tcs = self.openai.extract_tool_calls(response)
+            if not tcs:
+                return False
+            tc = tcs[0]
+            if tc["name"] != "discard_cards":
+                return False
+            args = tc["arguments"]
+            result = self.registry.execute("discard_cards", args)
+            ok = bool(isinstance(result, dict) and result.get("success", True))
+            if ok:
+                print(f"  [development] discard_cards (LLM) => {args}")
+                self.send_message("strategy", "inform", {"discard": args, "result": result, "llm": True})
+                self.scratchpad.append_action(ActionRecord(
+                    agent="development",
+                    action="discard_cards",
+                    args=args,
+                    result=dict(result),
+                    success=True,
+                ))
+                return True
+
+            messages.append({
+                "role": "assistant",
+                "content": self.openai.extract_text(response) or "",
+                "tool_calls": [{
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {"name": tc["name"], "arguments": json.dumps(args, default=str)},
+                }],
+            })
+            messages.append(self.openai.build_tool_result_message(tc["id"], result))
+        return False
+
+    @staticmethod
+    def _discard_hint_text(state: Dict[str, Any]) -> str:
+        discarding = state.get("discardingPlayers")
+        myi = state.get("myIndex")
+        if not isinstance(discarding, list) or not isinstance(myi, int):
+            return "Unknown discard requirement."
+        entry = next((d for d in discarding if isinstance(d, dict) and d.get("playerIndex") == myi), None)
+        if not entry:
+            return "Unknown discard requirement."
+        k = entry.get("cardsToDiscard")
+        return f"Must discard exactly {k} card(s) (see server discardingPlayers)."
+
+    # ── Robber ────────────────────────────────────────────────────
 
     def handle_robber(self) -> None:
         """
-        Place robber using Risk Agent data + strategy guidance.
-        Called by Strategy via call_agent("development", "handle_robber").
-
-        STUB: no-op.
+        Move robber using Risk targets when available; else heuristic hex + steal victim.
+        Optional LLM pass to refine move_robber when OpenAI is configured.
         """
-        print("  [development] (stub) handle_robber — no action taken")
+        state = self.scratchpad.game_state
+        risk_targets: List[Dict[str, Any]] = []
+        try:
+            risk_targets = self.call_agent("risk", "get_robber_targets")
+            if not isinstance(risk_targets, list):
+                risk_targets = []
+        except Exception as e:
+            print(f"  [development] risk.get_robber_targets failed: {e}")
+
+        hex_key, steal_id = self._robber_from_risk_targets(state, risk_targets)
+        if not hex_key:
+            hex_key, steal_id = self._heuristic_robber_move(state)
+
+        heuristic_pick = {"hex_key": hex_key, "steal_from_player_id": steal_id}
+
+        if self.registry and self.openai:
+            tools = self.registry.get_openai_schemas(
+                phase_filter="robber", agent_filter="development",
+            )
+            if tools:
+                done = self._handle_robber_with_llm(
+                    state, risk_targets, heuristic_pick, tools,
+                )
+                if done:
+                    return
+
+        self._execute_move_robber(hex_key, steal_id, source="heuristic")
+
+    def _robber_from_risk_targets(
+        self,
+        state: Dict[str, Any],
+        targets: List[Dict[str, Any]],
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Interpret Risk output: expect list of dicts with hex key + optional weight."""
+        if not targets:
+            return None, None
+        best: Optional[Tuple[float, str]] = None
+        for t in targets:
+            if not isinstance(t, dict):
+                continue
+            hk = t.get("hex") or t.get("hex_key") or t.get("hexKey")
+            if not hk:
+                continue
+            w = float(t.get("score", t.get("damage", t.get("weight", 1.0))) or 1.0)
+            if best is None or w > best[0]:
+                best = (w, str(hk))
+        if best is None:
+            return None, None
+        hk = best[1]
+        steal = self._pick_steal_target(state, hk)
+        return hk, steal
+
+    def _heuristic_robber_move(self, state: Dict[str, Any]) -> Tuple[str, Optional[str]]:
+        myi = state.get("myIndex")
+        cur = state.get("robber")
+        hexes = state.get("hexes") or {}
+        best_hk: Optional[str] = None
+        best_score = -1.0
+        for hk, h in hexes.items():
+            if not isinstance(h, dict):
+                continue
+            if hk == cur:
+                continue
+            res = str(h.get("resource", "") or "").lower()
+            if res in ("desert", ""):
+                continue
+            score = 0.0
+            for vk, v in (state.get("vertices") or {}).items():
+                if not isinstance(v, dict):
+                    continue
+                own = v.get("owner")
+                if own is None or own == myi:
+                    continue
+                if not _vertex_touches_hex(str(vk), str(hk)):
+                    continue
+                score += 1.0
+            if score > best_score:
+                best_score = score
+                best_hk = str(hk)
+
+        if best_hk is None:
+            for hk in hexes:
+                if hk != cur:
+                    best_hk = str(hk)
+                    break
+        if best_hk is None:
+            best_hk = ""
+
+        steal = self._pick_steal_target(state, best_hk) if best_hk else None
+        return best_hk, steal
+
+    def _pick_steal_target(self, state: Dict[str, Any], hex_key: str) -> Optional[str]:
+        """Pick a player id to steal from among opponents on this hex."""
+        myi = state.get("myIndex")
+        players = state.get("players")
+        if not isinstance(players, list) or not isinstance(myi, int):
+            return None
+        seen: List[str] = []
+        for vk, v in (state.get("vertices") or {}).items():
+            if not isinstance(v, dict):
+                continue
+            own = v.get("owner")
+            if own is None or own == myi:
+                continue
+            if not _vertex_touches_hex(str(vk), hex_key):
+                continue
+            if isinstance(own, int) and 0 <= own < len(players):
+                pid = players[own].get("id")
+                if pid is not None:
+                    sid = str(pid)
+                    if sid not in seen:
+                        seen.append(sid)
+        return seen[0] if seen else None
+
+    def _handle_robber_with_llm(
+        self,
+        state: Dict[str, Any],
+        risk_targets: List[Dict[str, Any]],
+        heuristic_pick: Dict[str, Any],
+        tools: List[Dict[str, Any]],
+    ) -> bool:
+        user = build_robber_user_message(
+            self.scratchpad.state_json or {},
+            risk_targets,
+            heuristic_pick,
+        )
+        messages: List[Dict[str, Any]] = [
+            {"role": "system", "content": DEVELOPMENT_SYSTEM_PROMPT},
+            {"role": "user", "content": user},
+        ]
+        for _ in range(_LLM_ROBBER_ROUNDS):
+            try:
+                response = self.openai.chat_with_tools(messages, tools=tools, temperature=0.2)
+            except Exception as e:
+                print(f"  [development] robber LLM error: {e}")
+                return False
+
+            tcs = self.openai.extract_tool_calls(response)
+            if not tcs:
+                return False
+            tc = tcs[0]
+            if tc["name"] != "move_robber":
+                return False
+            args = tc["arguments"]
+            result = self.registry.execute("move_robber", args)
+            ok = bool(isinstance(result, dict) and result.get("success", True))
+            if ok:
+                print(f"  [development] move_robber (LLM) => {args}")
+                self._record_robber_outcome(args, result, source="llm")
+                return True
+
+            messages.append({
+                "role": "assistant",
+                "content": self.openai.extract_text(response) or "",
+                "tool_calls": [{
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {"name": tc["name"], "arguments": json.dumps(args, default=str)},
+                }],
+            })
+            messages.append(self.openai.build_tool_result_message(tc["id"], result))
+        return False
+
+    def _execute_move_robber(
+        self, hex_key: str, steal_from_player_id: Optional[str], source: str,
+    ) -> None:
+        if not self.registry or not hex_key:
+            print("  [development] move_robber skipped (no registry or hex)")
+            self.send_message("strategy", "inform", {"robber_result": {"success": False, "reason": "no hex"}})
+            return
+
+        args: Dict[str, Any] = {"hex_key": hex_key}
+        if steal_from_player_id:
+            args["steal_from_player_id"] = steal_from_player_id
+        result = self.registry.execute("move_robber", args)
+        ok = bool(isinstance(result, dict) and result.get("success", True))
+        print(f"  [development] move_robber ({source}) => {ok} hex={hex_key}")
+        self._record_robber_outcome(args, result, source=source)
+
+    def _record_robber_outcome(
+        self, args: Dict[str, Any], result: Dict[str, Any], source: str,
+    ) -> None:
+        ok = bool(isinstance(result, dict) and result.get("success", True))
+        self.send_message("strategy", "inform", {
+            "robber_result": {"args": args, "result": result, "source": source},
+        })
+        self.scratchpad.append_action(ActionRecord(
+            agent="development",
+            action="move_robber",
+            args=args,
+            result=dict(result),
+            success=ok,
+        ))
