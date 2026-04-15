@@ -25,6 +25,7 @@ from Agent.utils.game_state_processor import GameStateProcessor
 from Agent.utils.openai_client import OpenAIClient
 from Agent.utils.stats_tracker import AgentStatsTracker
 from Agent.tools.registry import ToolRegistry
+from Agent.trading_agent.agent import TradingAgent
 
 from Agent.strategy_agent.prompts import (
     STRATEGY_SYSTEM_PROMPT,
@@ -359,19 +360,13 @@ class StrategyAgent(BaseAgent):
 
     @staticmethod
     def _has_trade_offer(state: Dict[str, Any]) -> bool:
-        """Check if there's an active trade offer we need to respond to."""
-        for key in ("tradeOffer", "activeTradeOffer", "currentTradeOffer"):
-            v = state.get(key)
-            if isinstance(v, dict):
-                # Check if we can respond to it
-                can_resp = (
-                    v.get("can_i_respond")
-                    or v.get("canRespond")
-                    or v.get("canRespondToTrade")
-                )
-                if can_resp:
-                    return True
-        return False
+        """
+        True if there is an incoming trade the Trading agent should handle off-turn.
+
+        Delegates to the same rules as TradingAgent / React awake: targeted to us,
+        broadcast (to is null), or canRespond flags — not our own outgoing offer.
+        """
+        return TradingAgent.has_incoming_offer_for_me(state)
 
     # ──────────────────────────────────────────────────────────────
     # Methods callable by peer agents
