@@ -27,6 +27,13 @@ RULES:
 - When playing dev cards, consider: knight before rolling, monopoly when opponents have many of target resource.
 - Do NOT end the turn -- Strategy handles that.
 - Do NOT initiate trades -- Trading agent handles that.
+
+When you call a tool (discard_cards, move_robber, etc.):
+- You MUST set the assistant message `content` to at least one clear sentence of reasoning
+  before the tool call (why this discard split, or why this hex / steal target).
+- Do not leave `content` empty or use only tool_calls without text; our client logs `content` as [thought].
+- Do not put JSON, markdown code fences, or resource tables only in `content`. Pass discard/move data
+  exclusively through the tool call arguments, not as ```json blocks in the chat message.
 """
 
 
@@ -42,7 +49,8 @@ def build_discard_user_message(
         f"Discard requirement / context:\n{discarding_hint}\n\n"
         "## State snapshot\n"
         f"{json.dumps(state_json, indent=2, default=str)}\n\n"
-        "Call discard_cards once with a JSON object mapping resource names to positive integers."
+        "Use the discard_cards tool with argument {\"resources\": {\"brick\": n, ...}} — do not paste JSON in the message.\n"
+        "Reply with one short sentence in the assistant message explaining your choice, then invoke discard_cards."
     )
 
 
@@ -59,5 +67,7 @@ def build_robber_user_message(
         "## Heuristic suggestion (fallback)\n"
         f"{json.dumps(heuristic_pick, indent=2, default=str)}\n\n"
         "## State snapshot\n"
-        f"{json.dumps(state_json, indent=2, default=str)}"
+        f"{json.dumps(state_json, indent=2, default=str)}\n\n"
+        "Use steal_from_player_id from player id strings in state (e.g. p1), not display names, when calling move_robber.\n"
+        "Reply with one short sentence in the assistant message explaining the move, then invoke move_robber."
     )

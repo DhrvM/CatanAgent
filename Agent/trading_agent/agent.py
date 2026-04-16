@@ -1,9 +1,9 @@
 """
-Trading Agent — proactive and reactive trade execution.
+Trading Agent — GPT-4o tool-calling for trades (TODO.md).
 
-Off-turn incoming offers are handled in ``respond_to_offer`` (invoked by Strategy),
-using an optional LLM "awake" path (respond_to_trade / counter_trade) with heuristic
-fallback — aligned with ``ReactCatanAgent`` reactive trade behavior and TODO.md.
+- **Proactive (main phase):** Multi-step LLM loop chooses among trading tools using Strategy’s
+  trade policy + plan context; heuristics only if the LLM completes no successful trade.
+- **Reactive (off-turn):** LLM ``respond_to_trade`` / ``counter_trade`` first, then heuristic.
 """
 from __future__ import annotations
 
@@ -13,10 +13,11 @@ from dataclasses import asdict
 from typing import Any, Dict, List, Optional
 
 from Agent.shared.base_agent import BaseAgent
-from Agent.shared.scratchpad import ActionRecord, Scratchpad, TradePolicy, TradeState
+from Agent.shared.scratchpad import ActionRecord, Scratchpad, StrategyPlan, TradePolicy, TradeState
 from Agent.trading_agent.prompts import (
     TRADING_SYSTEM_PROMPT,
     build_awake_trade_user_message,
+    build_proactive_trade_user_message,
 )
 
 RESOURCES = ["brick", "lumber", "wool", "grain", "ore"]
@@ -24,6 +25,16 @@ TRADE_RESPONSE_TIMEOUT_SEC = 60
 TRADE_POLL_INTERVAL_SEC = 2
 
 _AWAKE_LLM_MAX_ROUNDS = 2
+_THOUGHT_LOG_CHARS = 200
+_MAX_PROACTIVE_LLM_STEPS = 6
+_PROACTIVE_TOOL_NAMES = frozenset({
+    "bank_trade",
+    "propose_trade",
+    "get_trade_options",
+    "get_game_summary",
+    "cancel_trade",
+    "get_trade_offer_status",
+})
 
 
 def extract_incoming_offer_for_me(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -93,8 +104,10 @@ class TradingAgent(BaseAgent):
 
     def proactive_trade(self) -> None:
         """
-        Propose trades if Strategy recommends it.
-        Called by Strategy via call_agent("trading", "proactive_trade").
+        Propose trades when Strategy allows it.
+
+        Primary path: GPT-4o selects trading tools using Strategy's policy + plan context.
+        Fallback: deterministic bank-then-player heuristics (no API or LLM did not seal a trade).
         """
         policy = self.call_agent("strategy", "get_trade_policy")
         if not isinstance(policy, TradePolicy):
@@ -104,30 +117,213 @@ class TradingAgent(BaseAgent):
             "mode": "proactive",
             "executed": [],
             "reason": "",
+            "source": "",
         }
 
         if not policy.should_propose_trades:
             results["reason"] = "strategy policy disabled proactive trades"
+            results["source"] = "policy"
             self._report_results(results)
             return
 
-        # First preference: bank trade if ratio is acceptable and it yields needed resources.
+        llm_trace: List[Dict[str, Any]] = []
+        if self.openai and self.registry:
+            try:
+                llm_trace = self._proactive_trade_with_llm(policy)
+            except Exception as e:
+                results["llm_error"] = str(e)
+                print(f"  [trading] proactive LLM error: {e}")
+            results["executed"].extend(llm_trace)
+            results["source"] = "llm"
+            if self._proactive_trace_has_completed_trade(llm_trace):
+                results["reason"] = "completed via LLM tool calls"
+                self._report_results(results)
+                return
+
+        # Heuristic fallback (mirrors pre-LLM behavior)
+        results["source"] = "heuristic" if not llm_trace else "llm_then_heuristic"
         bank_result = self._attempt_bank_trade(policy)
         if bank_result is not None:
-            results["executed"].append(bank_result)
-            results["reason"] = "executed bank trade"
+            results["executed"].append({**bank_result, "source": "heuristic"})
+            results["reason"] = "executed bank trade (heuristic fallback)"
             self._report_results(results)
             return
 
-        # Second preference: player trade proposal if no bank trade was viable.
         player_result = self._attempt_player_trade(policy)
         if player_result is not None:
-            results["executed"].append(player_result)
-            results["reason"] = "proposed player trade"
+            results["executed"].append({**player_result, "source": "heuristic"})
+            results["reason"] = "proposed player trade (heuristic fallback)"
         else:
             results["reason"] = "no viable trade found"
 
         self._report_results(results)
+
+    def _proactive_trace_has_completed_trade(self, trace: List[Dict[str, Any]]) -> bool:
+        for step in trace:
+            if step.get("phase") != "llm":
+                continue
+            name = step.get("name")
+            res = step.get("result") if isinstance(step.get("result"), dict) else {}
+            if not res.get("success"):
+                continue
+            if name == "bank_trade":
+                return True
+            if name == "propose_trade":
+                return True
+        return False
+
+    def _filter_proactive_tools(self) -> List[Dict[str, Any]]:
+        """Main-phase trading tools only (no respond/counter — wrong phase semantics)."""
+        if not self.registry:
+            return []
+        all_tools = self.registry.get_openai_schemas(
+            phase_filter="main", agent_filter="trading",
+        )
+        out: List[Dict[str, Any]] = []
+        for t in all_tools:
+            if not isinstance(t, dict):
+                continue
+            fn = t.get("function")
+            if not isinstance(fn, dict):
+                continue
+            name = fn.get("name")
+            if name in _PROACTIVE_TOOL_NAMES:
+                out.append(t)
+        return out
+
+    def _strategy_context_extras(self) -> Dict[str, Any]:
+        plan = self.scratchpad.strategy_plan
+        if not isinstance(plan, StrategyPlan):
+            return {}
+        return {
+            "priority_resources": list(plan.priority_resources or []),
+            "short_term_goals": list(plan.short_term_goals or []),
+            "long_term_goal": plan.long_term_goal,
+            "risk_tolerance": plan.risk_tolerance,
+        }
+
+    def _proactive_trade_with_llm(self, policy: TradePolicy) -> List[Dict[str, Any]]:
+        """ReAct-style loop: LLM chooses bank_trade / propose_trade / query tools."""
+        tools = self._filter_proactive_tools()
+        if not tools:
+            return []
+
+        tp_dict = asdict(policy)
+        ts_dict = asdict(self.trade_state)
+        user_content = build_proactive_trade_user_message(
+            self.scratchpad.state_json or {},
+            tp_dict,
+            ts_dict,
+            strategy_extras=self._strategy_context_extras(),
+        )
+        messages: List[Dict[str, Any]] = [
+            {"role": "system", "content": TRADING_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ]
+        trace: List[Dict[str, Any]] = []
+
+        for _ in range(_MAX_PROACTIVE_LLM_STEPS):
+            response = self.openai.chat_with_tools(messages, tools=tools, temperature=0.35)
+            assistant_text = self.openai.extract_text(response)
+            if assistant_text:
+                print(f"  [thought] {assistant_text[:_THOUGHT_LOG_CHARS]}")
+
+            tool_calls = self.openai.extract_tool_calls(response)
+            if not tool_calls:
+                break
+
+            raw_msg = response.choices[0].message
+            assistant_msg: Dict[str, Any] = {
+                "role": "assistant",
+                "content": assistant_text or None,
+            }
+            if raw_msg.tool_calls:
+                assistant_msg["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in raw_msg.tool_calls
+                ]
+            messages.append(assistant_msg)
+
+            for tc in tool_calls:
+                name = tc["name"]
+                args = tc["arguments"]
+                tc_id = tc["id"]
+                if name not in _PROACTIVE_TOOL_NAMES:
+                    print(f"  [action] {name}({json.dumps(args, default=str)}) [skipped: not allowed in proactive mode]")
+                    err = {"success": False, "error": f"{name} not allowed in proactive trading"}
+                    messages.append(self.openai.build_tool_result_message(tc_id, err))
+                    trace.append({
+                        "phase": "llm",
+                        "name": name,
+                        "args": args,
+                        "result": err,
+                    })
+                    continue
+
+                print(f"  [action] {name}({json.dumps(args, default=str)})")
+                result = self._exec_tool(name, args)
+                messages.append(self.openai.build_tool_result_message(tc_id, result))
+
+                step: Dict[str, Any] = {
+                    "phase": "llm",
+                    "name": name,
+                    "args": args,
+                    "result": result,
+                }
+                if bool(result.get("success")):
+                    self._apply_proactive_tool_side_effects(name, args, policy, step)
+                trace.append(step)
+
+                self.scratchpad.append_action(ActionRecord(
+                    agent="trading",
+                    action=name,
+                    args=args,
+                    result=dict(result) if isinstance(result, dict) else {},
+                    success=bool(result.get("success", True)),
+                ))
+
+                # One outgoing proposal is enough for this main-phase pass; avoid a no-op LLM round.
+                if name == "propose_trade" and bool(result.get("success")):
+                    return trace
+
+        return trace
+
+    def _apply_proactive_tool_side_effects(
+        self,
+        name: str,
+        args: Dict[str, Any],
+        policy: TradePolicy,
+        step: Dict[str, Any],
+    ) -> None:
+        """Update trade_state / reputation after a successful proactive tool."""
+        if name == "bank_trade":
+            gr = str(args.get("give_resource", ""))
+            ga = int(args.get("give_amount", 0) or 0)
+            gt = str(args.get("get_resource", ""))
+            self._record_trade_outcome(
+                counterpart="bank",
+                offer={gr: ga},
+                request={gt: 1},
+                accepted=True,
+            )
+        elif name == "propose_trade":
+            blocked = set(self._top_threat_player_names(vp_threshold=8))
+            target = self._choose_trade_target(exclude_names=blocked)
+            self.trade_state.pending_offer = {
+                "offer": dict(args.get("offer") or {}),
+                "request": dict(args.get("request") or {}),
+                "target": target,
+                "kind": "propose_llm",
+            }
+            self.scratchpad.write_trade_state(self.trade_state)
+            step["post_await"] = self._await_offer_response_or_timeout(policy)
 
     def respond_to_offer(self) -> None:
         """
@@ -309,6 +505,7 @@ class TradingAgent(BaseAgent):
             assistant_text = self.openai.extract_text(response)
             if assistant_text:
                 final_thought = assistant_text.strip()
+                print(f"  [thought] {assistant_text[:_THOUGHT_LOG_CHARS]}")
 
             tool_calls = self.openai.extract_tool_calls(response)
             if not tool_calls:
@@ -320,6 +517,7 @@ class TradingAgent(BaseAgent):
             if name not in allowed:
                 return None
 
+            print(f"  [action] {name}({json.dumps(args, default=str)})")
             result = self._exec_tool(name, args)
             ok = bool(isinstance(result, dict) and result.get("success"))
 
@@ -364,9 +562,6 @@ class TradingAgent(BaseAgent):
         tool_result = llm_out.get("result") if isinstance(llm_out.get("result"), dict) else {}
         thought = str(llm_out.get("thought") or "")
         args = llm_out.get("args") if isinstance(llm_out.get("args"), dict) else {}
-
-        if thought:
-            print(f"  [thought] {thought[:320]}")
 
         threshold = float(policy.min_accept_score)
         base_score = self._score_trade(offer=offer, request=request, trade_policy=policy)

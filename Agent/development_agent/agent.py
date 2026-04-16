@@ -27,6 +27,59 @@ from Agent.utils.game_state_processor import (
 
 _LLM_ROBBER_ROUNDS = 2
 _LLM_DISCARD_ROUNDS = 2
+_THOUGHT_LOG_CHARS = 200
+
+
+def _thought_excerpt_for_log(raw: str, max_chars: int = _THOUGHT_LOG_CHARS) -> str:
+    """
+    One-line friendly excerpt for [thought] logs: drop markdown/JSON blocks so we do not
+    truncate mid-fence when the model ignores instructions.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    fence = s.find("```")
+    if fence != -1:
+        s = s[:fence].strip()
+    if "\n\n" in s:
+        s = s.split("\n\n", 1)[0].strip()
+    s = " ".join(s.split())
+    if len(s) <= max_chars:
+        return s
+    cut = s[: max_chars - 3].rstrip()
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut + "..."
+
+
+def _thought_line_from_llm_response(
+    assistant_text: str,
+    tcs: List[Dict[str, Any]],
+) -> str:
+    """
+    Prefer natural-language ``content``; if the API omits it (tool-only turn), summarize
+    the first tool call so [thought] is never silent in the CLI.
+    """
+    excerpt = _thought_excerpt_for_log(assistant_text)
+    if excerpt:
+        return excerpt
+    if not tcs:
+        return ""
+    tc0 = tcs[0]
+    name = str(tc0.get("name") or "")
+    args = tc0.get("arguments") if isinstance(tc0.get("arguments"), dict) else {}
+    if name == "discard_cards":
+        res = args.get("resources")
+        if isinstance(res, dict):
+            slim = {k: v for k, v in res.items() if int(v or 0) > 0}
+            if slim:
+                return f"Discarding resources: {slim}"
+    if name == "move_robber":
+        hk = args.get("hex_key")
+        sid = args.get("steal_from_player_id")
+        steal = "" if sid in (None, "") else f", steal from {sid}"
+        return f"Moving robber to {hk}{steal}"
+    return f"Calling {name}"
 
 
 def _vertex_touches_hex(vertex_key: str, hex_key: str) -> bool:
@@ -95,7 +148,7 @@ class DevelopmentAgent(BaseAgent):
                 results.append(rec)
                 continue
 
-            print(f"  [development] {action}({args})")
+            print(f"  [action] {action}({json.dumps(args, default=str)})")
             result = self.registry.execute(action, args)
             ok = bool(isinstance(result, dict) and result.get("success", True))
             rec = ActionRecord(
@@ -231,7 +284,7 @@ class DevelopmentAgent(BaseAgent):
 
         result = self.registry.execute("discard_cards", {"resources": payload}) if self.registry else {"success": False}
         ok = bool(isinstance(result, dict) and result.get("success", True))
-        print(f"  [development] discard_cards => {ok} {payload}")
+        print(f"  [action] discard_cards({json.dumps({'resources': payload}, default=str)})  # heuristic fallback")
         self.send_message("strategy", "inform", {"discard": payload, "result": result, "success": ok})
         self.scratchpad.append_action(ActionRecord(
             agent="development",
@@ -308,24 +361,43 @@ class DevelopmentAgent(BaseAgent):
             {"role": "system", "content": DEVELOPMENT_SYSTEM_PROMPT},
             {"role": "user", "content": user},
         ]
-        for _ in range(_LLM_DISCARD_ROUNDS):
+        for attempt in range(_LLM_DISCARD_ROUNDS):
             try:
                 response = self.openai.chat_with_tools(messages, tools=tools, temperature=0.2)
             except Exception as e:
                 print(f"  [development] discard LLM error: {e}")
                 return False
 
+            assistant_text = self.openai.extract_text(response)
             tcs = self.openai.extract_tool_calls(response)
+            thought_line = _thought_line_from_llm_response(assistant_text, tcs)
+            # Avoid duplicate [thought] when the first reply has prose but no tool call and we nudge again.
+            skip_thought = (not tcs) and bool(assistant_text) and (attempt + 1 < _LLM_DISCARD_ROUNDS)
+            if thought_line and not skip_thought:
+                print(f"  [thought] {thought_line}")
+
             if not tcs:
+                if assistant_text and attempt + 1 < _LLM_DISCARD_ROUNDS:
+                    messages.append({"role": "assistant", "content": assistant_text})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "You must invoke the discard_cards tool with "
+                            '{"resources": { "brick": <n>, ... }} in the tool arguments only — '
+                            "no JSON or code blocks in the message. One sentence of reasoning, then the tool call."
+                        ),
+                    })
+                    continue
                 return False
             tc = tcs[0]
             if tc["name"] != "discard_cards":
                 return False
             args = tc["arguments"]
+            print(f"  [action] discard_cards({json.dumps(args, default=str)})")
             result = self.registry.execute("discard_cards", args)
             ok = bool(isinstance(result, dict) and result.get("success", True))
             if ok:
-                print(f"  [development] discard_cards (LLM) => {args}")
+                print(f"  [development] discard_cards (LLM) => ok")
                 self.send_message("strategy", "inform", {"discard": args, "result": result, "llm": True})
                 self.scratchpad.append_action(ActionRecord(
                     agent="development",
@@ -497,24 +569,41 @@ class DevelopmentAgent(BaseAgent):
             {"role": "system", "content": DEVELOPMENT_SYSTEM_PROMPT},
             {"role": "user", "content": user},
         ]
-        for _ in range(_LLM_ROBBER_ROUNDS):
+        for attempt in range(_LLM_ROBBER_ROUNDS):
             try:
                 response = self.openai.chat_with_tools(messages, tools=tools, temperature=0.2)
             except Exception as e:
                 print(f"  [development] robber LLM error: {e}")
                 return False
 
+            assistant_text = self.openai.extract_text(response)
             tcs = self.openai.extract_tool_calls(response)
+            thought_line = _thought_line_from_llm_response(assistant_text, tcs)
+            skip_thought = (not tcs) and bool(assistant_text) and (attempt + 1 < _LLM_ROBBER_ROUNDS)
+            if thought_line and not skip_thought:
+                print(f"  [thought] {thought_line}")
+
             if not tcs:
+                if assistant_text and attempt + 1 < _LLM_ROBBER_ROUNDS:
+                    messages.append({"role": "assistant", "content": assistant_text})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "Invoke move_robber via the tool with hex_key and optional steal_from_player_id "
+                            "(use player id from state, e.g. p1). One sentence of reasoning, then the tool call."
+                        ),
+                    })
+                    continue
                 return False
             tc = tcs[0]
             if tc["name"] != "move_robber":
                 return False
             args = tc["arguments"]
+            print(f"  [action] move_robber({json.dumps(args, default=str)})")
             result = self.registry.execute("move_robber", args)
             ok = bool(isinstance(result, dict) and result.get("success", True))
             if ok:
-                print(f"  [development] move_robber (LLM) => {args}")
+                print(f"  [development] move_robber (LLM) => ok")
                 self._record_robber_outcome(args, result, source="llm")
                 return True
 
