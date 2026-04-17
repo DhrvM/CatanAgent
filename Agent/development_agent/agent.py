@@ -13,8 +13,10 @@ from Agent.shared.base_agent import BaseAgent
 from Agent.shared.scratchpad import ActionRecord, Scratchpad, StrategyPlan
 from Agent.development_agent.prompts import (
     DEVELOPMENT_SYSTEM_PROMPT,
+    DEV_CONSULTANT_SYSTEM_PROMPT,
     build_discard_user_message,
     build_robber_user_message,
+    build_dev_consult_context,
 )
 from Agent.tools.game_tools import (
     RESOURCES,
@@ -95,7 +97,15 @@ def _vertex_touches_hex(vertex_key: str, hex_key: str) -> bool:
 
 class DevelopmentAgent(BaseAgent):
     """
-    Executes Strategy's build queue and handles discard / robber phases.
+    Builder and building consultant for the multi-agent system.
+
+    Two modes:
+      - **Consultant**: Strategy asks building questions via ``consult(question)``.
+        Development advises on building spots, costs, and ROI using GPT-4o.
+      - **Executor**: Strategy delegates builds via ``execute_build_queue()``.
+        Development executes registry tools in order.
+
+    Also handles discard (7-roll) and robber phases.
 
     Peers: Strategy (required), Risk (optional — register for robber EV / targets).
     """
@@ -106,6 +116,100 @@ class DevelopmentAgent(BaseAgent):
         super().__init__("development", scratchpad)
         self.openai = openai
         self.registry = registry
+
+    # ── Consultation (Strategy asks building questions) ────────────
+
+    def consult(self, question: str) -> str:
+        """
+        Answer a building question from Strategy using GPT-4o.
+
+        Builds context from the scratchpad: game state, our resources,
+        available building spots, and Risk's building EV data.
+        Returns a plain-English recommendation (3-5 sentences).
+        """
+        from dataclasses import asdict
+
+        state_json = self.scratchpad.to_state_json()
+        risk_data = asdict(self.scratchpad.risk_analysis)
+
+        # Extract our current resources from scratchpad
+        me = self.scratchpad.processed_state.get("me", {})
+        resources = me.get("resources", {})
+
+        # Get available building spots via registry
+        building_spots = {}
+        if self.registry:
+            try:
+                settle = self.registry.execute("get_building_spots", {"building_type": "settlement"})
+                city = self.registry.execute("get_building_spots", {"building_type": "city"})
+                building_spots = {
+                    "settlement_spots": settle.get("spots", [])[:5],
+                    "city_spots": city.get("spots", [])[:5],
+                }
+            except Exception:
+                pass
+
+        context = build_dev_consult_context(
+            question=question,
+            state_json=state_json,
+            resources=resources,
+            building_spots=building_spots,
+            risk_analysis=risk_data,
+        )
+
+        answer = self._call_gpt4o(
+            system=DEV_CONSULTANT_SYSTEM_PROMPT,
+            user=context,
+            fallback=self._fallback_consult(question),
+        )
+
+        print(f"  [dev] consult Q: {question[:80]}")
+        print(f"  [dev] consult A: {answer[:120]}...")
+        return answer
+
+    def _call_gpt4o(self, system: str, user: str, fallback: str) -> str:
+        """Send a system + user message to GPT-4o, return text or fallback."""
+        if self.openai is None:
+            return fallback
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        try:
+            response = self.openai.chat_with_tools(messages, tools=None)
+            text = self.openai.extract_text(response)
+            if text and len(text.strip()) > 10:
+                return text.strip()
+        except Exception as e:
+            print(f"  [dev] GPT-4o consult failed: {e}")
+        return fallback
+
+    def _fallback_consult(self, question: str) -> str:
+        """Deterministic consultation fallback using cached risk data."""
+        risk = self.scratchpad.risk_analysis
+        me = self.scratchpad.processed_state.get("me", {})
+        resources = me.get("resources", {})
+
+        parts = [f"[Deterministic fallback for: {question}]"]
+
+        # Check what we can afford
+        can_settle = (resources.get("brick", 0) >= 1 and resources.get("lumber", 0) >= 1
+                      and resources.get("wool", 0) >= 1 and resources.get("grain", 0) >= 1)
+        can_city = resources.get("ore", 0) >= 3 and resources.get("grain", 0) >= 2
+        can_road = resources.get("brick", 0) >= 1 and resources.get("lumber", 0) >= 1
+
+        if can_city and risk.best_city_vertices:
+            top = risk.best_city_vertices[0]
+            parts.append(f"Can afford city upgrade. Best target: {top.get('vertex', '?')}.")
+        elif can_settle and risk.best_settlement_vertices:
+            top = risk.best_settlement_vertices[0]
+            parts.append(f"Can afford settlement. Best target: {top.get('vertex', '?')}.")
+        elif can_road:
+            parts.append("Can afford road. Build toward best settlement spot.")
+        else:
+            parts.append("Cannot afford any buildings this turn. Trade or save.")
+
+        return " ".join(parts)
 
     # ── Build queue ───────────────────────────────────────────────
 

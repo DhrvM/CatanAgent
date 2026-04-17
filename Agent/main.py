@@ -134,7 +134,7 @@ def _run_multi(args) -> None:
     ollama = OllamaChat(OllamaConfig(model=args.ollama_model))
 
     # ── Create agents ─────────────────────────────────────────────
-    risk = RiskAgent(scratchpad, ollama)
+    risk = RiskAgent(scratchpad, openai=openai)
     strategy = StrategyAgent(
         scratchpad, openai, client, processor, registry, stats,
         game_code=args.game_code,

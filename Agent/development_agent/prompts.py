@@ -71,3 +71,81 @@ def build_robber_user_message(
         "Use steal_from_player_id from player id strings in state (e.g. p1), not display names, when calling move_robber.\n"
         "Reply with one short sentence in the assistant message explaining the move, then invoke move_robber."
     )
+
+
+# ── Development Consultant Prompts ────────────────────────────────
+
+DEV_CONSULTANT_SYSTEM_PROMPT = """\
+You are the Development Consultant for a Settlers of Catan AI multi-agent system.
+
+Your role is to answer building and development questions from the Strategy Agent.
+You have access to:
+  - The current game state (our resources, pieces remaining, buildings)
+  - Building costs (settlement: brick+lumber+wool+grain, city: 3ore+2grain,
+    road: brick+lumber, dev card: ore+wool+grain)
+  - Available building spots with expected value rankings
+  - Risk analysis data (income projections, robber impact)
+
+RULES:
+- Be specific: reference vertex keys (e.g. v_0_-1_2), resource names, and costs.
+- Be concise: 3-5 sentences max.
+- Always recommend a concrete action: "build settlement at X", "upgrade Y to city",
+  "save for city upgrade", "buy dev card".
+- Consider affordability: check if we have enough resources RIGHT NOW.
+- Consider ROI: which building gives the best resource income per cost.
+- Never suggest trades — the Trading Agent handles that.
+
+Respond in plain English only — no JSON, no markdown code blocks."""
+
+
+def build_dev_consult_context(
+    question: str,
+    state_json: Dict[str, Any],
+    resources: Dict[str, int],
+    building_spots: Dict[str, Any],
+    risk_analysis: Dict[str, Any],
+) -> str:
+    """Build the user message for a Development consultation."""
+    sections: List[str] = []
+
+    sections.append(f"## Strategy Agent's Question\n{question}")
+
+    sections.append("\n## Our Current Resources")
+    sections.append(json.dumps(resources, indent=2, default=str))
+
+    sections.append("\n## Building Costs Reference")
+    sections.append(json.dumps({
+        "settlement": {"brick": 1, "lumber": 1, "wool": 1, "grain": 1},
+        "city": {"ore": 3, "grain": 2},
+        "road": {"brick": 1, "lumber": 1},
+        "dev_card": {"ore": 1, "wool": 1, "grain": 1},
+    }, indent=2))
+
+    if building_spots:
+        sections.append("\n## Available Building Spots (ranked by EV)")
+        sections.append(json.dumps(building_spots, indent=2, default=str))
+
+    # Include relevant risk data (income + best vertices)
+    if risk_analysis:
+        trimmed = {}
+        if "resource_expected_income" in risk_analysis:
+            trimmed["current_income"] = risk_analysis["resource_expected_income"]
+        if "best_settlement_vertices" in risk_analysis:
+            trimmed["best_settlement_spots"] = risk_analysis["best_settlement_vertices"][:5]
+        if "best_city_vertices" in risk_analysis:
+            trimmed["best_city_upgrades"] = risk_analysis["best_city_vertices"][:5]
+        if trimmed:
+            sections.append("\n## Income & Building EV Data")
+            sections.append(json.dumps(trimmed, indent=2, default=str))
+
+    sections.append("\n## Game State")
+    sections.append(json.dumps(state_json, indent=2, default=str))
+
+    sections.append(
+        "\n## Instructions\n"
+        "Answer the Strategy Agent's building question using the data above. "
+        "Be specific about vertex keys, costs, and expected income gains. "
+        "3-5 sentences max."
+    )
+
+    return "\n".join(sections)

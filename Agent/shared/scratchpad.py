@@ -33,7 +33,7 @@ class RiskAnalysis:
     per_building_income: List[Dict] = field(default_factory=list)
     opponent_threats: List[Dict] = field(default_factory=list)
     win_probabilities: Dict[str, float] = field(default_factory=dict)
-    robber_impact: Dict[str, float] = field(default_factory=dict)
+    robber_impact: List[Dict] = field(default_factory=list)
     best_settlement_vertices: List[Dict] = field(default_factory=list)
     best_city_vertices: List[Dict] = field(default_factory=list)
     threat_narrative: str = ""
@@ -48,6 +48,7 @@ class StrategyPlan:
     priority_resources: List[str] = field(default_factory=list)
     build_queue: List[Dict] = field(default_factory=list)
     trade_policy: TradePolicy = field(default_factory=TradePolicy)
+    should_trade_first: bool = True              # dynamic action ordering
     risk_tolerance: str = "moderate"           # "aggressive"|"moderate"|"conservative"
     reasoning: str = ""
     updated_at: float = 0.0

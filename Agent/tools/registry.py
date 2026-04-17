@@ -640,4 +640,8 @@ def build_tool_registry(
         agents=["development"],
     ))
 
+    # ── Risk analysis tools (from probabilities.py) ─────────────
+    from Agent.tools.risk_tools import register_risk_tools
+    register_risk_tools(reg, client)
+
     return reg
