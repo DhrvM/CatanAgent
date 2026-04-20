@@ -13,6 +13,8 @@ You will receive:
 RULES:
 - You may call one or more tools per response.
 - Think step-by-step about your strategy before acting.
+- Keep assistant prose concise: one short sentence before tool calls.
+- Do not use markdown headings, bullet lists, or long multi-paragraph analysis in action turns.
 - Prioritize building cities on high-production hexes, then settlements, then roads.
 - Trade with the bank only when it clearly helps your position.
 - When you have development cards, consider playing them before rolling (knights).

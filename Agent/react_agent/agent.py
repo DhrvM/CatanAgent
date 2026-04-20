@@ -22,6 +22,21 @@ from Agent.react_agent.prompts import SYSTEM_PROMPT, MAX_STEPS_PER_TURN, build_t
 # ReAct guardrails (observed failure modes in long runs)
 _MAX_GET_GAME_SUMMARY_PER_TURN = 6
 _OBSERVE_ONLY_TOOLS = frozenset({"get_game_summary", "get_building_spots", "get_trade_options"})
+_MUTATING_TOOLS = frozenset({
+    "roll_dice",
+    "move_robber",
+    "place_road",
+    "place_settlement",
+    "upgrade_to_city",
+    "buy_dev_card",
+    "play_dev_card",
+    "propose_trade",
+    "respond_to_trade",
+    "counter_trade",
+    "bank_trade",
+    "cancel_trade",
+    "end_turn",
+})
 
 
 def _is_openai_rate_limit_error(exc: BaseException) -> bool:
@@ -222,7 +237,7 @@ class ReactCatanAgent:
             # Record strategy from GPT-4o's reasoning
             if assistant_text:
                 self.summarizer.record_strategy(assistant_text)
-                print(f"  [thought] {assistant_text[:200]}")
+                print(f"  [thought] {assistant_text}")
 
             if not tool_calls:
                 if self._propose_trade_awaiting_end:
@@ -268,7 +283,7 @@ class ReactCatanAgent:
                 print(f"  [action] {name}({json.dumps(args, default=str)})")
 
                 result = self._react_validate_and_execute(name, args)
-                print(f"  [result] {json.dumps(result, default=str)[:200]}")
+                print(f"  [result] {json.dumps(result, default=str)}")
 
                 # Record stats
                 success = result.get("success", True)
@@ -284,6 +299,11 @@ class ReactCatanAgent:
                 messages.append(
                     self.openai.build_tool_result_message(tc_id, result)
                 )
+                if name in _MUTATING_TOOLS:
+                    messages.append({
+                        "role": "user",
+                        "content": self._state_refresh_message(),
+                    })
 
                 if name == "end_turn":
                     turn_ended = True
@@ -522,6 +542,27 @@ class ReactCatanAgent:
                         "success": False,
                         "error": f"Vertex {vk} is already occupied — choose another vertex.",
                     }
+                me = self._me(state)
+                res = me.get("resources") if isinstance(me.get("resources"), dict) else {}
+                try:
+                    if (
+                        int(res.get("brick", 0) or 0) < 1
+                        or int(res.get("lumber", 0) or 0) < 1
+                        or int(res.get("wool", 0) or 0) < 1
+                        or int(res.get("grain", 0) or 0) < 1
+                    ):
+                        return {
+                            "success": False,
+                            "error": (
+                                "place_settlement costs 1 brick + 1 lumber + 1 wool + 1 grain — "
+                                "you do not have enough resources."
+                            ),
+                        }
+                except (TypeError, ValueError):
+                    return {
+                        "success": False,
+                        "error": "Could not read your resources for place_settlement; refresh state.",
+                    }
 
         if name == "place_road":
             ek = args.get("edge_key")
@@ -537,6 +578,34 @@ class ReactCatanAgent:
                     return {
                         "success": False,
                         "error": f"Edge {ek} already has a road — use get_building_spots with building_type \"road\".",
+                    }
+                me = self._me(state)
+                res = me.get("resources") if isinstance(me.get("resources"), dict) else {}
+                try:
+                    if int(res.get("brick", 0) or 0) < 1 or int(res.get("lumber", 0) or 0) < 1:
+                        return {
+                            "success": False,
+                            "error": (
+                                "place_road costs 1 brick + 1 lumber — "
+                                "you do not have enough resources."
+                            ),
+                        }
+                except (TypeError, ValueError):
+                    return {
+                        "success": False,
+                        "error": "Could not read your resources for place_road; refresh state.",
+                    }
+
+        if name == "move_robber":
+            sid = args.get("steal_from_player_id")
+            if sid not in (None, ""):
+                if not self._is_valid_player_id(state, sid):
+                    return {
+                        "success": False,
+                        "error": (
+                            "move_robber.steal_from_player_id must be a canonical player id "
+                            "from state.players[*].id (e.g. p1 or UUID), not display name."
+                        ),
                     }
 
         result = self._registry.execute(name, args)
@@ -558,6 +627,31 @@ class ReactCatanAgent:
                     self._failed_placements.add(f"road:{args['edge_key']}")
 
         return result
+
+    def _state_refresh_message(self) -> str:
+        """
+        Compact post-action state refresh to reduce stale context mistakes.
+        """
+        state = self.client.latest_state() or {}
+        try:
+            processed = self.processor.process(state)
+            me = processed.get("me", {}) if isinstance(processed, dict) else {}
+            res = me.get("resources", {}) if isinstance(me.get("resources"), dict) else {}
+            resources_line = ", ".join(
+                f"{r}={int(res.get(r, 0) or 0)}"
+                for r in ("brick", "lumber", "wool", "grain", "ore")
+            )
+            return (
+                "State refresh after tool result: "
+                f"phase={processed.get('phase')}, "
+                f"turn_phase={processed.get('turn_phase')}, "
+                f"my_turn={processed.get('is_my_turn')}, "
+                f"my_resources[{resources_line}], "
+                f"my_vp={me.get('victory_points', 0)}, "
+                f"robber_hex={processed.get('robber_hex')}."
+            )
+        except Exception:
+            return "State refresh after tool result: unavailable; call get_game_summary if needed."
 
     # ──────────────────────────────────────────────────────────────
     # Reactive/off-turn trade handling ("awake" behavior)
@@ -837,3 +931,18 @@ class ReactCatanAgent:
         ):
             return players[myi]
         return {}
+
+    @staticmethod
+    def _is_valid_player_id(state: Dict[str, Any], player_id: Any) -> bool:
+        players = state.get("players")
+        if not isinstance(players, list):
+            return False
+        target = str(player_id)
+        if not target:
+            return False
+        valid_ids = {
+            str(p.get("id"))
+            for p in players
+            if isinstance(p, dict) and p.get("id") is not None
+        }
+        return target in valid_ids
