@@ -12,6 +12,7 @@
 \usepackage{booktabs}
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,backgrounds}
+\usepackage{graphicx}
 \title{CatanAgents: Long-Term Planning Agents for Playing Settlers of Catan}
 
 % Authors must not appear in the submitted version. They should be hidden
@@ -23,10 +24,6 @@ Rudy Juarez-Ovallos \quad
 Sharayu Janga \quad
 Vayun Gupta \\
 University of Illinois Urbana-Champaign \\
-\texttt{dhruvm6@illinois.edu} \quad
-\texttt{rjuare8@illinois.edu} \\
-\texttt{sjanga2@illinois.edu} \quad
-\texttt{vayung2@illinois.edu}
 }
 
 \iclrfinalcopy
@@ -45,12 +42,10 @@ Existing agents are insufficient in this setting for two reasons. First, single-
 
 We propose a role-specialized multi-agent Catan system with four cooperating agents---\textbf{Strategy}, \textbf{Development}, \textbf{Trading}, and \textbf{Risk}---coordinated through a shared scratchpad. Strategy is the orchestrator: it updates shared state, invokes Risk for deterministic probability analysis and threat summaries, produces a turn-level plan, and delegates build, discard, robber, and trade decisions. Unlike generic multi-agent chat, communication follows an explicit code-enforced topology, each agent has a restricted tool subset, and Risk combines exact game math with a lightweight LLM narrative rather than free-form language reasoning. The design is intended to reduce prompt overload, improve legality, and persist strategic intent across turns \citep{belle2025agentsofchange}.
 
-Evaluation is in progress at submission time: the benchmark environment, scratchpad, and Strategy and Trading agents are implemented; preliminary runs cover the setup phase, but full-game evaluation is blocked by incomplete Development-agent functionality. This draft focuses on agent design and the evaluation plan; empirical results are forthcoming. The remainder of the paper is organized as follows: Section~\ref{sec:related} reviews related agent systems, Section~\ref{sec:design} describes the architecture, Section~\ref{sec:setup} the experimental setup, Section~\ref{sec:results} preliminary results, and Sections~\ref{sec:discussion}--\ref{sec:conclusion} discuss limitations and conclusions.
-
 \section{Related Work}
 \label{sec:related}
 
-Our work is most directly related to \textbf{ReAct}, which interleaves reasoning and action so a single LLM can plan while interacting with an environment \citep{yao2022react}; it is our primary baseline. We depart from ReAct by decomposing decision making across specialized roles and constraining tool access per role, which reduces illegal actions and makes failures easier to trace. More broadly, our design is related to multi-agent LLM frameworks such as \textbf{CAMEL} and \textbf{AutoGen}, which use role specialization and inter-agent communication for complex tasks \citep{li2023camel,wu2023autogen}. Unlike those general-purpose systems, our architecture is domain-specific: each agent has a fixed Catan role and communicates through a typed, scratchpad-mediated, topology-restricted protocol. \textbf{Voyager} motivates persistent intermediate structure for long-horizon tasks \citep{wang2023voyager}; we adopt a tightly scoped variant that stores strategic state, trade context, and risk summaries rather than executable skills. The closest domain work is \textbf{Agents of Change} \citep{belle2025agentsofchange}, which studies self-evolving LLM agents for Catan; we instead target reliable in-game coordination and benchmarked decision quality during live play, complementing rather than replacing that line of work. Recent evidence that LLMs remain brittle in strategic games \citep{vidler2025playing} further motivates our hybrid math-plus-LLM design.
+Our primary baseline is a \textbf{ReAct} Agent, which interleaves reasoning and action so a single LLM can plan while interacting with an environment \citep{yao2022react}. We depart from ReAct by decomposing decision making across specialized roles and constraining tool access per role, which reduces illegal actions and makes failures easier to trace. More broadly, our design is related to multi-agent LLM frameworks such as \textbf{CAMEL} and \textbf{AutoGen}, which use role specialization and inter-agent communication for complex tasks \citep{li2023camel,wu2023autogen}. Unlike those general-purpose systems, our architecture is domain-specific: each agent has a fixed Catan role and communicates through a typed, scratchpad-mediated, topology-restricted protocol. \textbf{Voyager} motivates persistent intermediate structure for long-horizon tasks \citep{wang2023voyager}; we adopt a tightly scoped variant that stores strategic state, trade context, and risk summaries rather than executable skills. The closest domain work is \textbf{Agents of Change} \citep{belle2025agentsofchange}, which studies self-evolving LLM agents for Catan; we instead target reliable in-game coordination and benchmarked decision quality during live play, complementing rather than replacing that line of work. Recent evidence that LLMs remain brittle in strategic games \citep{vidler2025playing} further motivates our hybrid math-plus-LLM design.
 
 \section{Agent Design}
 \label{sec:design}
@@ -58,23 +53,11 @@ Our work is most directly related to \textbf{ReAct}, which interleaves reasoning
 \subsection{Architecture Overview}
 \label{sec:arch}
 
-CatanAgents is a decentralized cooperative system of four specialized GPT-4o agents: the \textbf{Strategy} orchestrator and the \textbf{Risk}, \textbf{Development}, and \textbf{Trading} executors. All persistent state flows through a thread-safe \emph{Scratchpad}, and inter-agent control flow is restricted to the topology in Figure~\ref{fig:arch}, enforced at runtime by an \texttt{ALLOWED\_CHANNELS} whitelist in \texttt{BaseAgent}. Per turn, Strategy polls the socket, writes state to the Scratchpad, invokes Risk for deterministic probability analysis, asks GPT-4o for a structured plan, and delegates tactical phases to Trading and Development.
+CatanAgents is a decentralized cooperative system of four specialized LLM agents: the \textbf{Strategy} orchestrator and the \textbf{Risk}, \textbf{Development}, and \textbf{Trading} executors. All persistent state flows through a thread-safe \emph{Scratchpad}, and inter-agent control flow is restricted to the topology in Figure~\ref{fig:arch}, enforced at runtime by an \texttt{ALLOWED\_CHANNELS} whitelist in \texttt{BaseAgent}. Per turn, Strategy polls the socket, writes state to the Scratchpad, invokes Risk for deterministic probability analysis, asks GPT-4o for a structured plan, and delegates tactical phases to Trading and Development.
 
 \begin{figure}[t]
 \centering
-\begin{tikzpicture}[
-    every node/.style={draw, rounded corners, minimum width=1.9cm, minimum height=0.6cm, align=center, font=\scriptsize},
-    edge/.style={<->, thick, >=Latex}
-]
-  \node (S) at (0, 1.0) {Strategy};
-  \node (R) at (-3.0, 0) {Risk};
-  \node (D) at (3.0, 0) {Development};
-  \node (T) at (0, -1.0) {Trading};
-  \draw[edge] (S) -- (R) node[midway, above, draw=none, font=\scriptsize]{analyze / consult};
-  \draw[edge] (S) -- (D) node[midway, above, draw=none, font=\scriptsize]{build / discard / robber};
-  \draw[edge] (S) -- (T) node[midway, right, draw=none, font=\scriptsize]{trade policy};
-  \draw[edge] (D) -- (R) node[midway, below, draw=none, font=\scriptsize]{EV / robber targets};
-\end{tikzpicture}
+\includegraphics[width=0.95\linewidth]{Agent-graph.png}
 \caption{Communication topology. Edges are the only allowed channels; \texttt{BaseAgent} raises \texttt{PermissionError} on any unauthorized call. Trading is isolated so all strategic input flows through Strategy's \texttt{TradePolicy}.}
 \label{fig:arch}
 \end{figure}
@@ -84,9 +67,9 @@ Five principles govern the design: (1) \emph{separation of concerns}, each agent
 \subsection{Shared Infrastructure}
 \label{sec:shared}
 
-\paragraph{Scratchpad.} The Scratchpad is the only mechanism for cross-agent state. It exposes nine regions, written with typed Python dataclasses rather than free-form dicts. \texttt{game\_state}, \texttt{processed\_state}, and \texttt{state\_json} hold raw, structured, and LLM-optimized views of the game (all written by Strategy). \texttt{risk\_analysis} (Risk) stores a \texttt{RiskAnalysis} with expected income, threat rankings, robber EVs, and a narrative. \texttt{strategy\_plan} (Strategy) holds a \texttt{StrategyPlan} with goals, build queue, and \texttt{TradePolicy}. \texttt{trade\_state} (Trading) tracks per-opponent reputation, pending offers, and trade history. \texttt{build\_log} (Development) and \texttt{action\_log} (all) are append-only audit trails; \texttt{inter\_agent\_messages} is a typed message queue. Because every region is a dataclass, turns are deterministically replayable from the logs.
+\paragraph{Scratchpad:} The Scratchpad is the only mechanism for cross-agent state. It exposes nine regions, written with typed Python dataclasses rather than free-form dicts. \texttt{game\_state}, \texttt{processed\_state}, and \texttt{state\_json} hold raw, structured, and LLM-optimized views of the game (all written by Strategy). \texttt{risk\_analysis} (Risk) stores a \texttt{RiskAnalysis} with expected income, threat rankings, robber EVs, and a narrative. \texttt{strategy\_plan} (Strategy) holds a \texttt{StrategyPlan} with goals, build queue, and \texttt{TradePolicy}. \texttt{trade\_state} (Trading) tracks per-opponent reputation, pending offers, and trade history. \texttt{build\_log} (Development) and \texttt{action\_log} (all) are append-only audit trails; \texttt{inter\_agent\_messages} is a typed message queue. Because every region is a dataclass, turns are deterministically replayable from the logs.
 
-\paragraph{Tool registry.} A unified \texttt{ToolRegistry} exposes 22 game actions and queries. Each tool carries (i) an OpenAI JSON schema used directly for GPT-4o function-calling, (ii) a phase filter (\texttt{roll}, \texttt{main}, \texttt{discard}, \texttt{robber}, \texttt{setup}, \texttt{specialBuild}), and (iii) an agent filter. Role-scoping is strict: \texttt{move\_robber} is Development-only; \texttt{bank\_trade}, \texttt{propose\_trade}, \texttt{respond\_to\_trade} are Trading-only. The registry computes the visible subset at prompt-construction time, dropping roughly half the tool descriptors from every agent-specific context.
+\paragraph{Tool registry:} A unified \texttt{ToolRegistry} exposes 22 game actions and queries. Each tool carries (i) an OpenAI JSON schema used directly for GPT-4o function-calling, (ii) a phase filter (\texttt{roll}, \texttt{main}, \texttt{discard}, \texttt{robber}, \texttt{setup}, \texttt{specialBuild}), and (iii) an agent filter. Role-scoping is strict: \texttt{move\_robber} is Development-only; \texttt{bank\_trade}, \texttt{propose\_trade}, \texttt{respond\_to\_trade} are Trading-only. The registry computes the visible subset at prompt-construction time, dropping roughly half the tool descriptors from every agent-specific context.
 
 \subsection{Per-Agent Design}
 \label{sec:agents}
@@ -103,30 +86,18 @@ Raw \texttt{getPlayerView} contains hundreds of hex, vertex, and edge entries th
 \subsection{Probability and Decision Model}
 \label{sec:probs}
 
-All probability-critical decisions use a deterministic backend. For a vertex $v$ with adjacent hexes $\text{adj}(v)$, expected per-turn production is
-\begin{equation}
-E[\text{income}_v] = \sum_{H \in \text{adj}(v)} \tfrac{\mathrm{pips}(H)}{36} \cdot m \cdot \mathbf{1}[H \neq \text{desert, robber}],
-\label{eq:income}
-\end{equation}
-with $m=2$ for cities and $m=1$ for settlements. Opponent threat score is
-$\textit{score} = 10\,\mathrm{VP} + 8\,r + 3\,d + 0.5\,c + b_{\textit{road}} + b_{\textit{army}} + 5\,a$,
-where $r$ is income, $d$ is dev cards, $c$ is total cards, $a$ is achievements, and $b_{\textit{road}}, b_{\textit{army}}$ are proximity bonuses; threats are \emph{critical} when $\mathrm{VP}\geq 8$ or $\textit{score}\geq 75$. Settlement placements use a scarcity-weighted variant of Eq.~\ref{eq:income}, replacing $m$ with a weight $w(\textit{res}(H))\in\{2.0, 1.5, 1.0, 0.6\}$ for hand counts $\{0, 1, 2$--$3, 4+\}$, plus a small diversity bonus for unseen resources. Trade evaluation produces a score in $[0,1]$ starting at $0.5$ with $+0.25$ per desperately-needed resource received and $-0.20$ per such resource given; opponents at $\mathrm{VP}\geq 8$ incur $-0.35$. Counter-offers are built automatically in the near-threshold window $[\textit{min\_accept}\!-\!0.2, \textit{min\_accept}]$. A per-player win probability combines VP, income, dev cards, and achievement proximity with weights $(0.50, 0.20, 0.15, 0.15)$, normalized across players.
-
-\subsection{Prompting, Errors, and Trade-offs}
-\label{sec:prompts}
-
-Prompts live in per-agent \texttt{prompts.py} files and are composed from Scratchpad views. Strategy's system prompt demands a single \texttt{StrategyPlan} JSON with no other text; Risk uses three prompts (consultant, plan-assessor, narrative); Development and Trading use task-scoped prompts with disjoint tool subsets. Tool-calling follows a bounded ReAct pattern (2 steps for discard/robber, 6 for proactive trading, 2 for reactive); malformed tool calls trigger a ``repair'' message until the cap, after which the deterministic fallback runs. Error handling is layered: OpenAI 429s use exponential backoff up to 90\,s; illegal server actions are skipped rather than re-planned; the \texttt{threading.Lock} prevents write interleaving; and outgoing offers are capped by a 60\,s polling loop that auto-cancels and falls back to a bank trade. We rejected three alternatives for principled reasons: a single ReAct agent suffers from prompt overload (the failure mode we observed in early prototypes); a fully LLM-driven pipeline (Risk doing math) was rejected because probability-critical quantities must be exact; and unconstrained multi-agent chat was rejected because it lets Trading gather data that contradicts Strategy. We pay for this in higher per-turn LLM usage, in exchange for legality, interpretability, and replayability.
+Probability-sensitive decisions are handled by deterministic heuristics rather than free-form LLM reasoning. We estimate expected production from adjacent hex probabilities (with city/settlement multipliers and robber blocking), compute opponent threat using a weighted score over victory points, income, cards, and achievement proximity, and rank candidate settlement/city actions with scarcity-aware resource weights. Trading decisions use a bounded heuristic score with threshold-based accept/counter behavior, and an approximate win-probability signal is derived from victory points, income, development progress, and proximity to key achievements. This deterministic layer provides stable, auditable signals that are then summarized for the planning agents.
 
 \section{Experimental Setup}
 \label{sec:setup}
 
-\paragraph{Benchmark.} We evaluate on \textbf{CatanBench}, our companion benchmark for strategic reasoning in Settlers of Catan. It contains 20 tasks spanning short-term tactical choices, medium-horizon resource and build prioritization, and long-term strategic commitments, and it scores the \emph{quality} of decisions during live play rather than final game outcomes alone. The benchmark is described fully in our benchmark paper; we summarize only the parts relevant to agent evaluation.
+\paragraph{Benchmark:} We evaluate on \textbf{CatanBench}, our companion benchmark for strategic reasoning in Settlers of Catan. It contains 20 tasks spanning short-term tactical choices, medium-horizon resource and build prioritization, and long-term strategic commitments, and it scores the \emph{quality} of decisions during live play rather than final game outcomes alone. The benchmark is described fully in our benchmark paper; we summarize only the parts relevant to agent evaluation.
 
-\paragraph{Baselines.} We compare against two systems. \emph{Single-Prompt ReAct}: one LLM with the full tool interface handles all reasoning and action execution alone---the most direct test of whether role specialization improves over a standard tool-using design. \emph{Rule-Based LLM}: the same environment interface but guided by hand-crafted Catan heuristics, providing a lower-structure baseline.
+\paragraph{Baselines:} We compare against two systems. \emph{Single-Prompt ReAct}: one LLM with the full tool interface handles all reasoning and action execution alone---the most direct test of whether role specialization improves over a standard tool-using design. \emph{Rule-Based LLM}: the same environment interface but guided by hand-crafted Catan heuristics, providing a lower-structure baseline.
 
-\paragraph{Metrics.} Gameplay metrics are win rate, average final victory points, and average rounds to win; reasoning metrics are task success rate and average task score across the 20 tasks; operational metrics are average per-turn latency, illegal-move rate, and retry rate. Overall performance is summarized with a weighted aggregate over normalized win rate, VP, rounds-to-win, task score, and latency; we report means, standard deviations, and confidence intervals across trials.
+\paragraph{Metrics:} Gameplay metrics are win rate, average final victory points, and average rounds to win; reasoning metrics are task success rate and average task score across the 20 tasks; operational metrics are average per-turn latency, illegal-move rate, and retry rate. Overall performance is summarized with a weighted aggregate over normalized win rate, VP, rounds-to-win, task score, and latency; we report means, standard deviations, and confidence intervals across trials.
 
-\paragraph{Protocol.} All agents run under identical seeds and environment settings. We plan approximately \textbf{20--30 full-game trials} per system plus the full benchmark task set, across varied seat positions and map configurations. Each run logs structured traces of state transitions, chosen actions, legality, latency, token usage, API cost, and benchmark scores. Because full-game evaluation is still running at submission time, the final version will report exact model versions and trial counts.
+\paragraph{Protocol:} All agents run under identical seeds and environment settings. We plan approximately \textbf{20--30 full-game trials} per system plus the full benchmark task set, across varied seat positions and map configurations. Each run logs structured traces of state transitions, chosen actions, legality, latency, token usage, API cost, and benchmark scores. Because full-game evaluation is still running at submission time, the final version will report exact model versions and trial counts.
 
 \section{Results}
 \label{sec:results}
