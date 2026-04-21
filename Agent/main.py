@@ -8,8 +8,20 @@ Supports modes:
   --mode harness  →  Offline agent harness: Trading + Development scenarios
 
 Usage:
+    # Local server (default)
     python -m Agent.main --game-code ABCDEF --name ReactBot
     python -m Agent.main --mode multi --game-code ABCDEF --name StrategyBot
+
+    # Hosted server on Render (https://catanagent.onrender.com)
+    python -m Agent.main --prod --game-code ABCDEF --name ReactBot
+    python -m Agent.main --mode multi --prod --game-code ABCDEF --name StrategyBot
+
+    # Explicit server URL
+    python -m Agent.main --server https://my-catan.example.com --game-code ABCDEF
+
+    # Or set CATAN_SERVER_URL in Agent/.env and omit --server / --prod.
+
+    # Harness
     python -m Agent.harness.lab
     python -m Agent.main --mode harness --harness-auto
     python -m Agent.main --mode harness --harness-mock --harness-auto   # no API key
@@ -29,9 +41,43 @@ except ImportError:
     pass
 
 
+LOCAL_SERVER_URL = "http://localhost:3001"
+HOSTED_SERVER_URL = "https://catanagent.onrender.com"
+
+
+def _resolve_server_url(cli_value: str | None, prod_flag: bool) -> str:
+    """
+    Resolve the game-server URL with the following precedence:
+      1. Explicit --server argument.
+      2. --prod flag → hosted Render server.
+      3. CATAN_SERVER_URL environment variable.
+      4. Default to local dev server.
+    """
+    if cli_value:
+        return cli_value
+    if prod_flag:
+        return HOSTED_SERVER_URL
+    env_url = os.environ.get("CATAN_SERVER_URL")
+    if env_url:
+        return env_url
+    return LOCAL_SERVER_URL
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Catan AI Agent")
-    parser.add_argument("--server", default="http://localhost:3001", help="Game server URL")
+    parser.add_argument(
+        "--server",
+        default=None,
+        help=(
+            "Game server URL. Overrides --prod and CATAN_SERVER_URL. "
+            f"Defaults to CATAN_SERVER_URL env var or {LOCAL_SERVER_URL}."
+        ),
+    )
+    parser.add_argument(
+        "--prod",
+        action="store_true",
+        help=f"Shortcut for --server {HOSTED_SERVER_URL} (the hosted Render server).",
+    )
     parser.add_argument("--game-code", default=None, help="Game code to join (omit to create)")
     parser.add_argument("--name", default="ReactBot", help="Player name")
     parser.add_argument("--model", default="gpt-4o", help="OpenAI model")
@@ -51,6 +97,10 @@ def main() -> None:
         help="With --mode harness: use HarnessOpenAI stub (no OPENAI_API_KEY)",
     )
     args = parser.parse_args()
+
+    args.server = _resolve_server_url(args.server, args.prod)
+    if args.mode != "harness":
+        print(f"[main] Connecting to game server: {args.server}")
 
     if args.mode == "harness":
         from argparse import Namespace

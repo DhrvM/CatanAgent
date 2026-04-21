@@ -51,12 +51,54 @@ Open http://localhost:5173 in your browser.
 
 ## 🌐 Deployment
 
-**Live Game:** [https://catan-henna.vercel.app](https://catan-henna.vercel.app)
+**Live Game:** [https://catan-agent.vercel.app](https://catan-agent.vercel.app)
 
 | Component | Platform | URL |
 |-----------|----------|-----|
-| Frontend | Vercel | https://catan-henna.vercel.app |
-| Backend | Render | https://catan-server-oc59.onrender.com |
+| Frontend | Vercel | https://catan-agent.vercel.app |
+| Backend  | Render | https://catanagent.onrender.com |
+
+### Wiring the Vercel frontend to the Render backend
+
+The client reads the server URL from the `VITE_SERVER_URL` environment variable (see `client/src/App.jsx`). There are two ways to configure it for the Vercel deployment:
+
+1. **Committed default (already set up):** `client/.env.production` contains
+   `VITE_SERVER_URL=https://catanagent.onrender.com`.
+   Vite picks it up automatically during `vite build`, so every Vercel production
+   build points at the hosted Render server out of the box.
+
+2. **Vercel dashboard override (optional):** In the Vercel project settings go to
+   *Settings → Environment Variables* and add
+   `VITE_SERVER_URL = https://catanagent.onrender.com`
+   for the *Production* (and optionally *Preview*) environments. A dashboard
+   value overrides the committed `.env.production` file on the next redeploy.
+
+After changing either, trigger a redeploy on Vercel so the new value is baked
+into the static bundle. For local development, copy `client/.env.example` to
+`client/.env.local` and point it at `http://localhost:3001`.
+
+### Connecting the agent
+
+The Python agent in `../Agent/` reads the server URL from, in order:
+
+1. `--server <url>` CLI flag (highest priority)
+2. `--prod` shortcut flag → `https://catanagent.onrender.com`
+3. `CATAN_SERVER_URL` env var (loaded from `Agent/.env`)
+4. Falls back to `http://localhost:3001`
+
+```bash
+# Local server
+python -m Agent.main --mode multi --game-code ABCDEF --name StrategyBot
+
+# Hosted Render server
+python -m Agent.main --mode multi --prod --game-code ABCDEF --name StrategyBot
+
+# Explicit override
+python -m Agent.main --server https://catanagent.onrender.com --game-code ABCDEF
+```
+
+To point the agent at the hosted server without passing flags, uncomment
+`CATAN_SERVER_URL=https://catanagent.onrender.com` in `Agent/.env`.
 
 ### ⚠️ Free Tier Notice
 
