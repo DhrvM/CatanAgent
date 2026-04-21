@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import os
+import random
+import time
 from typing import Any, Dict, List, Optional
 
 try:
@@ -47,12 +49,15 @@ class OpenAIClient:
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: Optional[float] = None,
+        max_retries: int = 5,
     ) -> Any:
         """
         Send a chat-completion request with optional tool definitions.
 
         Returns the raw ``ChatCompletion`` object from the SDK so callers
         can inspect ``choices[0].message.tool_calls``.
+
+        Retries with exponential backoff on HTTP 429 / rate-limit errors.
         """
         kwargs: Dict[str, Any] = {
             "model": self.model,
@@ -64,7 +69,22 @@ class OpenAIClient:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
-        return self._client.chat.completions.create(**kwargs)
+        for attempt in range(max(1, max_retries)):
+            try:
+                return self._client.chat.completions.create(**kwargs)
+            except Exception as e:
+                if not self._is_rate_limit_error(e) or attempt >= max_retries - 1:
+                    raise
+                wait_s = min(90.0, (2**attempt) + random.uniform(0.0, 0.75))
+                time.sleep(wait_s)
+
+    @staticmethod
+    def _is_rate_limit_error(exc: BaseException) -> bool:
+        code = getattr(exc, "status_code", None)
+        if code == 429:
+            return True
+        body = str(exc).lower()
+        return "429" in body or "rate limit" in body or "too many requests" in body
 
     # ----------------------------------------------------------------
     # helpers

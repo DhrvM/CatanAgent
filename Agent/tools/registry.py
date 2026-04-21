@@ -25,6 +25,7 @@ from Agent.tools.game_tools import (
     _build_discard_action,
     _bank_trade_actions,
     _me,
+    ranked_main_road_edges,
     RESOURCES,
 )
 
@@ -342,6 +343,90 @@ def build_tool_registry(
         agents=["trading"],
     ))
 
+    # ── 9b. counter_trade ─────────────────────────────────────────
+    def _counter_trade(offer: Dict[str, int], request: Dict[str, int]) -> Dict[str, Any]:
+        return _safe_call(client, "counterTrade", {
+            "offer": offer,
+            "request": request,
+        })
+
+    reg.register(ToolDefinition(
+        name="counter_trade",
+        description="Send a counter-offer in response to an incoming targeted trade.",
+        parameters=[
+            ToolParameter("offer", "object", "Resources you offer in the counter, e.g. {\"brick\": 1}"),
+            ToolParameter("request", "object", "Resources you request in the counter, e.g. {\"grain\": 1}"),
+        ],
+        handler=_counter_trade,
+        phases=["main"],
+        agents=["trading"],
+    ))
+
+    # ── 9c. cancel_trade ──────────────────────────────────────────
+    def _cancel_trade() -> Dict[str, Any]:
+        return _safe_call(client, "cancelTrade")
+
+    reg.register(ToolDefinition(
+        name="cancel_trade",
+        description="Cancel your currently active outgoing trade offer.",
+        parameters=[],
+        handler=_cancel_trade,
+        phases=["main"],
+        agents=["trading"],
+    ))
+
+    # ── 9d. get_trade_offer_status ────────────────────────────────
+    def _get_trade_offer_status() -> Dict[str, Any]:
+        state = client.latest_state() or {}
+        offer = None
+        for key in ("activeTradeOffer", "tradeOffer", "currentTradeOffer"):
+            v = state.get(key)
+            if isinstance(v, dict):
+                offer = v
+                break
+
+        if not isinstance(offer, dict):
+            return {"has_offer": False}
+
+        players = state.get("players")
+        myi = state.get("myIndex")
+        my_id = None
+        if isinstance(players, list) and isinstance(myi, int) and 0 <= myi < len(players):
+            me = players[myi] if isinstance(players[myi], dict) else {}
+            my_id = me.get("id")
+
+        offer_from = offer.get("from") if offer.get("from") is not None else (
+            offer.get("fromId") if offer.get("fromId") is not None else offer.get("from_id")
+        )
+        offer_to = offer.get("to") if offer.get("to") is not None else (
+            offer.get("toId") if offer.get("toId") is not None else offer.get("to_id")
+        )
+
+        offer_from_str = str(offer_from) if offer_from is not None else ""
+        me_candidates = {str(myi), str(my_id) if my_id is not None else ""}
+        offer_from_me = offer_from_str in me_candidates
+
+        return {
+            "has_offer": True,
+            "offer_from": offer_from,
+            "offer_to": offer_to,
+            "offer_from_me": offer_from_me,
+            "can_i_respond": bool(
+                offer.get("can_i_respond")
+                or offer.get("canRespond")
+                or offer.get("canRespondToTrade")
+            ),
+        }
+
+    reg.register(ToolDefinition(
+        name="get_trade_offer_status",
+        description="Return whether a trade offer is active and whether it was proposed by us.",
+        parameters=[],
+        handler=_get_trade_offer_status,
+        phases=["main"],
+        agents=["trading"],
+    ))
+
     # ── 10. discard_cards ─────────────────────────────────────────
     def _discard_cards(resources: Dict[str, int]) -> Dict[str, Any]:
         return _safe_call(client, "discardCards", {"resources": resources})
@@ -359,10 +444,31 @@ def build_tool_registry(
     ))
 
     # ── 11. move_robber ───────────────────────────────────────────
+    def _resolve_player_id(player_ref: Optional[str], state: Dict[str, Any]) -> Optional[str]:
+        """Accept player id or case-insensitive name match; server expects id."""
+        if player_ref is None or player_ref == "":
+            return None
+        players = state.get("players")
+        if not isinstance(players, list):
+            return player_ref
+        ref_l = str(player_ref).strip().lower()
+        for p in players:
+            if not isinstance(p, dict):
+                continue
+            pid = p.get("id")
+            name = p.get("name")
+            if pid is not None and str(pid) == str(player_ref):
+                return str(pid)
+            if isinstance(name, str) and name.strip().lower() == ref_l:
+                return str(pid) if pid is not None else None
+        return player_ref
+
     def _move_robber(hex_key: str, steal_from_player_id: Optional[str] = None) -> Dict[str, Any]:
+        state = client.latest_state() or {}
+        resolved = _resolve_player_id(steal_from_player_id, state)
         return _safe_call(client, "moveRobber", {
             "hexKey": hex_key,
-            "stealFromPlayerId": steal_from_player_id,
+            "stealFromPlayerId": resolved,
         })
 
     reg.register(ToolDefinition(
@@ -399,6 +505,7 @@ def build_tool_registry(
         building_type: str = "settlement",
     ) -> Dict[str, Any]:
         state = client.latest_state() or {}
+        building_type = str(building_type or "settlement").lower()
         myi = state.get("myIndex")
         vertices = state.get("vertices") or {}
 
@@ -414,6 +521,18 @@ def build_tool_registry(
             spots.sort(key=lambda s: s["score"], reverse=True)
             return {"building_type": "city", "spots": spots}
 
+        if building_type == "road":
+            if state.get("phase") == "setup":
+                return {
+                    "building_type": "road",
+                    "spots": [],
+                    "note": "During setup, roads must connect to your last settlement; use setup placement flow.",
+                }
+            if not isinstance(myi, int):
+                return {"building_type": "road", "spots": []}
+            spots = ranked_main_road_edges(state, myi, top_k=40)
+            return {"building_type": "road", "spots": spots}
+
         ranked = _ranked_setup_settlements(state, top_k=10)
         spots = []
         hexes = state.get("hexes") or {}
@@ -427,12 +546,12 @@ def build_tool_registry(
         name="get_building_spots",
         description=(
             "List the best legal spots to build. Returns vertices ranked by production score. "
-            "Use building_type='settlement' or 'city'. "
+            "Use building_type='settlement', 'city', or 'road' (for main phase edges to place_road). "
             "NOTE: The server still validates legality — some spots may be already taken."
         ),
         parameters=[
             ToolParameter("building_type", "string", "Type of building to check spots for",
-                          required=False, enum=["settlement", "city"]),
+                          required=False, enum=["settlement", "city", "road"]),
         ],
         handler=_get_building_spots,
         phases=["main", "setup"],
@@ -520,5 +639,9 @@ def build_tool_registry(
         phases=["main"],
         agents=["development"],
     ))
+
+    # ── Risk analysis tools (from probabilities.py) ─────────────
+    from Agent.tools.risk_tools import register_risk_tools
+    register_risk_tools(reg, client)
 
     return reg

@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from Agent.utils.game_state_processor import _adjacent_hex_coords
+
 
 @dataclass(frozen=True)
 class Action:
@@ -198,6 +200,100 @@ def _edges_touching_vertex(state: Dict[str, Any], vk: str) -> List[str]:
         if vk in _edge_vertices(q, r, d):
             out.append(ek)
     return out
+
+
+def _edge_is_unoccupied(e: Any) -> bool:
+    if not isinstance(e, dict):
+        return False
+    if e.get("road"):
+        return False
+    return e.get("owner") is None
+
+
+def _player_has_building_at_vertex(vertices: Dict[str, Any], vk: str, myi: int) -> bool:
+    v = vertices.get(vk)
+    if not isinstance(v, dict):
+        return False
+    return v.get("owner") == myi and bool(v.get("building"))
+
+
+def _player_has_road_on_edge(edges: Dict[str, Any], ek: str, myi: int) -> bool:
+    e = edges.get(ek)
+    if not isinstance(e, dict):
+        return False
+    return bool(e.get("road")) and e.get("owner") == myi
+
+
+def _main_road_connects_to_network(
+    state: Dict[str, Any], edge_key: str, myi: int,
+) -> bool:
+    """Approximate server canPlaceRoad connectivity (main phase, not setup)."""
+    edges = state.get("edges") or {}
+    vertices = state.get("vertices") or {}
+    parsed = _parse_edge_key(edge_key)
+    if not parsed:
+        return False
+    q, r, d = parsed
+    for vk in _edge_vertices(q, r, d):
+        if _player_has_building_at_vertex(vertices, vk, myi):
+            return True
+        for adj_ek in _edges_touching_vertex(state, vk):
+            if adj_ek == edge_key:
+                continue
+            if _player_has_road_on_edge(edges, adj_ek, myi):
+                return True
+    return False
+
+
+def _score_edge_expansion(state: Dict[str, Any], edge_key: str) -> float:
+    """Heuristic: sum pip weights of hexes adjacent to this edge's endpoints."""
+    hexes = _hexes_dict(state)
+    parsed = _parse_edge_key(edge_key)
+    if not parsed:
+        return 0.0
+    q, r, d = parsed
+    seen = set()
+    total = 0.0
+    for vk in _edge_vertices(q, r, d):
+        pv = _parse_vertex_key(vk)
+        if not pv:
+            continue
+        hq, hr, hd = pv
+        for cq, cr in _adjacent_hex_coords(hq, hr, hd):
+            hk = f"{cq},{cr}"
+            if hk in seen:
+                continue
+            seen.add(hk)
+            h = hexes.get(hk)
+            if not isinstance(h, dict):
+                continue
+            if h.get("resource") == "desert":
+                continue
+            num = h.get("number")
+            if num is not None:
+                total += float(_pip_value(num))
+    return total
+
+
+def ranked_main_road_edges(
+    state: Dict[str, Any], myi: int, top_k: int = 40,
+) -> List[Dict[str, Any]]:
+    """
+    Rank candidate edges for place_road in main phase (heuristic legality + score).
+    Server still validates the final placement.
+    """
+    edges = state.get("edges") or {}
+    out: List[Dict[str, Any]] = []
+    for ek in edges:
+        e = edges.get(ek)
+        if not _edge_is_unoccupied(e):
+            continue
+        if not _main_road_connects_to_network(state, ek, myi):
+            continue
+        score = _score_edge_expansion(state, ek)
+        out.append({"edge": ek, "score": round(score, 2)})
+    out.sort(key=lambda x: x["score"], reverse=True)
+    return out[:top_k]
 
 
 # ------------------------------------------------------------

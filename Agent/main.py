@@ -2,13 +2,17 @@
 """
 CLI entry point for the Catan Agent.
 
-Supports two modes:
-  --mode react  →  Single ReAct agent (default, existing behavior)
-  --mode multi  →  Multi-agent system (Strategy + Development + Trading + Risk)
+Supports modes:
+  --mode react    →  Single ReAct agent (default)
+  --mode multi    →  Multi-agent system (Strategy + Development + Trading + Risk)
+  --mode harness  →  Offline agent harness: Trading + Development scenarios
 
 Usage:
     python -m Agent.main --game-code ABCDEF --name ReactBot
     python -m Agent.main --mode multi --game-code ABCDEF --name StrategyBot
+    python -m Agent.harness.lab
+    python -m Agent.main --mode harness --harness-auto
+    python -m Agent.main --mode harness --harness-mock --harness-auto   # no API key
 """
 from __future__ import annotations
 
@@ -33,10 +37,50 @@ def main() -> None:
     parser.add_argument("--model", default="gpt-4o", help="OpenAI model")
     parser.add_argument("--ollama-model", default="qwen3:8b", help="Ollama model for summarization")
     parser.add_argument(
-        "--mode", choices=["react", "multi"], default="react",
-        help="'react' for single ReAct agent, 'multi' for multi-agent system",
+        "--mode", choices=["react", "multi", "harness"], default="react",
+        help="'react' single agent | 'multi' multi-agent | 'harness' offline agent harness (Trading + Development)",
+    )
+    parser.add_argument(
+        "--harness-auto",
+        action="store_true",
+        help="With --mode harness: run all checks non-interactively and exit 1 if any fail",
+    )
+    parser.add_argument(
+        "--harness-mock",
+        action="store_true",
+        help="With --mode harness: use HarnessOpenAI stub (no OPENAI_API_KEY)",
     )
     args = parser.parse_args()
+
+    if args.mode == "harness":
+        from argparse import Namespace
+
+        from Agent.harness import lab as harness_lab
+
+        lab_args = Namespace(
+            mock=args.harness_mock,
+            model=os.environ.get("HARNESS_MODEL") or args.model,
+        )
+        harness_lab._load_env()
+        if not lab_args.mock:
+            try:
+                harness_lab.configure_harness(use_mock=False, model=lab_args.model)
+            except ValueError as e:
+                print(f"\n{e}", file=sys.stderr)
+                print(
+                    "\n  Set OPENAI_API_KEY in Agent/.env, use --harness-mock, or export HARNESS_MODEL.\n",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        else:
+            harness_lab.configure_harness(use_mock=True, model=lab_args.model)
+
+        if args.harness_auto:
+            results = harness_lab.run_all_checks()
+            harness_lab.print_results(results)
+            sys.exit(1 if not all(r.passed for r in results) else 0)
+        harness_lab.chatbot_loop(lab_args)
+        return
 
     if args.mode == "react":
         _run_react(args)
@@ -90,7 +134,7 @@ def _run_multi(args) -> None:
     ollama = OllamaChat(OllamaConfig(model=args.ollama_model))
 
     # ── Create agents ─────────────────────────────────────────────
-    risk = RiskAgent(scratchpad, ollama)
+    risk = RiskAgent(scratchpad, openai=openai)
     strategy = StrategyAgent(
         scratchpad, openai, client, processor, registry, stats,
         game_code=args.game_code,
