@@ -20,8 +20,25 @@ import GameBoard from './components/GameBoard';
 import ObservationDeck from './components/ObservationDeck';
 import './App.css';
 
-// Server URL from environment variable, falls back to localhost for development
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
+// Server URL resolution order:
+//   1. VITE_SERVER_URL (build-time env, set via .env.production or Vercel dashboard)
+//   2. Hosted Render backend when served from any non-localhost origin (e.g. Vercel)
+//   3. http://localhost:3001 for local `npm run dev`
+// This self-healing fallback guarantees production deployments work even when the
+// build-time env var is missing or the Vercel "Production Branch" is misconfigured.
+const HOSTED_SERVER_URL = 'https://catanagent.onrender.com';
+const LOCAL_SERVER_URL = 'http://localhost:3001';
+const resolveServerUrl = () => {
+  const fromEnv = import.meta.env.VITE_SERVER_URL;
+  if (fromEnv) return fromEnv;
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '';
+    return isLocal ? LOCAL_SERVER_URL : HOSTED_SERVER_URL;
+  }
+  return LOCAL_SERVER_URL;
+};
+const SERVER_URL = resolveServerUrl();
 
 // Keep server alive by pinging every 4 minutes (Render free tier spins down after 15 min)
 const KEEP_ALIVE_INTERVAL = 4 * 60 * 1000;
