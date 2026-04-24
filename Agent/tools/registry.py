@@ -272,7 +272,10 @@ def build_tool_registry(
             "'roadBuilding' (2 free roads), 'yearOfPlenty' (pick 2 resources), "
             "'monopoly' (steal all of one resource). For monopoly, pass params={\"resource\": \"brick\"}. "
             "Can play knight before rolling; others require main phase. "
-            "Only 1 dev card per turn. Cannot play cards bought this turn."
+            "Only 1 dev card per turn. Cannot play cards bought this turn. "
+            "Strategy typically plays Monopoly / Year of Plenty / Road Building itself; "
+            "Knight is best delegated to Development via the build queue because it "
+            "triggers the robber sub-phase."
         ),
         parameters=[
             ToolParameter("card_type", "string", "Dev card type to play",
@@ -282,7 +285,7 @@ def build_tool_registry(
         ],
         handler=_play_dev_card,
         phases=["roll", "main"],
-        agents=["development"],
+        agents=["strategy", "development"],
     ))
 
     # ── 7. bank_trade ─────────────────────────────────────────────
@@ -637,7 +640,7 @@ def build_tool_registry(
         ],
         handler=_year_of_plenty_pick,
         phases=["main"],
-        agents=["development"],
+        agents=["strategy", "development"],
     ))
 
     # ── Risk analysis tools (from probabilities.py) ─────────────

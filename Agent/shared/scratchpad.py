@@ -65,6 +65,27 @@ class TradeState:
 
 
 @dataclass
+class RoundSummary:
+    """
+    Diff of what happened since Strategy was last invoked on our turn.
+
+    Written by Strategy at the start of each turn (after comparing the
+    new game state against the snapshot it took when it ended its last
+    turn).  Consumed by the plan LLM call so the model has concrete
+    context about what opponents did between our turns.
+    """
+    turn_number: int = 0
+    vp_deltas: Dict[str, int] = field(default_factory=dict)             # player_name -> delta
+    new_buildings: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)  # player_name -> [{type, vertex}]
+    robber_moved: Optional[Dict[str, str]] = None                        # {"from": hex, "to": hex}
+    longest_road_change: Optional[Dict[str, Any]] = None                 # {"from": name|null, "to": name|null, "length": int}
+    largest_army_change: Optional[Dict[str, Any]] = None                 # {"from": name|null, "to": name|null, "size": int}
+    completed_trades: List[Dict[str, Any]] = field(default_factory=list) # [{from, to, offer, request}]
+    notes: List[str] = field(default_factory=list)
+    updated_at: float = 0.0
+
+
+@dataclass
 class ActionRecord:
     """Single action taken by any agent."""
     agent: str              # "strategy"|"development"|"trading"|"risk"
@@ -118,6 +139,9 @@ class Scratchpad:
         # ── Written by Trading Agent ──
         self.trade_state: TradeState = TradeState()
 
+        # ── Written by Strategy Agent (per-turn round diff) ──
+        self.round_summary: RoundSummary = RoundSummary()
+
         # ── Written by Development Agent ──
         self.build_log: List[ActionRecord] = []
 
@@ -156,6 +180,11 @@ class Scratchpad:
         with self._lock:
             state.updated_at = time.time()
             self.trade_state = state
+
+    def write_round_summary(self, summary: RoundSummary) -> None:
+        with self._lock:
+            summary.updated_at = time.time()
+            self.round_summary = summary
 
     def append_action(self, record: ActionRecord) -> None:
         with self._lock:
@@ -201,6 +230,7 @@ class Scratchpad:
                 base["strategy_plan"] = asdict(self.strategy_plan)
                 base["trade_state"] = asdict(self.trade_state)
                 base["build_log"] = [asdict(a) for a in self.build_log]
+                base["round_summary"] = asdict(self.round_summary)
             elif agent_name == "development":
                 base["strategy_plan"] = asdict(self.strategy_plan)
                 base["risk_analysis"] = asdict(self.risk_analysis)
