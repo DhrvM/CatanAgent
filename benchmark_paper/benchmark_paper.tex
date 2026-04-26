@@ -277,7 +277,11 @@ Several tasks construct plan candidates for \texttt{road}, \texttt{settlement}, 
     \item \texttt{road}: the maximum score among currently legal road placements under the road-placement rubric from Section~\ref{app:task-road-placement-direction}.
     \item \texttt{settlement}: the maximum score among currently legal settlement placements under the settlement rubric from Section~\ref{app:task-settlement-location-selection}.
     \item \texttt{city}: the maximum score among legal city upgrades using $0.65 \cdot \texttt{production} + 0.10 \cdot \texttt{diversity} + 0.05 \cdot \texttt{portSynergy} + 0.20$.
-    \item \texttt{devCard}: $0$ if the development-card deck is unavailable; otherwise $\max(0.2,\ 0.55 \cdot (0.5 + 0.5 \cdot \texttt{cityPlanScore}))$, where \texttt{cityPlanScore} is the current best city-upgrade score computed with the city formula in this list.
+    \item \texttt{devCard}: $0$ if the development-card deck is unavailable; otherwise
+    \[
+    \texttt{clamp}\bigl(\max(0.15,\ 0.45 \cdot (0.5 + 0.5 \cdot \texttt{cityPlanScore}) + \texttt{armyRaceBonus} - \texttt{devCardCongestionPenalty} - \texttt{expansionPressurePenalty})\bigr).
+    \]
+    Here \texttt{armyRaceBonus} is $0.20$ when another development-card purchase could plausibly complete or contest Largest Army; \texttt{devCardCongestionPenalty} increases with held unplayed development cards and is $0.35$ at three or more held cards; and \texttt{expansionPressurePenalty} is $0.18$ when road, settlement, or city plans have strong current value. This prevents the evaluator from treating repeated card buying as optimal while the player is sitting on playable cards or clear board-development opportunities.
 \end{itemize}
 
 \subsubsection{Resource need and surplus}
@@ -354,7 +358,7 @@ The threshold for \texttt{settlement-location-selection} is $0.90$ because later
 
 Where:
 \begin{itemize}
-    \item \texttt{futureReachability} is the forward vertex's onward legal-road count, clamped after division by $3$.
+    \item \texttt{futureReachability} is the forward vertex's onward legal-road count, clamped after division by $3$. In main-phase road scoring, the forward vertex is the newly opened endpoint when the candidate road has one; only if both endpoints are already part of the player's network does the evaluator fall back to the better endpoint.
     \item \texttt{reachableValue} is the forward vertex's weighted settlement value:
     \[
     \texttt{reachableValue}
@@ -832,9 +836,9 @@ Buying a development card is an investment choice against competing uses of reso
 This decision is derived from the shared \texttt{devCard} plan \texttt{baseScore} from Section~\ref{app:build-plan-base-scores}:
 \[
 \texttt{devCardBaseScore}
-= \max(0.2,\ 0.55 \cdot (0.5 + 0.5 \cdot \texttt{cityPlanScore}))
+= \texttt{clamp}\bigl(\max(0.15,\ 0.45 \cdot (0.5 + 0.5 \cdot \texttt{cityPlanScore}) + \texttt{armyRaceBonus} - \texttt{devCardCongestionPenalty} - \texttt{expansionPressurePenalty})\bigr)
 \]
-if the development deck is available, otherwise $0$. The two options are
+if the development deck is available, otherwise $0$. The congestion and expansion penalties are the same as those in Section~\ref{app:build-plan-base-scores}. The two options are
 \[
 \texttt{buy-dev-card} = \texttt{clamp}(\texttt{devCardBaseScore}),
 \]

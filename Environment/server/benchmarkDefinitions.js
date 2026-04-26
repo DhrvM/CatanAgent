@@ -139,7 +139,7 @@ export const BENCHMARK_TASKS = [
     category: 'mediumTerm',
     difficulty: 'medium',
     description: 'Decide whether buying a development card is the strongest current spend.',
-    scoring: 'Option-ratio',
+    scoring: 'Option-ratio using dev-card base score with army-race bonus, held-card congestion penalty, and expansion-pressure penalty',
   },
   {
     id: 'discard-strategy-after-seven',

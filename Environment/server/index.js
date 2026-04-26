@@ -567,6 +567,29 @@ function scoreRoadCycleAvoidance(game, playerId, edgeKeyValue) {
   return closesExistingNetwork ? 0 : 1;
 }
 
+function roadForwardVertex(game, edgeKeyValue, playerId, lastSettlement = null) {
+  const endpoints = getEdgeVerticesFromKey(edgeKeyValue);
+  if (lastSettlement) {
+    return endpoints.find(vKey => !GameLogic.areVerticesEqual(vKey, lastSettlement)) || endpoints[0] || null;
+  }
+
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  const frontierEndpoints = playerIndex === -1 ? [] : endpoints.filter(vKey => {
+    const building = getBuildingAtVertex(game, vKey);
+    return building?.owner !== playerIndex && ownRoadDegreeAtVertex(game, vKey, playerIndex) === 0;
+  });
+  const scoredEndpoints = (frontierEndpoints.length ? frontierEndpoints : endpoints)
+    .map(vKey => ({
+      vKey,
+      score: scoreVertexPlacement(game, vKey),
+    }))
+    .sort((left, right) => (
+      ((right.score.resourceProductionExpectancy * 0.5) + (right.score.resourceDiversity * 0.3) + (right.score.portSynergy * 0.2))
+      - ((left.score.resourceProductionExpectancy * 0.5) + (left.score.resourceDiversity * 0.3) + (left.score.portSynergy * 0.2))
+    ));
+  return scoredEndpoints[0]?.vKey || endpoints[0] || null;
+}
+
 function bestSettlementPlanScore(game, playerId) {
   const settlementOptions = Object.keys(game.vertices || {})
     .filter(vKey => GameLogic.canPlaceSettlement(game, playerId, vKey, false).valid)
@@ -637,8 +660,19 @@ function buildPlanDecisionData(game, playerId, resourcesOverride = null) {
   const roadPlanScore = bestRoadPlanScore(game, playerId);
   const settlementPlanScore = bestSettlementPlanScore(game, playerId);
   const cityPlanScore = bestCityPlanScore(game, playerId);
+  const heldDevCards = Array.isArray(player.developmentCards) ? player.developmentCards.length : Number(player.developmentCards || 0) || 0;
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  const bestOpponentKnights = Math.max(
+    0,
+    ...game.players
+      .filter((candidate, index) => index !== playerIndex)
+      .map(candidate => candidate.knightsPlayed || 0)
+  );
+  const armyRaceBonus = ((player.knightsPlayed || 0) + heldDevCards + 1 >= Math.max(3, bestOpponentKnights + 1)) ? 0.2 : 0;
+  const devCardCongestionPenalty = heldDevCards >= 3 ? 0.35 : heldDevCards * 0.08;
+  const expansionPressurePenalty = (roadPlanScore > 0.45 || settlementPlanScore > 0.45 || cityPlanScore > 0.45) ? 0.18 : 0;
   const devCardPlanScore = devDeckAvailable
-    ? Math.max(0.2, 0.55 * (0.5 + (cityPlanScore * 0.5)))
+    ? clamp01(Math.max(0.15, 0.45 * (0.5 + (cityPlanScore * 0.5)) + armyRaceBonus - devCardCongestionPenalty - expansionPressurePenalty))
     : 0;
 
   return [
@@ -778,18 +812,7 @@ function scoreRoadPlacement(game, edgeKeyValue, lastSettlement) {
   const alreadyHasSettlementTarget = actingPlayerId && !lastSettlement
     ? hasConnectedSettlementTarget(game, actingPlayerId)
     : false;
-  const endpoints = getEdgeVerticesFromKey(edgeKeyValue);
-  const forwardVertex = lastSettlement
-    ? (endpoints.find(vKey => !GameLogic.areVerticesEqual(vKey, lastSettlement)) || endpoints[0] || null)
-    : (endpoints
-      .map(vKey => ({
-        vKey,
-        score: scoreVertexPlacement(game, vKey),
-      }))
-      .sort((left, right) => (
-        ((right.score.resourceProductionExpectancy * 0.5) + (right.score.resourceDiversity * 0.3) + (right.score.portSynergy * 0.2))
-        - ((left.score.resourceProductionExpectancy * 0.5) + (left.score.resourceDiversity * 0.3) + (left.score.portSynergy * 0.2))
-      ))[0]?.vKey || endpoints[0] || null);
+  const forwardVertex = roadForwardVertex(game, edgeKeyValue, actingPlayerId, lastSettlement);
   const forwardVertexScore = forwardVertex ? scoreVertexPlacement(game, forwardVertex) : {
     resourceProductionExpectancy: 0,
     resourceDiversity: 0,

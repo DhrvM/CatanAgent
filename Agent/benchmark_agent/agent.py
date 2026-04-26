@@ -97,6 +97,11 @@ class BenchmarkCalibrationAgent:
                     time.sleep(0.25)
                     continue
 
+                if state.get("turnPhase") == "discard" and self._needs_to_discard(state):
+                    self._handle_discard(state)
+                    time.sleep(0.15)
+                    continue
+
                 if not is_my_turn(state):
                     self._respond_to_incoming_trade(state)
                     time.sleep(0.25)
@@ -196,10 +201,78 @@ class BenchmarkCalibrationAgent:
 
     def _handle_discard(self, state: Dict[str, Any]) -> None:
         self._start_turn("discard")
+        payload = self._discard_payload(state)
+        if payload:
+            result = self._execute("discard_cards", {"resources": payload})
+            print(f"  [discard] {payload} => {result}")
+        else:
+            print("  [discard] no valid discard payload found")
+        self.stats.end_turn()
+
+    def _needs_to_discard(self, state: Dict[str, Any]) -> bool:
+        myi = state.get("myIndex")
+        if not isinstance(myi, int):
+            return False
+        discarding = state.get("discardingPlayers")
+        if not isinstance(discarding, list):
+            return False
+        return any(
+            isinstance(entry, dict)
+            and int(entry.get("playerIndex", entry.get("player_index", -1)) or -1) == myi
+            for entry in discarding
+        )
+
+    def _discard_payload(self, state: Dict[str, Any]) -> Dict[str, int]:
         actions = _build_discard_action(state)
         if actions:
-            self._execute("discard_cards", self._registry_args(actions[0].payload))
-        self.stats.end_turn()
+            resources = actions[0].payload.get("resources") if isinstance(actions[0].payload, dict) else None
+            if isinstance(resources, dict):
+                return {resource: int(resources.get(resource, 0) or 0) for resource in RESOURCES if int(resources.get(resource, 0) or 0) > 0}
+
+        myi = state.get("myIndex")
+        discarding = state.get("discardingPlayers")
+        if not isinstance(myi, int) or not isinstance(discarding, list):
+            return {}
+
+        entry = next(
+            (
+                item for item in discarding
+                if isinstance(item, dict)
+                and int(item.get("playerIndex", item.get("player_index", -1)) or -1) == myi
+            ),
+            None,
+        )
+        if not entry:
+            return {}
+
+        hand = self._hand(state)
+        required = int(entry.get("cardsToDiscard", entry.get("cards_to_discard", 0)) or 0)
+        if required <= 0:
+            total_cards = sum(hand.values())
+            required = total_cards // 2 if total_cards > 7 else 0
+        if required <= 0:
+            return {}
+
+        keep_priority = self._resource_need_map(hand, state)
+        discard_order = sorted(
+            RESOURCES,
+            key=lambda resource: (
+                float(keep_priority.get(resource, 0.0) or 0.0),
+                -int(hand.get(resource, 0) or 0),
+            ),
+        )
+        payload = {resource: 0 for resource in RESOURCES}
+        remaining = required
+        for resource in discard_order:
+            if remaining <= 0:
+                break
+            amount = min(int(hand.get(resource, 0) or 0), remaining)
+            if amount > 0:
+                payload[resource] = amount
+                remaining -= amount
+        if remaining:
+            return {}
+        return {resource: amount for resource, amount in payload.items() if amount > 0}
 
     def _handle_robber(self, state: Dict[str, Any]) -> None:
         self._start_turn("robber")
@@ -263,18 +336,11 @@ class BenchmarkCalibrationAgent:
 
             state = self.client.latest_state() or state
             hand = self._hand(state)
-            if self._should_buy_dev_card(state, hand):
-                if self._ok(self._execute("buy_dev_card", {})):
-                    time.sleep(0.1)
-                    continue
-
-            state = self.client.latest_state() or state
-            hand = self._hand(state)
             myi = state.get("myIndex")
             if (
-                roads_built < 1
+                roads_built < self._road_build_limit(state)
                 and isinstance(myi, int)
-                and self._can_afford(hand, BUILD_COSTS["road"])
+                and self._can_place_expansion_road(state, hand)
                 and not self._has_connected_settlement_target(state, myi)
             ):
                 if self._try_strategic_road(state, myi):
@@ -282,7 +348,23 @@ class BenchmarkCalibrationAgent:
                     time.sleep(0.1)
                     continue
 
+            state = self.client.latest_state() or state
+            hand = self._hand(state)
+            if self._should_buy_dev_card(state, hand):
+                if self._ok(self._execute("buy_dev_card", {})):
+                    time.sleep(0.1)
+                    continue
+
             break
+
+    def _can_place_expansion_road(self, state: Dict[str, Any], hand: Dict[str, int]) -> bool:
+        if int(state.get("freeRoads", 0) or 0) > 0:
+            return True
+        return self._can_afford(hand, BUILD_COSTS["road"])
+
+    @staticmethod
+    def _road_build_limit(state: Dict[str, Any]) -> int:
+        return 2 if int(state.get("freeRoads", 0) or 0) > 0 else 1
 
     def _try_city_upgrade(self, state: Dict[str, Any]) -> bool:
         for spot in rank_cities_by_value_gain(state, top_k=10):
@@ -322,7 +404,7 @@ class BenchmarkCalibrationAgent:
         return any(self._edge_owner(state, edge_key) == myi for edge_key in _edges_touching_vertex(state, vertex_key))
 
     def _try_strategic_road(self, state: Dict[str, Any], myi: int) -> bool:
-        for edge_key in self._rank_strategic_road_edges(state, myi)[:12]:
+        for edge_key in self._rank_benchmark_legal_roads(state, myi)[:12]:
             if self._ok(self._execute("place_road", {"edge_key": edge_key, "is_setup": False})):
                 return True
         return False
@@ -352,23 +434,25 @@ class BenchmarkCalibrationAgent:
                     return "place_road", {"edge_key": edge_key, "is_setup": False}
         return None
 
-    def _rank_strategic_road_edges(self, state: Dict[str, Any], myi: int) -> List[str]:
+    def _rank_benchmark_legal_roads(self, state: Dict[str, Any], myi: int) -> List[str]:
         edges = state.get("edges") if isinstance(state.get("edges"), dict) else {}
         candidates = [
             edge_key
             for edge_key, edge in edges.items()
             if self._edge_is_physically_unoccupied(state, edge_key) and _main_road_connects_to_network(state, edge_key, myi)
         ]
-        candidates = [
-            edge_key
-            for edge_key in candidates
-            if self._road_is_growth_oriented(state, edge_key, myi)
-        ]
         candidates.sort(
             key=lambda edge_key: self._strategic_road_score(state, edge_key, myi),
             reverse=True,
         )
         return candidates
+
+    def _rank_strategic_road_edges(self, state: Dict[str, Any], myi: int) -> List[str]:
+        return [
+            edge_key
+            for edge_key in self._rank_benchmark_legal_roads(state, myi)
+            if self._road_is_growth_oriented(state, edge_key, myi)
+        ]
 
     def _strategic_road_score(self, state: Dict[str, Any], edge_key: str, myi: int) -> float:
         return self._benchmark_road_score(state, edge_key, myi)
@@ -395,12 +479,19 @@ class BenchmarkCalibrationAgent:
                 return True
         return False
 
-    def _road_settlement_target_bonus(self, state: Dict[str, Any], edge_key: str) -> float:
+    def _road_settlement_target_bonus(self, state: Dict[str, Any], edge_key: str, myi: Optional[int] = None) -> float:
         parsed = _parse_edge_key(edge_key)
         endpoints = _edge_vertices(*parsed) if parsed else []
         if not endpoints:
             return 0.0
-        return max(self._open_settlement_vertex_value(state, vertex_key) for vertex_key in endpoints)
+        return max(
+            (
+                0.0
+                if isinstance(myi, int) and self._own_road_degree_at_vertex(state, vertex_key, myi) > 0
+                else self._open_settlement_vertex_value(state, vertex_key)
+            )
+            for vertex_key in endpoints
+        )
 
     def _open_settlement_vertex_value(self, state: Dict[str, Any], vertex_key: str) -> float:
         vertex = self._vertex_record(state, vertex_key)
@@ -490,17 +581,21 @@ class BenchmarkCalibrationAgent:
                 "cycleAvoidance": 1.0,
             }
 
-        forward_vertex = max(
-            endpoints,
-            key=lambda vertex_key: self._benchmark_forward_vertex_value(state, vertex_key),
-        )
+        forward_candidates = [
+            vertex_key
+            for vertex_key in endpoints
+            if self._own_road_degree_at_vertex(state, vertex_key, myi) == 0
+            and (self._vertex_record(state, vertex_key) or {}).get("owner") != myi
+        ] or endpoints
+        forward_vertex = max(forward_candidates, key=lambda vertex_key: self._benchmark_forward_vertex_value(state, vertex_key))
         next_edges = [candidate for candidate in _edges_touching_vertex(state, forward_vertex) if candidate != edge_key]
+        already_has_settlement_target = self._has_connected_settlement_target(state, myi)
         return {
             "futureReachability": min(1.0, len(next_edges) / 3.0),
             "reachableIntersectionValue": self._benchmark_forward_vertex_value(state, forward_vertex),
             "blockingValue": self._road_blocking_value(state, edge_key, myi),
-            "settlementTargetValue": self._road_settlement_target_bonus(state, edge_key),
-            "extensionValue": self._road_extension_bonus(state, edge_key, myi),
+            "settlementTargetValue": 0.0 if already_has_settlement_target else self._road_settlement_target_bonus(state, edge_key, myi),
+            "extensionValue": 0.0 if already_has_settlement_target else self._road_extension_bonus(state, edge_key, myi),
             "cycleAvoidance": 1.0 - self._road_cycle_penalty(state, edge_key, myi),
         }
 
@@ -714,6 +809,15 @@ class BenchmarkCalibrationAgent:
 
     def _play_high_value_dev_card(self, state: Dict[str, Any]) -> None:
         dev_cards = self._dev_cards(state)
+        myi = state.get("myIndex")
+        if (
+            int(dev_cards.get("roadBuilding", dev_cards.get("road_building", 0)) or 0) > 0
+            and isinstance(myi, int)
+            and not self._has_connected_settlement_target(state, myi)
+            and self._rank_strategic_road_edges(state, myi)
+        ):
+            self._execute("play_dev_card", {"card_type": "roadBuilding"})
+            return
         if int(dev_cards.get("monopoly", 0) or 0) > 0:
             resource = self._best_monopoly_resource(state)
             self._execute("play_dev_card", {"card_type": "monopoly", "params": {"resource": resource}})
@@ -1015,6 +1119,18 @@ class BenchmarkCalibrationAgent:
         return ["ore", "grain"]
 
     def _should_play_knight(self, state: Dict[str, Any]) -> bool:
+        me = self._me(state)
+        my_knights = int(me.get("knightsPlayed", me.get("knights_played", 0)) or 0)
+        opponents = [
+            player for index, player in enumerate(state.get("players") or [])
+            if index != state.get("myIndex") and isinstance(player, dict)
+        ]
+        best_opponent_knights = max(
+            (int(player.get("knightsPlayed", player.get("knights_played", 0)) or 0) for player in opponents),
+            default=0,
+        )
+        if my_knights + 1 >= 3 and my_knights + 1 > best_opponent_knights:
+            return True
         if state.get("robber"):
             income = expected_resource_income(state)
             if sum(income.values()) < 0.25:
@@ -1026,10 +1142,33 @@ class BenchmarkCalibrationAgent:
         if not self._can_afford(hand, BUILD_COSTS["dev_card"]):
             return False
         me = self._me(state)
-        vp = int(me.get("victoryPoints", me.get("victory_points", 0)) or 0)
-        if vp >= 7:
+        visible_vp = int(me.get("victoryPoints", me.get("victory_points", 0)) or 0)
+        hidden_vp = int(me.get("hiddenVictoryPoints", me.get("hidden_victory_points", 0)) or 0)
+        vp = visible_vp + hidden_vp
+        held_dev_cards = sum(self._dev_cards(state).values())
+        myi = state.get("myIndex")
+
+        if held_dev_cards >= 3:
+            return False
+        if isinstance(myi, int) and self._rank_strategic_road_edges(state, myi):
+            return False
+        if self._can_afford(hand, BUILD_COSTS["settlement"]) or self._can_afford(hand, BUILD_COSTS["city"]):
+            return False
+
+        my_knights = int(me.get("knightsPlayed", me.get("knights_played", 0)) or 0)
+        opponents = [
+            player for index, player in enumerate(state.get("players") or [])
+            if index != myi and isinstance(player, dict)
+        ]
+        best_opponent_knights = max(
+            (int(player.get("knightsPlayed", player.get("knights_played", 0)) or 0) for player in opponents),
+            default=0,
+        )
+        close_to_largest_army = my_knights < 3 and my_knights + held_dev_cards + 1 >= max(3, best_opponent_knights + 1)
+        if close_to_largest_army:
             return True
-        return not self._can_afford(hand, BUILD_COSTS["settlement"])
+
+        return vp >= 8 and held_dev_cards == 0
 
     def _is_leader(self, state: Dict[str, Any], player_index: Any) -> bool:
         if not isinstance(player_index, int):
@@ -1100,9 +1239,15 @@ class BenchmarkCalibrationAgent:
 
     def _dev_cards(self, state: Dict[str, Any]) -> Dict[str, int]:
         cards = self._me(state).get("devCards") or self._me(state).get("developmentCards")
-        if not isinstance(cards, dict):
-            return {}
-        return {str(card): int(count or 0) for card, count in cards.items()}
+        if isinstance(cards, dict):
+            return {str(card): int(count or 0) for card, count in cards.items()}
+        if isinstance(cards, list):
+            counts: Dict[str, int] = {}
+            for card in cards:
+                key = str(card)
+                counts[key] = counts.get(key, 0) + 1
+            return counts
+        return {}
 
     @staticmethod
     def _me(state: Dict[str, Any]) -> Dict[str, Any]:
