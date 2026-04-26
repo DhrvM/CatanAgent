@@ -1309,39 +1309,40 @@ export class BenchmarkStore {
     const telemetryEntries = [...this.telemetry.values()]
       .flatMap(payload => ensureArray(payload.records || payload))
       .filter(record => matchesFilters(record, filters))
-      .map(record => {
+      .flatMap(record => {
         const linkedTask = findLinkedTaskResult(record);
-        return {
-        id: `action:${record.id}`,
-        timestamp: record.acknowledgedAt || record.requestStartedAt || null,
-        eventType: 'action',
-        gameCode: record.gameId || null,
-        runId: record.runId || null,
-        benchmarkId: record.benchmarkId || null,
-        playerName: record.playerName || null,
-        agentId: record.agentId || null,
-        turnNumber: record.roundNumber ?? null,
-        task: record.taskId || record.taskCategory || record.actionName || null,
-        actionName: record.actionName || null,
-        benchmarkTaskId: linkedTask?.taskId || null,
-        benchmarkTaskName: linkedTask?.taskName || null,
-        success: linkedTask ? Boolean(linkedTask.success) : null,
-        status: record.accepted ? 'accepted' : 'rejected',
-        latencyMs: record.decisionTimeMs ?? null,
-        moveTimeMs: record.decisionTimeMs ?? null,
-        processingLatencyMs: record.processingLatencyMs ?? record.latencyMs ?? null,
-        retryIndex: record.retryIndex ?? 0,
-        illegal: record.legal === false,
-        details: {
-          benchmarkPassed: linkedTask ? Boolean(linkedTask.success) : null,
-          benchmarkScore: linkedTask?.score ?? null,
-          benchmarkExplanation: linkedTask?.explanation || null,
-          benchmarkTaskCategory: linkedTask?.taskCategory || null,
-          benchmarkEvaluationDetails: linkedTask?.evaluationDetails || null,
-          startingSeat: record.startingSeat ?? null,
-          opponentPolicySet: record.opponentPolicySet || null,
-        },
-      };
+        if (!linkedTask) return [];
+        return [{
+          id: `action:${record.id}`,
+          timestamp: record.acknowledgedAt || record.requestStartedAt || null,
+          eventType: 'action',
+          gameCode: record.gameId || null,
+          runId: record.runId || null,
+          benchmarkId: record.benchmarkId || null,
+          playerName: record.playerName || null,
+          agentId: record.agentId || null,
+          turnNumber: record.roundNumber ?? null,
+          task: record.taskId || record.taskCategory || record.actionName || null,
+          actionName: record.actionName || null,
+          benchmarkTaskId: linkedTask?.taskId || null,
+          benchmarkTaskName: linkedTask?.taskName || null,
+          success: linkedTask ? Boolean(linkedTask.success) : null,
+          status: record.accepted ? 'accepted' : 'rejected',
+          latencyMs: record.decisionTimeMs ?? null,
+          moveTimeMs: record.decisionTimeMs ?? null,
+          processingLatencyMs: record.processingLatencyMs ?? record.latencyMs ?? null,
+          retryIndex: record.retryIndex ?? 0,
+          illegal: record.legal === false,
+          details: {
+            benchmarkPassed: linkedTask ? Boolean(linkedTask.success) : null,
+            benchmarkScore: linkedTask?.score ?? null,
+            benchmarkExplanation: linkedTask?.explanation || null,
+            benchmarkTaskCategory: linkedTask?.taskCategory || null,
+            benchmarkEvaluationDetails: linkedTask?.evaluationDetails || null,
+            startingSeat: record.startingSeat ?? null,
+            opponentPolicySet: record.opponentPolicySet || null,
+          },
+        }];
       });
 
     const taskEntries = taskResults
@@ -1373,35 +1374,7 @@ export class BenchmarkStore {
         },
       }));
 
-    const completedGameEntries = [...this.games.values()]
-      .filter(game => matchesFilters(game, filters))
-      .filter(game => Boolean(game.finishedAt))
-      .flatMap(game => game.players.map(player => ({
-        id: `game:${game.gameId}:${player.playerKey}`,
-        timestamp: game.finishedAt,
-        eventType: 'game',
-        gameCode: game.gameId || null,
-        runId: game.runId || null,
-        benchmarkId: game.benchmarkId || null,
-        playerName: player.playerName || null,
-        agentId: player.agentId || null,
-        turnNumber: game.roundsPlayed ?? null,
-        task: game.taskId || game.gameType || 'full-game',
-        actionName: 'game-complete',
-        success: Boolean(player.won),
-        status: player.won ? 'won' : 'lost',
-        latencyMs: null,
-        moveTimeMs: null,
-        processingLatencyMs: null,
-        retryIndex: null,
-        illegal: false,
-        details: {
-          finalVictoryPoints: player.finalVictoryPoints ?? null,
-          roundsPlayed: game.roundsPlayed ?? null,
-        },
-      })));
-
-    const entries = [...telemetryEntries, ...taskEntries, ...completedGameEntries]
+    const entries = [...telemetryEntries, ...taskEntries]
       .sort((left, right) => String(right.timestamp || '').localeCompare(String(left.timestamp || '')))
       .slice(0, normalizedLimit);
 

@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from Agent.utils.socket_client import CatanSocketClient
 from Agent.utils.game_state_processor import GameStateProcessor
-from Agent.tools.game_tools import (
+from Agent.Tools.game_tools import (
     _all_vertex_keys_from_state,
     _all_edge_keys_from_state,
     _all_hex_keys_from_state,
@@ -313,11 +313,18 @@ def build_tool_registry(
     ))
 
     # ── 8. propose_trade ──────────────────────────────────────────
-    def _propose_trade(offer: Dict[str, int], request: Dict[str, int]) -> Dict[str, Any]:
-        return _safe_call(client, "proposeTrade", {
+    def _propose_trade(
+        offer: Dict[str, int],
+        request: Dict[str, int],
+        target_player_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
             "offer": offer,
             "request": request,
-        })
+        }
+        if target_player_id:
+            payload["targetPlayerId"] = target_player_id
+        return _safe_call(client, "proposeTrade", payload)
 
     reg.register(ToolDefinition(
         name="propose_trade",
@@ -325,6 +332,7 @@ def build_tool_registry(
         parameters=[
             ToolParameter("offer", "object", "Resources you're offering, e.g. {\"brick\": 1, \"lumber\": 1}"),
             ToolParameter("request", "object", "Resources you want, e.g. {\"grain\": 1}"),
+            ToolParameter("target_player_id", "string", "Optional player ID for a targeted trade", required=False),
         ],
         handler=_propose_trade,
         phases=["main"],
@@ -644,7 +652,7 @@ def build_tool_registry(
     ))
 
     # ── Risk analysis tools (from probabilities.py) ─────────────
-    from Agent.tools.risk_tools import register_risk_tools
+    from Agent.Tools.risk_tools import register_risk_tools
     register_risk_tools(reg, client)
 
     return reg

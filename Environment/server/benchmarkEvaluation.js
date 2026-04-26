@@ -117,9 +117,12 @@ function settlementOptionScore(option) {
 
 function roadOptionScore(option) {
   return clamp(
-    (safeNumber(option.futureReachability, 0) * 0.5)
-    + (safeNumber(option.reachableIntersectionValue, 0) * 0.35)
-    + (safeNumber(option.blockingValue, 0) * 0.15)
+    (safeNumber(option.futureReachability, 0) * 0.25)
+    + (safeNumber(option.reachableIntersectionValue, 0) * 0.2)
+    + (safeNumber(option.blockingValue, 0) * 0.1)
+    + (safeNumber(option.settlementTargetValue, 0) * 0.25)
+    + (safeNumber(option.extensionValue, 0) * 0.15)
+    + (safeNumber(option.cycleAvoidance, 1) * 0.05)
   );
 }
 

@@ -287,6 +287,55 @@ function mergeBenchmarkPlayer(basePlayer, benchmarkPlayer = {}, fallbackSeat = 0
   };
 }
 
+function buildBenchmarkPlayer(game, playerId, playerName, seatIndex, overrides = {}) {
+  const runId = game.benchmark?.runId || overrides.runId || uuidv4();
+  return {
+    playerId,
+    playerKey: overrides.playerKey || `${runId}:${playerId}`,
+    agentId: overrides.agentId || playerName,
+    agentVersion: overrides.agentVersion || 'unknown',
+    playerName,
+    baseline: Boolean(overrides.baseline),
+    startingSeat: overrides.startingSeat ?? seatIndex,
+    runId,
+  };
+}
+
+async function ensureBenchmarkEnabled(game, playerId, playerName, seatIndex = 0, overrides = {}) {
+  if (!game.benchmark?.enabled) {
+    const runId = overrides.runId || uuidv4();
+    game.benchmark = {
+      enabled: true,
+      runId,
+      benchmarkId: overrides.benchmarkId || 'catan-benchmark-v1',
+      taskId: null,
+      gameType: 'full-game',
+      mapLayoutId: null,
+      opponentPolicySet: 'random-opponents',
+      scenarioTags: [],
+      baselineAgentId: null,
+      metadata: {},
+      players: [],
+    };
+  }
+
+  const existing = game.benchmark.players.find(player => player.playerId === playerId);
+  if (existing) return existing;
+
+  const benchmarkPlayer = buildBenchmarkPlayer(game, playerId, playerName, seatIndex, {
+    ...overrides,
+    runId: game.benchmark.runId,
+  });
+  game.benchmark.players.push(benchmarkPlayer);
+
+  if (game.players[seatIndex]) {
+    game.players[seatIndex] = mergeBenchmarkPlayer(game.players[seatIndex], benchmarkPlayer, seatIndex);
+  }
+
+  await registerBenchmarkGameIfNeeded(game);
+  return benchmarkPlayer;
+}
+
 function extractClientTimestamp(payload) {
   if (!payload || typeof payload !== 'object') return null;
   const candidate = payload.clientTimestamp || payload.benchmarkTimestamp || payload._clientTimestamp;
@@ -364,9 +413,12 @@ function settlementPlacementScore(score = {}) {
 
 function roadPlacementPriorityScore(score = {}) {
   return clamp01(
-    (Number(score.futureReachability) || 0) * 0.5
-    + (Number(score.reachableIntersectionValue) || 0) * 0.35
-    + (Number(score.blockingValue) || 0) * 0.15
+    (Number(score.futureReachability) || 0) * 0.25
+    + (Number(score.reachableIntersectionValue) || 0) * 0.20
+    + (Number(score.blockingValue) || 0) * 0.10
+    + (Number(score.settlementTargetValue) || 0) * 0.25
+    + (Number(score.extensionValue) || 0) * 0.15
+    + (Number(score.cycleAvoidance) || 0) * 0.05
   );
 }
 
@@ -456,6 +508,63 @@ function scoreRoadBlockingValue(game, playerId, edgeKeyValue) {
   });
 
   return bestBlockingScore;
+}
+
+function hasConnectedSettlementTarget(game, playerId) {
+  return Object.keys(game.vertices || {}).some(vKey => (
+    GameLogic.canPlaceSettlement(game, playerId, vKey, false).valid
+  ));
+}
+
+function scoreRoadSettlementTargetValue(game, edgeKeyValue, playerId) {
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  const endpoints = getEdgeVerticesFromKey(edgeKeyValue);
+  if (!endpoints.length) return 0;
+
+  return Math.max(...endpoints.map(vKey => {
+    if (playerIndex !== -1 && ownRoadDegreeAtVertex(game, vKey, playerIndex) > 0) return 0;
+    if (!isOpenSettlementVertex(game, vKey)) return 0;
+    const vertexScore = scoreVertexPlacement(game, vKey);
+    return clamp01(
+      (vertexScore.resourceProductionExpectancy * 0.5)
+      + (vertexScore.resourceDiversity * 0.3)
+      + (vertexScore.portSynergy * 0.2)
+    );
+  }));
+}
+
+function ownRoadDegreeAtVertex(game, vKey, playerIndex) {
+  return GameLogic.getVertexEdges(vKey)
+    .filter(edgeKeyValue => getRoadOwnerAtEdge(game, edgeKeyValue) === playerIndex)
+    .length;
+}
+
+function scoreRoadExtensionValue(game, playerId, edgeKeyValue) {
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  if (playerIndex === -1) return 0;
+
+  const endpoints = getEdgeVerticesFromKey(edgeKeyValue);
+  if (endpoints.length !== 2) return 0;
+
+  const degrees = endpoints.map(vKey => ownRoadDegreeAtVertex(game, vKey, playerIndex));
+  const touchesOwnBuilding = endpoints.some(vKey => getBuildingAtVertex(game, vKey)?.owner === playerIndex);
+  if (degrees.some(degree => degree === 0) && (touchesOwnBuilding || Math.max(...degrees) > 0)) return 1;
+  if (Math.min(...degrees) === 0) return 0.6;
+  return 0;
+}
+
+function scoreRoadCycleAvoidance(game, playerId, edgeKeyValue) {
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  if (playerIndex === -1) return 1;
+
+  const endpoints = getEdgeVerticesFromKey(edgeKeyValue);
+  if (endpoints.length !== 2) return 1;
+
+  const closesExistingNetwork = endpoints.every(vKey => {
+    const building = getBuildingAtVertex(game, vKey);
+    return building?.owner === playerIndex || ownRoadDegreeAtVertex(game, vKey, playerIndex) > 0;
+  });
+  return closesExistingNetwork ? 0 : 1;
 }
 
 function bestSettlementPlanScore(game, playerId) {
@@ -613,10 +722,16 @@ function buildDevelopmentCardPurchaseTaskPayload(game, playerId, selectedOptionI
 }
 
 function buildGoalAwarePlanCandidates(game, playerId) {
+  const priorityByType = {
+    city: 1.1,
+    settlement: 1.5,
+    devCard: 0.75,
+    road: 0.25,
+  };
   return buildPlanDecisionData(game, playerId).map(plan => ({
     type: plan.type,
     cost: plan.cost,
-    basePlanWeight: plan.baseScore,
+    basePlanWeight: plan.baseScore * (priorityByType[plan.type] || 1),
   })).filter(plan => plan.basePlanWeight > 0);
 }
 
@@ -660,6 +775,9 @@ function buildBuildPrioritizationTaskPayload(game, playerId, selectedOptionId) {
 
 function scoreRoadPlacement(game, edgeKeyValue, lastSettlement) {
   const actingPlayerId = game.currentPlayer;
+  const alreadyHasSettlementTarget = actingPlayerId && !lastSettlement
+    ? hasConnectedSettlementTarget(game, actingPlayerId)
+    : false;
   const endpoints = getEdgeVerticesFromKey(edgeKeyValue);
   const forwardVertex = lastSettlement
     ? (endpoints.find(vKey => !GameLogic.areVerticesEqual(vKey, lastSettlement)) || endpoints[0] || null)
@@ -690,6 +808,9 @@ function scoreRoadPlacement(game, edgeKeyValue, lastSettlement) {
       + (forwardVertexScore.portSynergy * 0.2)
     ),
     blockingValue: actingPlayerId ? scoreRoadBlockingValue(game, actingPlayerId, edgeKeyValue) : 0,
+    settlementTargetValue: alreadyHasSettlementTarget ? 0 : scoreRoadSettlementTargetValue(game, edgeKeyValue, actingPlayerId),
+    extensionValue: alreadyHasSettlementTarget ? 0 : (actingPlayerId ? scoreRoadExtensionValue(game, actingPlayerId, edgeKeyValue) : 0),
+    cycleAvoidance: actingPlayerId ? scoreRoadCycleAvoidance(game, actingPlayerId, edgeKeyValue) : 1,
   };
 }
 
@@ -829,19 +950,81 @@ function tradeBundleValue(bundle = {}, scoreMap = {}) {
   ), 0);
 }
 
+function resourcesAfterTrade(resources = {}, incoming = {}, outgoing = {}) {
+  const next = normalizeResourceSnapshot(resources);
+  Object.entries(incoming || {}).forEach(([resource, amount]) => {
+    next[resource] = Math.max(0, (Number(next[resource]) || 0) + (Number(amount) || 0));
+  });
+  Object.entries(outgoing || {}).forEach(([resource, amount]) => {
+    next[resource] = Math.max(0, (Number(next[resource]) || 0) - (Number(amount) || 0));
+  });
+  return next;
+}
+
+function bestAffordablePlanScoreForResources(game, playerId, resources = {}) {
+  return Math.max(
+    0,
+    ...buildPlanDecisionData(game, playerId, resources)
+      .filter(plan => plan.affordable && plan.baseScore > 0)
+      .map(plan => {
+        const priorityByType = {
+          city: 1.1,
+          settlement: 1.5,
+          devCard: 0.75,
+          road: 0.25,
+        };
+        return clamp01(plan.baseScore * (priorityByType[plan.type] || 1));
+      })
+  );
+}
+
+function settlementProgressGain(before = {}, after = {}) {
+  const beforeMissing = countMissingResources(before, PLAN_COSTS.settlement);
+  const afterMissing = countMissingResources(after, PLAN_COSTS.settlement);
+  return clamp01((beforeMissing - afterMissing) / Math.max(1, Object.values(PLAN_COSTS.settlement).reduce((sum, value) => sum + value, 0)));
+}
+
+function scoreTradeQuality(offerScore = {}) {
+  const legality = offerScore.legal === false ? 0 : 1;
+  return clamp01(
+    (legality * 0.35)
+    + ((Number(offerScore.selfGain) || 0) * 0.45)
+    + ((1 - (Number(offerScore.leaderHelpPenalty) || 0)) * 0.15)
+    + ((1 - (Number(offerScore.fairnessPenalty) || 0)) * 0.05)
+  );
+}
+
 function scoreTradeOfferForPlayer(game, fromPlayer, toPlayer, offer = {}, request = {}) {
   const needMap = scoreResourceNeed(game, fromPlayer?.id);
   const surplusMap = scoreResourceSurplus(game, fromPlayer?.id);
   const giveCost = tradeBundleValue(offer, surplusMap);
   const requestValue = tradeBundleValue(request, needMap);
+  const beforeResources = normalizeResourceSnapshot(fromPlayer?.resources || {});
+  const afterResources = resourcesAfterTrade(beforeResources, request, offer);
+  const beforePlanScore = bestAffordablePlanScoreForResources(game, fromPlayer?.id, beforeResources);
+  const afterPlanScore = bestAffordablePlanScoreForResources(game, fromPlayer?.id, afterResources);
+  const planGain = clamp01(afterPlanScore - beforePlanScore);
+  const settlementGain = bestSettlementPlanScore(game, fromPlayer?.id) > 0
+    ? settlementProgressGain(beforeResources, afterResources)
+    : 0;
   const leaderIndex = identifyLeaderIndex(game);
   const toIndex = game.players.findIndex(candidate => candidate.id === toPlayer?.id);
   const leaderHelpPenalty = toIndex === leaderIndex ? 1 : 0;
   const fairnessPenalty = Math.max(0, giveCost - requestValue);
+  const selfGain = clamp01(
+    (requestValue * 0.45)
+    + (planGain * 0.35)
+    + (settlementGain * 0.2)
+    - (giveCost * 0.35)
+  );
 
   return {
-    legal: Object.entries(offer).every(([resource, amount]) => (fromPlayer.resources?.[resource] || 0) >= amount),
-    selfGain: Math.max(0, Math.min(1, requestValue - (giveCost * 0.5))),
+    legal: Object.entries(offer).every(([resource, amount]) => (fromPlayer?.resources?.[resource] || 0) >= amount),
+    selfGain,
+    requestValue: clamp01(requestValue),
+    giveCost: clamp01(giveCost),
+    planGain,
+    settlementGain,
     leaderHelpPenalty,
     fairnessPenalty: Math.min(1, fairnessPenalty),
   };
@@ -862,7 +1045,7 @@ function scoreTargetedTradePartner(game, fromPlayer, toPlayer, offer = {}, reque
       0,
       Math.min(
         1,
-        offerScore.selfGain + availabilityBonus - (offerScore.leaderHelpPenalty * 0.4)
+        scoreTradeQuality(offerScore) + availabilityBonus - (offerScore.leaderHelpPenalty * 0.4)
       )
     ),
     canFulfillRequest: canPlayerFulfillTradeBundle(toPlayer, request),
@@ -936,14 +1119,16 @@ function buildTradeProposalTaskPayload(game, playerId, offer, request, targetPla
   ));
   const selectedTargetId = targetPlayerId || recipients[0]?.id || 'all-opponents';
   const selectedTarget = recipients.find(candidate => candidate.id === selectedTargetId) || recipients[0] || null;
+  const scoredOffer = scoreTradeOfferForPlayer(game, fromPlayer, selectedTarget, offer, request);
 
   return {
     taskId: 'generate-trade-offers',
     selectedOptionId: selectedTargetId,
     evaluationContext: {
       bestOfferScore: 1,
+      candidateOffer: scoredOffer,
     },
-    offerContext: scoreTradeOfferForPlayer(game, fromPlayer, selectedTarget, offer, request),
+    offerContext: scoredOffer,
     partnerContext: targetPlayerId ? {
       taskId: 'select-targeted-trade-partner',
       selectedOptionId: selectedTargetId,
@@ -960,8 +1145,11 @@ function buildTradeResponseTaskPayload(game, playerId, accept) {
   const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
   const responder = game.players[playerIndex];
   const proposer = game.players[tradeOffer.from];
-  const acceptScore = scoreTradeOfferForPlayer(game, responder, proposer, tradeOffer.request, tradeOffer.offer).selfGain;
-  const rejectScore = Math.max(0, Math.min(1, 1 - acceptScore + 0.1));
+  const offerScore = scoreTradeOfferForPlayer(game, responder, proposer, tradeOffer.request, tradeOffer.offer);
+  const acceptQuality = scoreTradeQuality(offerScore);
+  const shouldAccept = offerScore.legal !== false && acceptQuality >= 0.7;
+  const acceptScore = shouldAccept ? acceptQuality : Math.min(0.35, acceptQuality);
+  const rejectScore = shouldAccept ? Math.max(0.35, 1 - acceptQuality) : 1;
   return {
     taskId: 'accept-or-reject-trade-offers',
     selectedOptionId: accept ? 'accept' : 'reject',
@@ -1628,7 +1816,7 @@ io.on('connection', (socket) => {
   // --------------------------------------------------------------------
   
   /** Create a new game room as the host */
-  socket.on('createGame', async ({ playerName, isExtended = false, enableSpecialBuild = true, benchmark = null }, callback) => {
+  socket.on('createGame', async ({ playerName, isExtended = false, enableSpecialBuild = true }, callback) => {
     // Check game limit
     if (games.size >= MAX_CONCURRENT_GAMES) {
       callback({ 
@@ -1646,33 +1834,7 @@ io.on('connection', (socket) => {
       name: playerName
     }, isExtended, enableSpecialBuild);
 
-    if (benchmark?.enabled) {
-      const benchmarkPlayer = {
-        playerId,
-        playerKey: benchmark.player?.playerKey || `${benchmark.runId || gameCode}:${playerId}`,
-        agentId: benchmark.player?.agentId || playerName,
-        agentVersion: benchmark.player?.agentVersion || 'unknown',
-        playerName,
-        baseline: Boolean(benchmark.player?.baseline) || benchmark.baselineAgentId === (benchmark.player?.agentId || playerName),
-        startingSeat: benchmark.player?.startingSeat ?? 0,
-        runId: benchmark.runId || null,
-      };
-      game.benchmark = {
-        enabled: true,
-        runId: benchmark.runId || uuidv4(),
-        benchmarkId: benchmark.benchmarkId || 'default-benchmark',
-        taskId: benchmark.taskId || null,
-        gameType: benchmark.gameType || 'full-game',
-        mapLayoutId: benchmark.mapLayoutId || null,
-        opponentPolicySet: benchmark.opponentPolicySet || 'default-opponent',
-        scenarioTags: Array.isArray(benchmark.scenarioTags) ? benchmark.scenarioTags : [],
-        baselineAgentId: benchmark.baselineAgentId || null,
-        metadata: benchmark.metadata || {},
-        players: [benchmarkPlayer],
-      };
-      game.players[0] = mergeBenchmarkPlayer(game.players[0], benchmarkPlayer, 0);
-      await registerBenchmarkGameIfNeeded(game);
-    }
+    await ensureBenchmarkEnabled(game, playerId, playerName, 0);
     
     // Add timestamp for cleanup
     game.createdAt = Date.now();
@@ -1692,7 +1854,7 @@ io.on('connection', (socket) => {
   });
   
   /** Join an existing game room using a game code */
-  socket.on('joinGame', async ({ gameCode, playerName, benchmark = null }, callback) => {
+  socket.on('joinGame', async ({ gameCode, playerName }, callback) => {
     const game = games.get(gameCode.toUpperCase());
     
     if (!game) {
@@ -1711,25 +1873,7 @@ io.on('connection', (socket) => {
     playerSockets.set(socket.id, { gameId: gameCode.toUpperCase(), playerId });
     socket.join(gameCode.toUpperCase());
 
-    if (game.benchmark?.enabled) {
-      const benchmarkPlayer = {
-        playerId,
-        playerKey: benchmark?.player?.playerKey || `${game.benchmark.runId || gameCode.toUpperCase()}:${playerId}`,
-        agentId: benchmark?.player?.agentId || playerName,
-        agentVersion: benchmark?.player?.agentVersion || 'unknown',
-        playerName,
-        baseline: Boolean(benchmark?.player?.baseline) || game.benchmark.baselineAgentId === (benchmark?.player?.agentId || playerName),
-        startingSeat: benchmark?.player?.startingSeat ?? (game.players.length - 1),
-        runId: game.benchmark.runId,
-      };
-      game.benchmark.players.push(benchmarkPlayer);
-      game.players[game.players.length - 1] = mergeBenchmarkPlayer(
-        game.players[game.players.length - 1],
-        benchmarkPlayer,
-        game.players.length - 1
-      );
-      await registerBenchmarkGameIfNeeded(game);
-    }
+    await ensureBenchmarkEnabled(game, playerId, playerName, game.players.length - 1);
     
     console.log(`${playerName} joined game ${gameCode}`);
     
@@ -2666,4 +2810,3 @@ const PORT = process.env.PORT || 3001;
 httpServer.listen(PORT, () => {
   console.log(`Catan server running on port ${PORT}`);
 });
-

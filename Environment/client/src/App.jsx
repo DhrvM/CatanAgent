@@ -195,24 +195,45 @@ function App() {
   // NOTIFICATION HELPERS
   // ============================================================================
 
-  /** Add a toast notification that auto-dismisses after 4 seconds */
-  const addNotification = useCallback((message) => {
-    const id = Date.now();
-    setNotifications(prev => [...prev, { id, message }]);
+  /** Add a toast notification that stays scoped to the last two game rounds. */
+  const addNotification = useCallback((message, options = {}) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const roundNumber = Number.isFinite(Number(options.roundNumber))
+      ? Number(options.roundNumber)
+      : Number.isFinite(Number(gameState?.roundNumber))
+        ? Number(gameState.roundNumber)
+        : null;
+    setNotifications(prev => {
+      const next = [...prev, { id, message, roundNumber }];
+      if (roundNumber === null) return next.slice(-8);
+      return next
+        .filter(n => n.roundNumber === null || n.roundNumber >= roundNumber - 1)
+        .slice(-8);
+    });
     setTimeout(() => {
       setNotifications(prev => prev.filter(n => n.id !== id));
-    }, 4000);
+    }, 8000);
+  }, [gameState?.roundNumber]);
+
+  const dismissNotification = useCallback((id) => {
+    setNotifications(prev => prev.filter(n => n.id !== id));
   }, []);
+
+  useEffect(() => {
+    const roundNumber = Number(gameState?.roundNumber);
+    if (!Number.isFinite(roundNumber)) return;
+    setNotifications(prev => prev.filter(n => n.roundNumber === null || n.roundNumber >= roundNumber - 1));
+  }, [gameState?.roundNumber]);
 
   // ============================================================================
   // GAME ACTIONS
   // ============================================================================
 
   /** Create a new game room as the host */
-  const handleCreateGame = useCallback((playerName, isExtended = false, enableSpecialBuild = true, benchmark = null) => {
+  const handleCreateGame = useCallback((playerName, isExtended = false, enableSpecialBuild = true) => {
     if (!socket) return;
 
-    socket.emit('createGame', { playerName, isExtended, enableSpecialBuild, benchmark }, (response) => {
+    socket.emit('createGame', { playerName, isExtended, enableSpecialBuild }, (response) => {
       if (response.success) {
         setGameCode(response.gameCode);
         setPlayerId(response.playerId);
@@ -228,10 +249,10 @@ function App() {
   }, [socket]);
 
   /** Join an existing game room using a code */
-  const handleJoinGame = useCallback((code, playerName, benchmark = null) => {
+  const handleJoinGame = useCallback((code, playerName) => {
     if (!socket) return;
 
-    socket.emit('joinGame', { gameCode: code, playerName, benchmark }, (response) => {
+    socket.emit('joinGame', { gameCode: code, playerName }, (response) => {
       if (response.success) {
         setGameCode(response.gameCode);
         setPlayerId(response.playerId);
@@ -361,7 +382,16 @@ function App() {
         <div className="notifications">
           {notifications.map(n => (
             <div key={n.id} className="notification fade-in">
-              {n.message}
+              <span className="notification-message">{n.message}</span>
+              <button
+                type="button"
+                className="notification-dismiss"
+                onClick={() => dismissNotification(n.id)}
+                aria-label="Dismiss notification"
+                title="Dismiss"
+              >
+                ×
+              </button>
             </div>
           ))}
         </div>,

@@ -294,9 +294,9 @@ For each candidate plan and resource $r$, \texttt{cost[r]} is the number of card
 \]
 Each plan is weighted according to how many resources are needed to achieve the plan:
 \[
-\texttt{planWeight} = \frac{\texttt{baseScore}}{1 + 0.75 \cdot \texttt{totalMissing}},
+\texttt{planWeight} = \frac{\texttt{baseScore} \cdot \texttt{priorityMultiplier}}{1 + 0.75 \cdot \texttt{totalMissing}},
 \]
-where \texttt{baseScore} uses the shared build-plan definition from Section~\ref{app:build-plan-base-scores}.
+where \texttt{baseScore} uses the shared build-plan definition from Section~\ref{app:build-plan-base-scores}. The current priority multipliers are $1.5$ for \texttt{settlement}, $1.1$ for \texttt{city}, $0.75$ for \texttt{devCard}, and $0.25$ for \texttt{road}. These multipliers intentionally make settlement-unlocking resources such as wool, grain, brick, or lumber more valuable than extra road resources when a legal expansion site exists.
 For each resource $r$,
 \[
 \texttt{need}[r] {+}{=} \texttt{planWeight} \cdot \frac{\texttt{missing}[r]}{\max(1,\texttt{totalMissing})}.
@@ -343,9 +343,12 @@ The threshold for \texttt{settlement-location-selection} is $0.90$ because later
 \[
 \begin{aligned}
 \text{Score} &=
-0.50 \cdot \texttt{futureReachability}
-+ 0.35 \cdot \texttt{reachableValue} \\
-&\quad + 0.15 \cdot \texttt{blockingValue}.
+0.25 \cdot \texttt{futureReachability}
++ 0.20 \cdot \texttt{reachableValue}
++ 0.10 \cdot \texttt{blockingValue} \\
+&\quad + 0.25 \cdot \texttt{settlementTargetValue}
++ 0.15 \cdot \texttt{extensionValue}
++ 0.05 \cdot \texttt{cycleAvoidance}.
 \end{aligned}
 \]
 
@@ -360,7 +363,11 @@ Where:
     + 0.2 \cdot \texttt{portSynergy}.
     \]
     \item \texttt{blockingValue} is the maximum blocking score over the candidate road's two endpoints and all opponents present at those endpoints.
+    \item \texttt{settlementTargetValue} is the best open settlement value at either endpoint of the road, using the same production-diversity-port mixture as \texttt{reachableValue}. Endpoints occupied by a building or invalidated by the distance rule receive $0$.
+    \item \texttt{extensionValue} rewards roads that extend a road network outward. It is $1$ when the new road creates an open endpoint while touching an existing own building or road, $0.6$ for weaker outward extensions, and $0$ when it does not create meaningful outward reach.
+    \item \texttt{cycleAvoidance} is $0$ when the candidate road closes back into the player's existing road network at both endpoints, and $1$ otherwise. This discourages small loops that consume brick and lumber without creating new settlement access.
 \end{itemize}
+When the acting player already has a legal connected settlement target, the evaluator sets \texttt{settlementTargetValue} and \texttt{extensionValue} for additional main-phase roads to $0$. In that state, extra roads are treated as a distraction from converting the existing expansion point into a victory point unless they provide exceptional tactical blocking value.
 For each endpoint-opponent pair, the evaluator ignores endpoints occupied by the acting player and endpoints occupied by a different opponent. It then computes:
 \[
 O_{\text{branch}} =
@@ -408,7 +415,7 @@ The candidate blocking score is
 \]
 and \texttt{blockingValue} is the largest \texttt{candidateBlocking}, or $0$ if no opponent is present at either endpoint.
 The current implementation therefore recognizes common denial plays without running a full tactical search.
-Future reachability is weighted highest because roads are primarily investment moves. Reachable intersection value matters because roads derive value from the future settlement points they unlock. Blocking value is tactical and useful, but not every road is a denial move.
+The updated road rubric treats roads primarily as instruments for future victory points: settlement-target value and outward extension are weighted alongside reachability, while cycle avoidance penalizes roads that form small loops without opening new build sites. Blocking remains useful, but it is deliberately secondary because most road purchases should either unlock settlements or advance a real Longest Road plan.
 \\
 The threshold for \texttt{road-placement-direction} is $0.80$ because roads are path-dependent investment moves and several near-best routes can preserve similar future options.
 
@@ -665,22 +672,24 @@ The threshold for \texttt{robber-placement} is $0.90$ because robber placement i
 \label{app:task-accept-or-reject-trade-offers}
 \[
 \begin{aligned}
-\texttt{targetAcceptScore}
-&= 0.50 \cdot \texttt{selfGain}
-+ 0.25 \cdot \texttt{leaderPenalty} \\
-&\quad + 0.15 \cdot \texttt{resourceUrgency}
-+ 0.10 \cdot \texttt{fairnessBalance}.
+\texttt{tradeQuality}
+&= 0.35 \cdot \texttt{legality}
++ 0.45 \cdot \texttt{selfGain} \\
+&\quad + 0.15 \cdot (1 - \texttt{leaderPenalty})
++ 0.05 \cdot (1 - \texttt{fairnessPenalty}).
 \end{aligned}
 \]
-The current implementation approximates this as a two-option ratio over \texttt{accept} and \texttt{reject}. The accept score is the responder's simplified self-gain:
+The response task uses the same plan-aware trade-quality score as generated trade offers, but from the responder's perspective. The responder should accept iff the incoming offer's \texttt{tradeQuality} is at least $0.70$; otherwise rejection receives the benchmark-best option score. This makes the response task consistent with the offer-generation task and avoids penalizing settlement-unlocking trades that have low immediate surplus value but improve the next build plan.
+
+The plan-aware self-gain term is:
 \[
-\texttt{acceptScore} = \texttt{selfGain}
-= \texttt{requestValue} - 0.5 \cdot \texttt{giveCost},
+\texttt{selfGain}
+= 0.45 \cdot \texttt{requestValue}
++ 0.35 \cdot \texttt{planGain}
++ 0.20 \cdot \texttt{settlementGain}
+- 0.35 \cdot \texttt{giveCost},
 \]
-where \texttt{requestValue} uses the responder's need map and \texttt{giveCost} uses the responder's surplus map. The reject score is
-\[
-\texttt{rejectScore} = \texttt{clamp}(1 - \texttt{acceptScore} + 0.1).
-\]
+clamped to $[0,1]$. Here \texttt{requestValue} uses the responder's goal-aware need map, \texttt{giveCost} uses the responder's surplus map, \texttt{planGain} is the improvement in the best affordable weighted build plan after the trade, and \texttt{settlementGain} is the reduction in missing settlement resources when a legal settlement target exists.
 \\
 The threshold for \texttt{accept-or-reject-trade-offers} is $0.95$ because accepting or rejecting a concrete offer should be nearly optimal to avoid rewarding harmful trades.
 
@@ -698,7 +707,11 @@ The threshold for \texttt{accept-or-reject-trade-offers} is $0.95$ because accep
 A trade must first be legal. Its main purpose is to improve the acting player's position. Helping the leader is strategically risky, and highly unfair offers are less plausible and less likely to be accepted.
 The components are:
 \[
-\texttt{selfGain} = \texttt{clamp}(\texttt{requestValue} - 0.5 \cdot \texttt{giveCost}),
+\texttt{selfGain}
+= \texttt{clamp}(0.45 \cdot \texttt{requestValue}
++ 0.35 \cdot \texttt{planGain}
++ 0.20 \cdot \texttt{settlementGain}
+- 0.35 \cdot \texttt{giveCost}),
 \]
 \[
 \texttt{fairnessPenalty}

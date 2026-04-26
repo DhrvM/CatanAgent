@@ -33,7 +33,7 @@ def register_risk_tools(
     Imports ToolDefinition and ToolParameter locally to avoid circular
     imports (registry.py imports game_tools which is unrelated to risk).
     """
-    from Agent.tools.registry import ToolDefinition, ToolParameter
+    from Agent.Tools.registry import ToolDefinition, ToolParameter
 
     # ── 1. get_expected_income ────────────────────────────────────
     def _get_expected_income() -> Dict[str, Any]:

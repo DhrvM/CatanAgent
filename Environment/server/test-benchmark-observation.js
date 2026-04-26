@@ -201,17 +201,18 @@ async function main() {
   assert(slices.length > 0, 'Slice comparison data built');
 
   const liveLog = store.getLiveLog({ limit: 10 });
-  assert(liveLog.entries.length >= 3, 'Live log includes task, action, and game events');
+  assert(liveLog.entries.length >= 2, 'Live log includes benchmark task events');
   assert(liveLog.entries.some(entry => entry.eventType === 'task'), 'Live log includes task entries');
-  assert(liveLog.entries.some(entry => entry.eventType === 'action'), 'Live log includes action entries');
-  assert(liveLog.entries.some(entry => entry.eventType === 'game'), 'Live log includes game completion entries');
+  assert(liveLog.entries.every(entry => entry.eventType === 'task' || entry.benchmarkTaskId), 'Live log excludes non-task telemetry');
   const taskLogEntry = liveLog.entries.find(entry => entry.eventType === 'task');
   const actionLogEntry = liveLog.entries.find(entry => entry.eventType === 'action');
   assert(taskLogEntry.status === 'passed', 'Task live log reflects evaluator pass/fail');
   assert(taskLogEntry.details.score > 0.9, 'Task live log exposes evaluator score');
-  assert(actionLogEntry.status === 'accepted', 'Action live log reflects transport acceptance');
-  assert(actionLogEntry.moveTimeMs >= 0, 'Action live log exposes move time');
-  assert(actionLogEntry.processingLatencyMs >= 0, 'Action live log exposes server processing time');
+  if (actionLogEntry) {
+    assert(actionLogEntry.status === 'accepted', 'Action live log reflects transport acceptance');
+    assert(actionLogEntry.moveTimeMs >= 0, 'Action live log exposes move time');
+    assert(actionLogEntry.processingLatencyMs >= 0, 'Action live log exposes server processing time');
+  }
 
   await store.clearAllData();
   const emptyOverview = store.getOverview();

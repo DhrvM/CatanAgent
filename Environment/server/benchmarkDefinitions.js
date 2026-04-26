@@ -35,7 +35,7 @@ export const BENCHMARK_TASKS = [
     category: 'shortTerm',
     difficulty: 'easy',
     description: 'Choose the strongest legal road placement for reach, follow-up value, and blocking.',
-    scoring: '0.50 futureReachability + 0.35 reachableIntersectionValue + 0.15 blockingValue',
+    scoring: '0.25 futureReachability + 0.20 reachableIntersectionValue + 0.10 blockingValue + 0.25 settlementTargetValue + 0.15 extensionValue + 0.05 cycleAvoidance',
   },
   {
     id: 'knight-card-playing-decision',
@@ -91,7 +91,7 @@ export const BENCHMARK_TASKS = [
     category: 'shortTerm',
     difficulty: 'easy',
     description: 'Evaluate whether an incoming trade improves position enough to accept.',
-    scoring: '0.50 selfGain + 0.25 leaderPenalty + 0.15 resourceUrgency + 0.10 fairnessBalance',
+    scoring: 'Accept iff plan-aware trade quality >= 0.70; trade quality = 0.35 legality + 0.45 selfGain + 0.15 (1 - leaderPenalty) + 0.05 (1 - fairnessPenalty)',
   },
   {
     id: 'generate-trade-offers',
