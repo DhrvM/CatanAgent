@@ -4,9 +4,12 @@ LLM-friendly format with rich board awareness.
 """
 from __future__ import annotations
 
+import json
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 RESOURCES = ["brick", "lumber", "wool", "grain", "ore"]
+_BOARD_DUMP_LIMIT = max(1, int(os.getenv("REACT_BOARD_DUMP_LIMIT", "12")))
 
 PIPS: Dict[int, int] = {
     2: 1, 12: 1, 3: 2, 11: 2, 4: 3, 10: 3, 5: 4, 9: 4, 6: 5, 8: 5,
@@ -64,6 +67,48 @@ def _edge_vertices(q: int, r: int, d: int) -> List[str]:
     if d == 5:
         return [f"v_{q}_{r}_5", f"v_{q}_{r}_0"]
     return []
+
+
+def _equivalent_vertex_coords(q: int, r: int, d: int) -> List[Tuple[int, int, int]]:
+    """
+    Return equivalent (q, r, d) coordinates for the same physical vertex.
+    Mirrors server-side vertex equivalence logic.
+    """
+    coords = [(q, r, d)]
+    if d == 0:
+        coords += [(q, r - 1, 2), (q + 1, r - 1, 4)]
+    elif d == 1:
+        coords += [(q + 1, r - 1, 3), (q + 1, r, 5)]
+    elif d == 2:
+        coords += [(q + 1, r, 4), (q, r + 1, 0)]
+    elif d == 3:
+        coords += [(q, r + 1, 5), (q - 1, r + 1, 1)]
+    elif d == 4:
+        coords += [(q - 1, r + 1, 0), (q - 1, r, 2)]
+    elif d == 5:
+        coords += [(q - 1, r, 1), (q, r - 1, 3)]
+    return coords
+
+
+def _equivalent_edge_coords(q: int, r: int, d: int) -> List[Tuple[int, int, int]]:
+    """
+    Return equivalent (q, r, d) coordinates for the same physical edge.
+    Mirrors server-side edge equivalence logic.
+    """
+    coords = [(q, r, d)]
+    if d == 0:
+        coords.append((q + 1, r - 1, 3))
+    elif d == 1:
+        coords.append((q + 1, r, 4))
+    elif d == 2:
+        coords.append((q, r + 1, 5))
+    elif d == 3:
+        coords.append((q - 1, r + 1, 0))
+    elif d == 4:
+        coords.append((q - 1, r, 1))
+    elif d == 5:
+        coords.append((q, r - 1, 2))
+    return coords
 
 
 def _to_int_or_none(value: Any) -> Optional[int]:
@@ -145,7 +190,8 @@ class GameStateProcessor:
             "me": self._extract_me(state, me, myi),
             "opponents": self._extract_opponents(state, myi, opponent_board),
             "opponent_board": opponent_board,
-            "board_graph": self._extract_board_graph(state),
+            "board_graph_raw": self._extract_board_graph(state),
+            "board_graph": self._extract_canonical_board_graph(state),
             "robber_hex": _normalize_hex_key(state.get("robber")),
             "robber_block_impact": self._estimate_robber_block_impact(state, myi),
             "longest_road": self._extract_achievement(
@@ -161,10 +207,20 @@ class GameStateProcessor:
             "year_of_plenty_picks": state.get("yearOfPlentyPicks", 0),
         }
 
-    def format_for_llm(self, processed: Dict[str, Any]) -> str:
-        """Produce a concise natural-language summary of the board state."""
+    def format_for_llm(self, processed: Dict[str, Any], detail: str = "full") -> str:
+        """
+        Produce natural-language state text for LLM prompts.
+
+        detail:
+          - "full": include full canonical hex dump + occupied structure dumps
+                    (for initial turn context)
+          - "compact": include only compact board-relevant details (for summary tool calls)
+        """
         lines: List[str] = []
         p = processed
+        detail_mode = str(detail or "full").strip().lower()
+        if detail_mode not in {"full", "compact"}:
+            detail_mode = "full"
 
         # Phase / turn
         lines.append(
@@ -245,6 +301,7 @@ class GameStateProcessor:
 
         graph = p.get("board_graph")
         if isinstance(graph, dict):
+            hexes = graph.get("hexes", [])
             vertices = graph.get("vertices", [])
             edges = graph.get("edges", [])
             occupied_vertices = sum(
@@ -262,9 +319,68 @@ class GameStateProcessor:
                 and e["occupancy"].get("piece_type") == "road"
             )
             lines.append(
-                f"Board graph: {len(vertices)} vertices ({occupied_vertices} occupied), "
-                f"{len(edges)} edges ({occupied_edges} with roads)"
+                "Canonical graph deduplicates physical positions "
+                "(equivalent keys are merged; no duplicate physical vertices/edges)."
             )
+
+            occupied_v_payload = [
+                {
+                    "vertex": v.get("vertex"),
+                    "piece_type": ((v.get("occupancy") or {}).get("piece_type")),
+                    "owner_name": ((v.get("occupancy") or {}).get("owner_name")),
+                    "adjacent_hexes": v.get("adjacent_hexes", []),
+                }
+                for v in vertices
+                if isinstance(v, dict)
+                and isinstance(v.get("occupancy"), dict)
+                and v["occupancy"].get("piece_type") in ("settlement", "city")
+            ]
+            occupied_e_payload = [
+                {
+                    "edge": e.get("edge"),
+                    "owner_name": ((e.get("occupancy") or {}).get("owner_name")),
+                    "vertices": e.get("vertices", []),
+                }
+                for e in edges
+                if isinstance(e, dict)
+                and isinstance(e.get("occupancy"), dict)
+                and e["occupancy"].get("piece_type") == "road"
+            ]
+
+            if detail_mode == "full":
+                # Initial turn context: keep full tile economics (all hexes)
+                # while avoiding huge empty-graph payloads.
+                lines.append(
+                    "Canonical hex dump: "
+                    + json.dumps(hexes, sort_keys=True, separators=(",", ":"))
+                )
+                lines.append(
+                    "Occupied canonical vertices: "
+                    + json.dumps(occupied_v_payload, sort_keys=True, separators=(",", ":"))
+                )
+                lines.append(
+                    "Occupied canonical edges: "
+                    + json.dumps(occupied_e_payload, sort_keys=True, separators=(",", ":"))
+                )
+            else:
+                hv = occupied_v_payload[:_BOARD_DUMP_LIMIT]
+                he = occupied_e_payload[:_BOARD_DUMP_LIMIT]
+                lines.append(
+                    "Occupied vertices: "
+                    + json.dumps(hv, sort_keys=True, separators=(",", ":"))
+                )
+                lines.append(
+                    "Occupied edges: "
+                    + json.dumps(he, sort_keys=True, separators=(",", ":"))
+                )
+                if len(occupied_v_payload) > len(hv):
+                    lines.append(
+                        f"Occupied vertices truncated: showing {len(hv)}/{len(occupied_v_payload)}."
+                    )
+                if len(occupied_e_payload) > len(he):
+                    lines.append(
+                        f"Occupied edges truncated: showing {len(he)}/{len(occupied_e_payload)}."
+                    )
 
         lines.append(f"Dev cards remaining in deck: {p.get('dev_cards_remaining', '?')}")
 
@@ -676,6 +792,191 @@ class GameStateProcessor:
                         ),
                     },
                 })
+
+        return {
+            "players": graph_players,
+            "hexes": graph_hexes,
+            "vertices": graph_vertices,
+            "edges": graph_edges,
+        }
+
+    def _extract_canonical_board_graph(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Build a canonical board graph where each physical vertex/edge appears once.
+        """
+        players = state.get("players")
+        vertices = state.get("vertices") or {}
+        edges = state.get("edges") or {}
+        hexes = state.get("hexes") or {}
+        robber_hex = _normalize_hex_key(state.get("robber"))
+
+        players_list = players if isinstance(players, list) else []
+        players_by_index: Dict[int, Dict[str, Any]] = {}
+        graph_players: List[Dict[str, Any]] = []
+        for idx, p in enumerate(players_list):
+            if not isinstance(p, dict):
+                continue
+            players_by_index[idx] = p
+            graph_players.append({
+                "index": idx,
+                "player_id": str(p.get("id")) if p.get("id") is not None else None,
+                "name": str(p.get("name", f"Player{idx}")),
+            })
+
+        graph_hexes: List[Dict[str, Any]] = []
+        if isinstance(hexes, dict):
+            for hk, h in sorted(hexes.items(), key=lambda kv: _normalize_hex_key(kv[0])):
+                if not isinstance(h, dict):
+                    continue
+                norm_hk = _normalize_hex_key(hk)
+                graph_hexes.append({
+                    "hex": norm_hk,
+                    "resource": str(h.get("resource", "")),
+                    "number": _to_int_or_none(h.get("number")),
+                    "robber": norm_hk == robber_hex,
+                })
+
+        vertex_key_to_canonical: Dict[str, str] = {}
+        canonical_vertex_to_keys: Dict[str, List[str]] = {}
+
+        if isinstance(vertices, dict):
+            for vk in vertices.keys():
+                norm_vk = _normalize_vertex_key(vk)
+                parsed = _parse_vertex_key(norm_vk)
+                if not parsed:
+                    vertex_key_to_canonical[norm_vk] = norm_vk
+                    canonical_vertex_to_keys.setdefault(norm_vk, []).append(norm_vk)
+                    continue
+
+                q, r, d = parsed
+                equiv = _equivalent_vertex_coords(q, r, d)
+                existing: List[Tuple[int, int, int]] = []
+                for eq_q, eq_r, eq_d in equiv:
+                    eq_k = f"v_{eq_q}_{eq_r}_{eq_d}"
+                    if eq_k in vertices:
+                        existing.append((eq_q, eq_r, eq_d))
+                if not existing:
+                    existing = [(q, r, d)]
+                existing.sort()
+                cq, cr, cd = existing[0]
+                canonical = f"v_{cq}_{cr}_{cd}"
+                vertex_key_to_canonical[norm_vk] = canonical
+                canonical_vertex_to_keys.setdefault(canonical, []).append(norm_vk)
+
+        graph_vertices: List[Dict[str, Any]] = []
+        for canonical_vk in sorted(canonical_vertex_to_keys.keys()):
+            member_keys = canonical_vertex_to_keys[canonical_vk]
+
+            occ_piece = "none"
+            occ_owner_idx: Optional[int] = None
+            for mk in member_keys:
+                mv = vertices.get(mk)
+                if not isinstance(mv, dict):
+                    continue
+                b = str(mv.get("building") or "none")
+                if b in ("city", "settlement"):
+                    # Prefer city if inconsistent data appears across equivalent keys.
+                    if occ_piece != "city":
+                        occ_piece = b
+                        occ_owner_idx = _to_int_or_none(mv.get("owner"))
+
+            owner_info = players_by_index.get(occ_owner_idx) if occ_owner_idx is not None else None
+
+            parsed = _parse_vertex_key(canonical_vk)
+            adjacent_hexes: List[str] = []
+            if parsed:
+                q, r, d = parsed
+                adj = [
+                    _normalize_hex_key((hq, hr))
+                    for hq, hr in _adjacent_hex_coords(q, r, d)
+                ]
+                adjacent_hexes = [hk for hk in adj if hk in hexes]
+
+            graph_vertices.append({
+                "vertex": canonical_vk,
+                "equivalent_vertex_keys": sorted(set(member_keys)),
+                "adjacent_hexes": adjacent_hexes,
+                "occupancy": {
+                    "piece_type": occ_piece,
+                    "owner_index": occ_owner_idx,
+                    "owner_id": (
+                        str(owner_info.get("id"))
+                        if isinstance(owner_info, dict) and owner_info.get("id") is not None
+                        else None
+                    ),
+                    "owner_name": (
+                        str(owner_info.get("name"))
+                        if isinstance(owner_info, dict) and owner_info.get("name") is not None
+                        else None
+                    ),
+                },
+            })
+
+        canonical_edge_to_keys: Dict[str, List[str]] = {}
+        if isinstance(edges, dict):
+            for ek in edges.keys():
+                parsed = _parse_edge_key(str(ek))
+                if not parsed:
+                    canonical_edge_to_keys.setdefault(str(ek), []).append(str(ek))
+                    continue
+                q, r, d = parsed
+                equiv = _equivalent_edge_coords(q, r, d)
+                existing: List[Tuple[int, int, int]] = []
+                for eq_q, eq_r, eq_d in equiv:
+                    eq_k = f"e_{eq_q}_{eq_r}_{eq_d}"
+                    if eq_k in edges:
+                        existing.append((eq_q, eq_r, eq_d))
+                if not existing:
+                    existing = [(q, r, d)]
+                existing.sort()
+                cq, cr, cd = existing[0]
+                canonical = f"e_{cq}_{cr}_{cd}"
+                canonical_edge_to_keys.setdefault(canonical, []).append(str(ek))
+
+        graph_edges: List[Dict[str, Any]] = []
+        for canonical_ek in sorted(canonical_edge_to_keys.keys()):
+            member_keys = canonical_edge_to_keys[canonical_ek]
+            has_road = False
+            owner_index: Optional[int] = None
+            for mk in member_keys:
+                me = edges.get(mk)
+                if not isinstance(me, dict):
+                    continue
+                if bool(me.get("road")):
+                    has_road = True
+                    owner_index = _to_int_or_none(me.get("owner"))
+                    break
+            owner_info = players_by_index.get(owner_index) if owner_index is not None else None
+
+            parsed = _parse_edge_key(canonical_ek)
+            end_vertices: List[str] = []
+            if parsed:
+                q, r, d = parsed
+                raw_end_vertices = [_normalize_vertex_key(vk) for vk in _edge_vertices(q, r, d)]
+                end_vertices = [
+                    vertex_key_to_canonical.get(vk, vk)
+                    for vk in raw_end_vertices
+                ]
+
+            graph_edges.append({
+                "edge": canonical_ek,
+                "equivalent_edge_keys": sorted(set(member_keys)),
+                "vertices": end_vertices,
+                "occupancy": {
+                    "piece_type": "road" if has_road else "none",
+                    "owner_index": owner_index if has_road else None,
+                    "owner_id": (
+                        str(owner_info.get("id"))
+                        if has_road and isinstance(owner_info, dict) and owner_info.get("id") is not None
+                        else None
+                    ),
+                    "owner_name": (
+                        str(owner_info.get("name"))
+                        if has_road and isinstance(owner_info, dict) and owner_info.get("name") is not None
+                        else None
+                    ),
+                },
+            })
 
         return {
             "players": graph_players,
