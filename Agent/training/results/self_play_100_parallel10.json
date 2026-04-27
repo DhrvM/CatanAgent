@@ -14,121 +14,45 @@
     "server": "http://localhost:3001",
     "timeoutS": 1800.0
   },
-  "finishedAt": 1777274220.909358,
+  "finishedAt": 1777276148.102104,
   "games": [
     {
-      "durationS": 271.47,
-      "gameCode": "CZQQ6D",
+      "durationS": 430.77,
+      "gameCode": "DER35A",
       "gameNumber": 1,
       "ok": true,
       "phase": "finished",
       "players": [
         {
           "cities": 1,
-          "id": "b0e844dd-6537-43ca-9cf3-237abbd56772",
+          "id": "54248f4e-2f56-4f49-9a73-fd3376eca3b5",
           "index": 2,
-          "largestArmy": false,
-          "longestRoad": false,
-          "name": "HeuristicBot-3-G1",
-          "roads": 9,
-          "settlements": 5,
-          "victoryPoints": 10
-        },
-        {
-          "cities": 4,
-          "id": "f6122d50-0ca1-4efd-99b0-16affff4a104",
-          "index": 1,
           "largestArmy": false,
           "longestRoad": false,
           "name": "HeuristicBot-1-G1",
-          "roads": 5,
-          "settlements": 2,
-          "victoryPoints": 6
-        },
-        {
-          "cities": 2,
-          "id": "1b11712b-5b07-48f1-9f64-5120c2cba6fc",
-          "index": 0,
-          "largestArmy": false,
-          "longestRoad": false,
-          "name": "HeuristicBot-2-G1",
-          "roads": 9,
-          "settlements": 5,
-          "victoryPoints": 5
-        }
-      ],
-      "rewards": [
-        {
-          "expansion_capacity": 1.0,
-          "expected_income": 0.3704,
-          "final_vp": 0.5,
-          "player_index": 0,
-          "player_name": "HeuristicBot-2-G1",
-          "resource_diversity": 0.8,
-          "total": 0.6341,
-          "win": 0.0
-        },
-        {
-          "expansion_capacity": 1.0,
-          "expected_income": 0.1945,
-          "final_vp": 0.6,
-          "player_index": 1,
-          "player_name": "HeuristicBot-1-G1",
-          "resource_diversity": 0.4,
-          "total": 0.5589,
-          "win": 0.0
-        },
-        {
-          "expansion_capacity": 1.0,
-          "expected_income": 0.5926,
-          "final_vp": 1.0,
-          "player_index": 2,
-          "player_name": "HeuristicBot-3-G1",
-          "resource_diversity": 0.8,
-          "total": 1.8785,
-          "win": 1.0
-        }
-      ],
-      "winner": "b0e844dd-6537-43ca-9cf3-237abbd56772",
-      "winnerName": "HeuristicBot-3-G1"
-    },
-    {
-      "durationS": 313.34,
-      "gameCode": "TDAMCU",
-      "gameNumber": 2,
-      "ok": true,
-      "phase": "finished",
-      "players": [
-        {
-          "cities": 1,
-          "id": "22f91910-7a3a-41f0-bb49-445c2b67aa68",
-          "index": 2,
-          "largestArmy": false,
-          "longestRoad": false,
-          "name": "HeuristicBot-1-G2",
-          "roads": 7,
-          "settlements": 5,
+          "roads": 6,
+          "settlements": 4,
           "victoryPoints": 10
         },
         {
-          "cities": 1,
-          "id": "ec66b678-a406-4a90-b73e-d761f901b9e4",
+          "cities": 2,
+          "id": "e3343ae4-6b14-411e-81b7-1fcfa73f680b",
           "index": 1,
           "largestArmy": false,
           "longestRoad": false,
-          "name": "HeuristicBot-2-G2",
-          "roads": 2,
-          "settlements": 5,
-          "victoryPoints": 8
+          "name": "HeuristicBot-2-G1",
+          "roads": 3,
+          "settlements": 4,
+          "victoryPoints": 9
         },
         {
           "cities": 2,
-          "id": "f1e2494e-c577-4951-a23b-725ee53e3052",
+          "id": "67a71e7e-b120-46df-8741-d47ab5404c99",
           "index": 0,
           "largestArmy": false,
           "longestRoad": false,
-          "name": "HeuristicBot-3-G2",
-          "roads": 3,
+          "name": "HeuristicBot-3-G1",
+          "roads": 2,
           "settlements": 5,
           "victoryPoints": 5
         }
@@ -139,7 +63,7 @@
           "expected_income": 0.3704,
           "final_vp": 0.5,
           "player_index": 0,
-          "player_name": "HeuristicBot-3-G2",
+          "player_name": "HeuristicBot-3-G1",
           "resource_diversity": 0.8,
           "total": 0.6341,
           "win": 0.0
@@ -147,140 +71,216 @@
         {
           "expansion_capacity": 1.0,
           "expected_income": 0.3889,
-          "final_vp": 0.8,
+          "final_vp": 0.9,
           "player_index": 1,
-          "player_name": "HeuristicBot-2-G2",
+          "player_name": "HeuristicBot-2-G1",
           "resource_diversity": 0.6,
-          "total": 0.7178,
+          "total": 0.7578,
           "win": 0.0
         },
         {
           "expansion_capacity": 1.0,
-          "expected_income": 0.5926,
+          "expected_income": 0.5833,
+          "final_vp": 1.0,
+          "player_index": 2,
+          "player_name": "HeuristicBot-1-G1",
+          "resource_diversity": 0.8,
+          "total": 1.8767,
+          "win": 1.0
+        }
+      ],
+      "winner": "54248f4e-2f56-4f49-9a73-fd3376eca3b5",
+      "winnerName": "HeuristicBot-1-G1"
+    },
+    {
+      "durationS": 420.64,
+      "gameCode": "VGRCKZ",
+      "gameNumber": 2,
+      "ok": true,
+      "phase": "finished",
+      "players": [
+        {
+          "cities": 1,
+          "id": "e3d641f9-b007-47c4-94d5-dffeb71fc058",
+          "index": 2,
+          "largestArmy": false,
+          "longestRoad": false,
+          "name": "HeuristicBot-1-G2",
+          "roads": 6,
+          "settlements": 5,
+          "victoryPoints": 10
+        },
+        {
+          "cities": 2,
+          "id": "a7684e45-cd20-46bd-a0ac-fa9343b4df2e",
+          "index": 0,
+          "largestArmy": false,
+          "longestRoad": false,
+          "name": "HeuristicBot-2-G2",
+          "roads": 7,
+          "settlements": 5,
+          "victoryPoints": 9
+        },
+        {
+          "cities": 2,
+          "id": "11985323-ed0a-4e43-988f-8aa956bc463d",
+          "index": 1,
+          "largestArmy": false,
+          "longestRoad": false,
+          "name": "HeuristicBot-3-G2",
+          "roads": 5,
+          "settlements": 4,
+          "victoryPoints": 5
+        }
+      ],
+      "rewards": [
+        {
+          "expansion_capacity": 1.0,
+          "expected_income": 0.3704,
+          "final_vp": 0.9,
+          "player_index": 0,
+          "player_name": "HeuristicBot-2-G2",
+          "resource_diversity": 0.8,
+          "total": 0.7941,
+          "win": 0.0
+        },
+        {
+          "expansion_capacity": 1.0,
+          "expected_income": 0.3889,
+          "final_vp": 0.5,
+          "player_index": 1,
+          "player_name": "HeuristicBot-3-G2",
+          "resource_diversity": 0.6,
+          "total": 0.5978,
+          "win": 0.0
+        },
+        {
+          "expansion_capacity": 1.0,
+          "expected_income": 0.537,
           "final_vp": 1.0,
           "player_index": 2,
           "player_name": "HeuristicBot-1-G2",
           "resource_diversity": 0.8,
-          "total": 1.8785,
+          "total": 1.8674,
           "win": 1.0
         }
       ],
-      "winner": "22f91910-7a3a-41f0-bb49-445c2b67aa68",
+      "winner": "e3d641f9-b007-47c4-94d5-dffeb71fc058",
       "winnerName": "HeuristicBot-1-G2"
     },
     {
-      "durationS": 130.46,
-      "gameCode": "MB45QQ",
+      "durationS": 371.82,
+      "gameCode": "DJ8JRD",
       "gameNumber": 3,
       "ok": true,
       "phase": "finished",
       "players": [
         {
-          "cities": 1,
-          "id": "c96800f8-8e44-4c28-81e2-c0984d80faf7",
-          "index": 2,
-          "largestArmy": false,
-          "longestRoad": false,
-          "name": "HeuristicBot-1-G3",
-          "roads": 6,
-          "settlements": 4,
-          "victoryPoints": 10
-        },
-        {
-          "cities": 2,
-          "id": "f6d9d8ae-6bcd-42ac-b872-ebed08943d52",
-          "index": 0,
-          "largestArmy": false,
-          "longestRoad": false,
-          "name": "HeuristicBot-3-G3",
-          "roads": 13,
-          "settlements": 5,
-          "victoryPoints": 4
-        },
-        {
-          "cities": 2,
-          "id": "97a14ef0-f6df-4e4b-8695-f647bae07c86",
+          "cities": 0,
+          "id": "17730d2d-687c-4189-b668-844b5c6bc038",
           "index": 1,
           "largestArmy": false,
           "longestRoad": false,
           "name": "HeuristicBot-2-G3",
-          "roads": 7,
+          "roads": 2,
           "settlements": 5,
-          "victoryPoints": 4
+          "victoryPoints": 10
+        },
+        {
+          "cities": 1,
+          "id": "62c07551-629b-4d3e-85bb-3bd83ab3bbd8",
+          "index": 0,
+          "largestArmy": false,
+          "longestRoad": false,
+          "name": "HeuristicBot-1-G3",
+          "roads": 8,
+          "settlements": 5,
+          "victoryPoints": 6
+        },
+        {
+          "cities": 2,
+          "id": "12d21c1e-9432-4e7c-a403-c216ec4057bb",
+          "index": 2,
+          "largestArmy": false,
+          "longestRoad": false,
+          "name": "HeuristicBot-3-G3",
+          "roads": 10,
+          "settlements": 5,
+          "victoryPoints": 5
         }
       ],
       "rewards": [
         {
-          "expansion_capacity": 0.0,
+          "expansion_capacity": 1.0,
           "expected_income": 0.3704,
-          "final_vp": 0.4,
+          "final_vp": 0.6,
           "player_index": 0,
-          "player_name": "HeuristicBot-3-G3",
-          "resource_diversity": 0.8,
-          "total": 0.3941,
-          "win": 0.0
-        },
-        {
-          "expansion_capacity": 1.0,
-          "expected_income": 0.2593,
-          "final_vp": 0.4,
-          "player_index": 1,
-          "player_name": "HeuristicBot-2-G3",
-          "resource_diversity": 0.6,
-          "total": 0.5319,
-          "win": 0.0
-        },
-        {
-          "expansion_capacity": 1.0,
-          "expected_income": 0.6389,
-          "final_vp": 1.0,
-          "player_index": 2,
           "player_name": "HeuristicBot-1-G3",
           "resource_diversity": 0.8,
-          "total": 1.8878,
+          "total": 0.6741,
+          "win": 0.0
+        },
+        {
+          "expansion_capacity": 1.0,
+          "expected_income": 0.6666,
+          "final_vp": 1.0,
+          "player_index": 1,
+          "player_name": "HeuristicBot-2-G3",
+          "resource_diversity": 0.8,
+          "total": 1.8933,
           "win": 1.0
+        },
+        {
+          "expansion_capacity": 1.0,
+          "expected_income": 0.4074,
+          "final_vp": 0.5,
+          "player_index": 2,
+          "player_name": "HeuristicBot-3-G3",
+          "resource_diversity": 0.8,
+          "total": 0.6415,
+          "win": 0.0
         }
       ],
-      "winner": "c96800f8-8e44-4c28-81e2-c0984d80faf7",
-      "winnerName": "HeuristicBot-1-G3"
+      "winner": "17730d2d-687c-4189-b668-844b5c6bc038",
+      "winnerName": "HeuristicBot-2-G3"
     },
     {
-      "durationS": 168.22,
-      "gameCode": "JN3KL9",
+      "durationS": 238.23,
+      "gameCode": "X5XFNW",
       "gameNumber": 4,
       "ok": true,
       "phase": "finished",
       "players": [
         {
-          "cities": 1,
-          "id": "78055c95-decb-4db8-9d53-eea99a045338",
-          "index": 2,
+          "cities": 0,
+          "id": "457437b3-3c79-42f3-b09d-03d2dae59386",
+          "index": 1,
           "largestArmy": false,
           "longestRoad": false,
-          "name": "HeuristicBot-1-G4",
-          "roads": 6,
-          "settlements": 4,
+          "name": "HeuristicBot-3-G4",
+          "roads": 0,
+          "settlements": 5,
           "victoryPoints": 10
         },
         {
           "cities": 2,
-          "id": "132d0241-083f-40a7-9e41-691eb5f0a523",
-          "index": 0,
+          "id": "645f2166-460a-4824-a99f-745a135257bd",
+          "index": 2,
           "largestArmy": false,
           "longestRoad": false,
-          "name": "HeuristicBot-3-G4",
-          "roads": 8,
+          "name": "HeuristicBot-1-G4",
+          "roads": 13,
           "settlements": 5,
-          "victoryPoints": 4
+          "victoryPoints": 5
         },
         {
           "cities": 2,
-          "id": "0e392689-c6d5-415f-b066-3681d04257c1",
-          "index": 1,
+          "id": "837674b3-6989-448d-a016-7cc2086fbd8c",
+          "index": 0,
           "largestArmy": false,
           "longestRoad": false,
           "name": "HeuristicBot-2-G4",
-          "roads": 4,
+          "roads": 10,
           "settlements": 5,
           "victoryPoints": 4
         }
@@ -288,75 +288,151 @@
       "rewards": [
         {
           "expansion_capacity": 1.0,
-          "expected_income": 0.2778,
+          "expected_income": 0.3148,
           "final_vp": 0.4,
           "player_index": 0,
-          "player_name": "HeuristicBot-3-G4",
-          "resource_diversity": 0.8,
-          "total": 0.5756,
-          "win": 0.0
-        },
-        {
-          "expansion_capacity": 1.0,
-          "expected_income": 0.3518,
-          "final_vp": 0.4,
-          "player_index": 1,
           "player_name": "HeuristicBot-2-G4",
           "resource_diversity": 0.6,
-          "total": 0.5504,
+          "total": 0.543,
           "win": 0.0
         },
         {
           "expansion_capacity": 1.0,
-          "expected_income": 0.5,
+          "expected_income": 0.6666,
           "final_vp": 1.0,
+          "player_index": 1,
+          "player_name": "HeuristicBot-3-G4",
+          "resource_diversity": 0.8,
+          "total": 1.8933,
+          "win": 1.0
+        },
+        {
+          "expansion_capacity": 0.0,
+          "expected_income": 0.3519,
+          "final_vp": 0.5,
           "player_index": 2,
           "player_name": "HeuristicBot-1-G4",
-          "resource_diversity": 0.8,
-          "total": 1.86,
-          "win": 1.0
+          "resource_diversity": 0.6,
+          "total": 0.3904,
+          "win": 0.0
         }
       ],
-      "winner": "78055c95-decb-4db8-9d53-eea99a045338",
-      "winnerName": "HeuristicBot-1-G4"
+      "winner": "457437b3-3c79-42f3-b09d-03d2dae59386",
+      "winnerName": "HeuristicBot-3-G4"
     },
     {
-      "durationS": 338.99,
-      "gameCode": "DCML67",
+      "durationS": 402.6,
+      "gameCode": "2AF5WW",
       "gameNumber": 5,
       "ok": true,
       "phase": "finished",
       "players": [
         {
-          "cities": 1,
-          "id": "25c8fa42-7acb-4415-9fb9-98d640614363",
-          "index": 2,
-          "largestArmy": false,
-          "longestRoad": false,
-          "name": "HeuristicBot-3-G5",
-          "roads": 6,
-          "settlements": 4,
-          "victoryPoints": 10
-        },
-        {
-          "cities": 2,
-          "id": "1830f3f2-b74d-4ac6-8a8c-128a93b85d1d",
+          "cities": 0,
+          "id": "4a586366-7d0f-41eb-b193-33606808d39e",
           "index": 0,
           "largestArmy": false,
           "longestRoad": false,
           "name": "HeuristicBot-2-G5",
-          "roads": 11,
+          "roads": 0,
           "settlements": 5,
-          "victoryPoints": 8
+          "victoryPoints": 10
         },
         {
-          "cities": 3,
-          "id": "500eaaf9-1648-4d46-9b42-f010384c2fc8",
+          "cities": 1,
+          "id": "08d2a5ed-e1e3-4ec2-b79e-58d4e7b14e20",
           "index": 1,
           "largestArmy": false,
           "longestRoad": false,
           "name": "HeuristicBot-1-G5",
-          "roads": 2,
+          "roads": 0,
+          "settlements": 5,
+          "victoryPoints": 8
+        },
+        {
+          "cities": 1,
+          "id": "a59c0f6e-44ed-49d8-a234-0174039f97da",
+          "index": 2,
+          "largestArmy": false,
+          "longestRoad": false,
+          "name": "HeuristicBot-3-G5",
+          "roads": 9,
+          "settlements": 5,
+          "victoryPoints": 7
+        }
+      ],
+      "rewards": [
+        {
+          "expansion_capacity": 1.0,
+          "expected_income": 0.5556,
+          "final_vp": 1.0,
+          "player_index": 0,
+          "player_name": "HeuristicBot-2-G5",
+          "resource_diversity": 1.0,
+          "total": 1.9111,
+          "win": 1.0
+        },
+        {
+          "expansion_capacity": 1.0,
+          "expected_income": 0.4814,
+          "final_vp": 0.8,
+          "player_index": 1,
+          "player_name": "HeuristicBot-1-G5",
+          "resource_diversity": 0.6,
+          "total": 0.7363,
+          "win": 0.0
+        },
+        {
+          "expansion_capacity": 1.0,
+          "expected_income": 0.5,
+          "final_vp": 0.7,
+          "player_index": 2,
+          "player_name": "HeuristicBot-3-G5",
+          "resource_diversity": 0.8,
+          "total": 0.74,
+          "win": 0.0
+        }
+      ],
+      "winner": "4a586366-7d0f-41eb-b193-33606808d39e",
+      "winnerName": "HeuristicBot-2-G5"
+    },
+    {
+      "durationS": 335.42,
+      "gameCode": "LMG52G",
+      "gameNumber": 6,
+      "ok": true,
+      "phase": "finished",
+      "players": [
+        {
+          "cities": 1,
+          "id": "8619b933-50bd-4e56-93e4-88db382a30f0",
+          "index": 2,
+          "largestArmy": false,
+          "longestRoad": false,
+          "name": "HeuristicBot-3-G6",
+          "roads": 9,
+          "settlements": 5,
+          "victoryPoints": 10
+        },
+        {
+          "cities": 3,
+          "id": "b7075a4e-0e76-40e5-ba0d-36c9045e8b0f",
+          "index": 1,
+          "largestArmy": false,
+          "longestRoad": false,
+          "name": "HeuristicBot-1-G6",
+          "roads": 7,
+          "settlements": 4,
+          "victoryPoints": 5
+        },
+        {
+          "cities": 3,
+          "id": "8aab261a-3f3a-42b8-8962-b654909a13d4",
+          "index": 0,
+          "largestArmy": false,
+          "longestRoad": false,
+          "name": "HeuristicBot-2-G6",
+          "roads": 11,
           "settlements": 4,
           "victoryPoints": 3
         }
@@ -364,12 +440,88 @@
       "rewards": [
         {
           "expansion_capacity": 1.0,
-          "expected_income": 0.2963,
-          "final_vp": 0.8,
+          "expected_income": 0.3055,
+          "final_vp": 0.3,
           "player_index": 0,
-          "player_name": "HeuristicBot-2-G5",
+          "player_name": "HeuristicBot-2-G6",
           "resource_diversity": 0.6,
-          "total": 0.6993,
+          "total": 0.5011,
+          "win": 0.0
+        },
+        {
+          "expansion_capacity": 1.0,
+          "expected_income": 0.25,
+          "final_vp": 0.5,
+          "player_index": 1,
+          "player_name": "HeuristicBot-1-G6",
+          "resource_diversity": 0.4,
+          "total": 0.53,
+          "win": 0.0
+        },
+        {
+          "expansion_capacity": 1.0,
+          "expected_income": 0.537,
+          "final_vp": 1.0,
+          "player_index": 2,
+          "player_name": "HeuristicBot-3-G6",
+          "resource_diversity": 0.8,
+          "total": 1.8674,
+          "win": 1.0
+        }
+      ],
+      "winner": "8619b933-50bd-4e56-93e4-88db382a30f0",
+      "winnerName": "HeuristicBot-3-G6"
+    },
+    {
+      "durationS": 323.45,
+      "gameCode": "3AZMUX",
+      "gameNumber": 7,
+      "ok": true,
+      "phase": "finished",
+      "players": [
+        {
+          "cities": 1,
+          "id": "1bd574d3-3eda-43db-b57b-96228d752ea0",
+          "index": 2,
+          "largestArmy": false,
+          "longestRoad": false,
+          "name": "HeuristicBot-3-G7",
+          "roads": 6,
+          "settlements": 4,
+          "victoryPoints": 10
+        },
+        {
+          "cities": 2,
+          "id": "c28314bc-d9cb-4254-9dff-2cd5d429fcb8",
+          "index": 0,
+          "largestArmy": false,
+          "longestRoad": false,
+          "name": "HeuristicBot-1-G7",
+          "roads": 12,
+          "settlements": 5,
+          "victoryPoints": 4
+        },
+        {
+          "cities": 3,
+          "id": "3595b28e-fe9a-46f2-adaf-e936ad5cc272",
+          "index": 1,
+          "largestArmy": false,
+          "longestRoad": false,
+          "name": "HeuristicBot-2-G7",
+          "roads": 4,
+          "settlements": 4,
+          "victoryPoints": 3
+        }
+      ],
+      "rewards": [
+        {
+          "expansion_capacity": 0.6667,
+          "expected_income": 0.3704,
+          "final_vp": 0.4,
+          "player_index": 0,
+          "player_name": "HeuristicBot-1-G7",
+          "resource_diversity": 0.8,
+          "total": 0.5274,
           "win": 0.0
         },
         {
@@ -377,237 +529,9 @@
           "expected_income": 0.2778,
           "final_vp": 0.3,
           "player_index": 1,
-          "player_name": "HeuristicBot-1-G5",
-          "resource_diversity": 0.6,
-          "total": 0.4956,
-          "win": 0.0
-        },
-        {
-          "expansion_capacity": 1.0,
-          "expected_income": 0.6389,
-          "final_vp": 1.0,
-          "player_index": 2,
-          "player_name": "HeuristicBot-3-G5",
-          "resource_diversity": 0.8,
-          "total": 1.8878,
-          "win": 1.0
-        }
-      ],
-      "winner": "25c8fa42-7acb-4415-9fb9-98d640614363",
-      "winnerName": "HeuristicBot-3-G5"
-    },
-    {
-      "durationS": 330.99,
-      "gameCode": "3HHTVG",
-      "gameNumber": 6,
-      "ok": true,
-      "phase": "finished",
-      "players": [
-        {
-          "cities": 0,
-          "id": "85b1150a-cefd-4573-94ca-57466c524f6b",
-          "index": 1,
-          "largestArmy": false,
-          "longestRoad": false,
-          "name": "HeuristicBot-1-G6",
-          "roads": 0,
-          "settlements": 5,
-          "victoryPoints": 10
-        },
-        {
-          "cities": 2,
-          "id": "9618e6b1-a057-469a-9094-ee475fd0b59e",
-          "index": 0,
-          "largestArmy": false,
-          "longestRoad": false,
-          "name": "HeuristicBot-3-G6",
-          "roads": 5,
-          "settlements": 5,
-          "victoryPoints": 8
-        },
-        {
-          "cities": 1,
-          "id": "f8cb8420-3d8f-4210-a80b-accb5d8226c5",
-          "index": 2,
-          "largestArmy": false,
-          "longestRoad": false,
-          "name": "HeuristicBot-2-G6",
-          "roads": 5,
-          "settlements": 4,
-          "victoryPoints": 8
-        }
-      ],
-      "rewards": [
-        {
-          "expansion_capacity": 1.0,
-          "expected_income": 0.2778,
-          "final_vp": 0.8,
-          "player_index": 0,
-          "player_name": "HeuristicBot-3-G6",
-          "resource_diversity": 0.8,
-          "total": 0.7356,
-          "win": 0.0
-        },
-        {
-          "expansion_capacity": 1.0,
-          "expected_income": 0.6296,
-          "final_vp": 1.0,
-          "player_index": 1,
-          "player_name": "HeuristicBot-1-G6",
-          "resource_diversity": 0.8,
-          "total": 1.8859,
-          "win": 1.0
-        },
-        {
-          "expansion_capacity": 1.0,
-          "expected_income": 0.5,
-          "final_vp": 0.8,
-          "player_index": 2,
-          "player_name": "HeuristicBot-2-G6",
-          "resource_diversity": 0.8,
-          "total": 0.78,
-          "win": 0.0
-        }
-      ],
-      "winner": "85b1150a-cefd-4573-94ca-57466c524f6b",
-      "winnerName": "HeuristicBot-1-G6"
-    },
-    {
-      "durationS": 323.01,
-      "gameCode": "FVURFQ",
-      "gameNumber": 7,
-      "ok": true,
-      "phase": "finished",
-      "players": [
-        {
-          "cities": 1,
-          "id": "7e8d11ee-5196-4381-9a18-836ee63b90cb",
-          "index": 2,
-          "largestArmy": false,
-          "longestRoad": false,
-          "name": "HeuristicBot-1-G7",
-          "roads": 7,
-          "settlements": 5,
-          "victoryPoints": 10
-        },
-        {
-          "cities": 2,
-          "id": "06e3340a-7e15-4ae2-bbab-10e3f2cd5bb5",
-          "index": 1,
-          "largestArmy": false,
-          "longestRoad": false,
-          "name": "HeuristicBot-2-G7",
-          "roads": 0,
-          "settlements": 5,
-          "victoryPoints": 7
-        },
-        {
-          "cities": 2,
-          "id": "248c4381-beb9-474a-9f42-b61e8620543e",
-          "index": 0,
-          "largestArmy": false,
-          "longestRoad": false,
-          "name": "HeuristicBot-3-G7",
-          "roads": 8,
-          "settlements": 4,
-          "victoryPoints": 6
-        }
-      ],
-      "rewards": [
-        {
-          "expansion_capacity": 1.0,
-          "expected_income": 0.3426,
-          "final_vp": 0.6,
-          "player_index": 0,
-          "player_name": "HeuristicBot-3-G7",
-          "resource_diversity": 0.6,
-          "total": 0.6285,
-          "win": 0.0
-        },
-        {
-          "expansion_capacity": 1.0,
-          "expected_income": 0.3518,
-          "final_vp": 0.7,
-          "player_index": 1,
           "player_name": "HeuristicBot-2-G7",
           "resource_diversity": 0.6,
-          "total": 0.6704,
-          "win": 0.0
-        },
-        {
-          "expansion_capacity": 1.0,
-          "expected_income": 0.5926,
-          "final_vp": 1.0,
-          "player_index": 2,
-          "player_name": "HeuristicBot-1-G7",
-          "resource_diversity": 0.8,
-          "total": 1.8785,
-          "win": 1.0
-        }
-      ],
-      "winner": "7e8d11ee-5196-4381-9a18-836ee63b90cb",
-      "winnerName": "HeuristicBot-1-G7"
-    },
-    {
-      "durationS": 189.8,
-      "gameCode": "82KUNS",
-      "gameNumber": 8,
-      "ok": true,
-      "phase": "finished",
-      "players": [
-        {
-          "cities": 2,
-          "id": "8ba8da64-869a-492b-b37b-3e1ae39a7704",
-          "index": 2,
-          "largestArmy": false,
-          "longestRoad": false,
-          "name": "HeuristicBot-1-G8",
-          "roads": 7,
-          "settlements": 4,
-          "victoryPoints": 10
-        },
-        {
-          "cities": 2,
-          "id": "0d1d5116-6eb6-4aa2-a081-9c7ae23860a9",
-          "index": 0,
-          "largestArmy": false,
-          "longestRoad": false,
-          "name": "HeuristicBot-3-G8",
-          "roads": 9,
-          "settlements": 5,
-          "victoryPoints": 4
-        },
-        {
-          "cities": 2,
-          "id": "b66f1d78-f6fb-4be0-a900-6d3736538725",
-          "index": 1,
-          "largestArmy": false,
-          "longestRoad": false,
-          "name": "HeuristicBot-2-G8",
-          "roads": 9,
-          "settlements": 5,
-          "victoryPoints": 4
-        }
-      ],
-      "rewards": [
-        {
-          "expansion_capacity": 1.0,
-          "expected_income": 0.2778,
-          "final_vp": 0.4,
-          "player_index": 0,
-          "player_name": "HeuristicBot-3-G8",
-          "resource_diversity": 0.8,
-          "total": 0.5756,
-          "win": 0.0
-        },
-        {
-          "expansion_capacity": 1.0,
-          "expected_income": 0.3518,
-          "final_vp": 0.4,
-          "player_index": 1,
-          "player_name": "HeuristicBot-2-G8",
-          "resource_diversity": 0.6,
-          "total": 0.5504,
+          "total": 0.4956,
           "win": 0.0
         },
         {
@@ -615,52 +539,128 @@
           "expected_income": 0.4537,
           "final_vp": 1.0,
           "player_index": 2,
-          "player_name": "HeuristicBot-1-G8",
+          "player_name": "HeuristicBot-3-G7",
           "resource_diversity": 0.8,
           "total": 1.8507,
           "win": 1.0
         }
       ],
-      "winner": "8ba8da64-869a-492b-b37b-3e1ae39a7704",
-      "winnerName": "HeuristicBot-1-G8"
+      "winner": "1bd574d3-3eda-43db-b57b-96228d752ea0",
+      "winnerName": "HeuristicBot-3-G7"
     },
     {
-      "durationS": 282.09,
-      "gameCode": "6JSRDP",
-      "gameNumber": 9,
+      "durationS": 358.69,
+      "gameCode": "VC7GA8",
+      "gameNumber": 8,
       "ok": true,
       "phase": "finished",
       "players": [
         {
           "cities": 1,
-          "id": "11654b68-502c-4292-b104-82bfee87ef80",
-          "index": 1,
-          "largestArmy": false,
-          "longestRoad": false,
-          "name": "HeuristicBot-3-G9",
-          "roads": 0,
-          "settlements": 5,
-          "victoryPoints": 10
-        },
-        {
-          "cities": 0,
-          "id": "2f4a2b8b-5759-4bb0-b850-69cfeaca1d5a",
+          "id": "044b2f8a-8312-4a03-8daf-8f0872fadecc",
           "index": 2,
           "largestArmy": false,
           "longestRoad": false,
-          "name": "HeuristicBot-2-G9",
+          "name": "HeuristicBot-2-G8",
           "roads": 6,
+          "settlements": 4,
+          "victoryPoints": 10
+        },
+        {
+          "cities": 1,
+          "id": "257c580f-21a4-431a-bebf-148822f2df7e",
+          "index": 0,
+          "largestArmy": false,
+          "longestRoad": false,
+          "name": "HeuristicBot-3-G8",
+          "roads": 7,
           "settlements": 5,
-          "victoryPoints": 9
+          "victoryPoints": 6
         },
         {
           "cities": 2,
-          "id": "17bfbcd6-c454-4e03-959a-1a9e7a34c424",
+          "id": "bb872b05-f298-418b-9def-d53f927fb87d",
+          "index": 1,
+          "largestArmy": false,
+          "longestRoad": false,
+          "name": "HeuristicBot-1-G8",
+          "roads": 3,
+          "settlements": 5,
+          "victoryPoints": 6
+        }
+      ],
+      "rewards": [
+        {
+          "expansion_capacity": 1.0,
+          "expected_income": 0.5556,
+          "final_vp": 0.6,
+          "player_index": 0,
+          "player_name": "HeuristicBot-3-G8",
+          "resource_diversity": 1.0,
+          "total": 0.7511,
+          "win": 0.0
+        },
+        {
+          "expansion_capacity": 1.0,
+          "expected_income": 0.2963,
+          "final_vp": 0.6,
+          "player_index": 1,
+          "player_name": "HeuristicBot-1-G8",
+          "resource_diversity": 0.4,
+          "total": 0.5793,
+          "win": 0.0
+        },
+        {
+          "expansion_capacity": 1.0,
+          "expected_income": 0.5833,
+          "final_vp": 1.0,
+          "player_index": 2,
+          "player_name": "HeuristicBot-2-G8",
+          "resource_diversity": 0.8,
+          "total": 1.8767,
+          "win": 1.0
+        }
+      ],
+      "winner": "044b2f8a-8312-4a03-8daf-8f0872fadecc",
+      "winnerName": "HeuristicBot-2-G8"
+    },
+    {
+      "durationS": 346.5,
+      "gameCode": "PEN8BE",
+      "gameNumber": 9,
+      "ok": true,
+      "phase": "finished",
+      "players": [
+        {
+          "cities": 2,
+          "id": "0734be70-900b-4b5d-b1e3-c6965002f5d2",
+          "index": 1,
+          "largestArmy": false,
+          "longestRoad": false,
+          "name": "HeuristicBot-2-G9",
+          "roads": 0,
+          "settlements": 2,
+          "victoryPoints": 10
+        },
+        {
+          "cities": 1,
+          "id": "db17b90a-15a6-45b8-9eb3-fa37538e7ba0",
+          "index": 2,
+          "largestArmy": false,
+          "longestRoad": false,
+          "name": "HeuristicBot-3-G9",
+          "roads": 8,
+          "settlements": 5,
+          "victoryPoints": 6
+        },
+        {
+          "cities": 2,
+          "id": "a8cbb739-dc5a-471c-85c3-005d1eb719b5",
           "index": 0,
           "largestArmy": false,
           "longestRoad": false,
           "name": "HeuristicBot-1-G9",
-          "roads": 11,
+          "roads": 7,
           "settlements": 5,
           "victoryPoints": 4
         }
@@ -668,162 +668,162 @@
       "rewards": [
         {
           "expansion_capacity": 1.0,
-          "expected_income": 0.2778,
+          "expected_income": 0.3704,
           "final_vp": 0.4,
           "player_index": 0,
           "player_name": "HeuristicBot-1-G9",
           "resource_diversity": 0.8,
-          "total": 0.5756,
+          "total": 0.5941,
           "win": 0.0
         },
         {
           "expansion_capacity": 1.0,
-          "expected_income": 0.4814,
+          "expected_income": 0.4352,
           "final_vp": 1.0,
           "player_index": 1,
-          "player_name": "HeuristicBot-3-G9",
+          "player_name": "HeuristicBot-2-G9",
           "resource_diversity": 0.6,
-          "total": 1.8163,
+          "total": 1.807,
           "win": 1.0
         },
         {
           "expansion_capacity": 1.0,
-          "expected_income": 0.5,
-          "final_vp": 0.9,
+          "expected_income": 0.5926,
+          "final_vp": 0.6,
           "player_index": 2,
-          "player_name": "HeuristicBot-2-G9",
+          "player_name": "HeuristicBot-3-G9",
           "resource_diversity": 0.8,
-          "total": 0.82,
+          "total": 0.7185,
           "win": 0.0
         }
       ],
-      "winner": "11654b68-502c-4292-b104-82bfee87ef80",
-      "winnerName": "HeuristicBot-3-G9"
+      "winner": "0734be70-900b-4b5d-b1e3-c6965002f5d2",
+      "winnerName": "HeuristicBot-2-G9"
     },
     {
-      "durationS": 359.74,
-      "gameCode": "XQ867C",
+      "durationS": 429.76,
+      "gameCode": "66MA4Y",
       "gameNumber": 10,
       "ok": true,
       "phase": "finished",
       "players": [
         {
           "cities": 1,
-          "id": "06533dac-604b-4c3c-9b38-9aabcc833c8c",
-          "index": 1,
-          "largestArmy": false,
-          "longestRoad": false,
-          "name": "HeuristicBot-2-G10",
-          "roads": 0,
-          "settlements": 4,
-          "victoryPoints": 10
-        },
-        {
-          "cities": 2,
-          "id": "4cefbfb3-3fd6-4265-9442-c78be02cd203",
+          "id": "dcfa1069-261c-49c1-8222-3c1aa4342a48",
           "index": 0,
           "largestArmy": false,
           "longestRoad": false,
           "name": "HeuristicBot-3-G10",
-          "roads": 6,
+          "roads": 4,
           "settlements": 5,
-          "victoryPoints": 8
+          "victoryPoints": 10
         },
         {
           "cities": 1,
-          "id": "e497913a-58ad-4836-9703-a62d0a4d5746",
+          "id": "9474e50d-08d8-4bbf-beb9-0e8ffee17976",
           "index": 2,
           "largestArmy": false,
           "longestRoad": false,
-          "name": "HeuristicBot-1-G10",
-          "roads": 7,
+          "name": "HeuristicBot-2-G10",
+          "roads": 1,
           "settlements": 5,
-          "victoryPoints": 7
+          "victoryPoints": 9
+        },
+        {
+          "cities": 2,
+          "id": "7ce154cf-376d-4d0b-8f4b-1bdb895cf564",
+          "index": 1,
+          "largestArmy": false,
+          "longestRoad": false,
+          "name": "HeuristicBot-1-G10",
+          "roads": 0,
+          "settlements": 4,
+          "victoryPoints": 5
         }
       ],
       "rewards": [
         {
           "expansion_capacity": 1.0,
-          "expected_income": 0.2778,
-          "final_vp": 0.8,
+          "expected_income": 0.5556,
+          "final_vp": 1.0,
           "player_index": 0,
           "player_name": "HeuristicBot-3-G10",
-          "resource_diversity": 0.8,
-          "total": 0.7356,
-          "win": 0.0
-        },
-        {
-          "expansion_capacity": 1.0,
-          "expected_income": 0.6018,
-          "final_vp": 1.0,
-          "player_index": 1,
-          "player_name": "HeuristicBot-2-G10",
-          "resource_diversity": 0.8,
-          "total": 1.8804,
+          "resource_diversity": 1.0,
+          "total": 1.9111,
           "win": 1.0
         },
         {
           "expansion_capacity": 1.0,
-          "expected_income": 0.5,
-          "final_vp": 0.7,
-          "player_index": 2,
+          "expected_income": 0.3889,
+          "final_vp": 0.5,
+          "player_index": 1,
           "player_name": "HeuristicBot-1-G10",
+          "resource_diversity": 0.6,
+          "total": 0.5978,
+          "win": 0.0
+        },
+        {
+          "expansion_capacity": 1.0,
+          "expected_income": 0.537,
+          "final_vp": 0.9,
+          "player_index": 2,
+          "player_name": "HeuristicBot-2-G10",
           "resource_diversity": 0.8,
-          "total": 0.74,
+          "total": 0.8274,
           "win": 0.0
         }
       ],
-      "winner": "06533dac-604b-4c3c-9b38-9aabcc833c8c",
-      "winnerName": "HeuristicBot-2-G10"
+      "winner": "dcfa1069-261c-49c1-8222-3c1aa4342a48",
+      "winnerName": "HeuristicBot-3-G10"
     }
   ],
-  "startedAt": 1777273860.61105,
+  "startedAt": 1777275716.771389,
   "summary": {
     "averageRewardByPlayer": {
-      "HeuristicBot-1-G1": 0.5589,
-      "HeuristicBot-1-G10": 0.74,
-      "HeuristicBot-1-G2": 1.8785,
-      "HeuristicBot-1-G3": 1.8878,
-      "HeuristicBot-1-G4": 1.86,
-      "HeuristicBot-1-G5": 0.4956,
-      "HeuristicBot-1-G6": 1.8859,
-      "HeuristicBot-1-G7": 1.8785,
-      "HeuristicBot-1-G8": 1.8507,
-      "HeuristicBot-1-G9": 0.5756,
-      "HeuristicBot-2-G1": 0.6341,
-      "HeuristicBot-2-G10": 1.8804,
-      "HeuristicBot-2-G2": 0.7178,
-      "HeuristicBot-2-G3": 0.5319,
-      "HeuristicBot-2-G4": 0.5504,
-      "HeuristicBot-2-G5": 0.6993,
-      "HeuristicBot-2-G6": 0.78,
-      "HeuristicBot-2-G7": 0.6704,
-      "HeuristicBot-2-G8": 0.5504,
-      "HeuristicBot-2-G9": 0.82,
-      "HeuristicBot-3-G1": 1.8785,
-      "HeuristicBot-3-G10": 0.7356,
-      "HeuristicBot-3-G2": 0.6341,
-      "HeuristicBot-3-G3": 0.3941,
-      "HeuristicBot-3-G4": 0.5756,
-      "HeuristicBot-3-G5": 1.8878,
-      "HeuristicBot-3-G6": 0.7356,
-      "HeuristicBot-3-G7": 0.6285,
-      "HeuristicBot-3-G8": 0.5756,
-      "HeuristicBot-3-G9": 1.8163
+      "HeuristicBot-1-G1": 1.8767,
+      "HeuristicBot-1-G10": 0.5978,
+      "HeuristicBot-1-G2": 1.8674,
+      "HeuristicBot-1-G3": 0.6741,
+      "HeuristicBot-1-G4": 0.3904,
+      "HeuristicBot-1-G5": 0.7363,
+      "HeuristicBot-1-G6": 0.53,
+      "HeuristicBot-1-G7": 0.5274,
+      "HeuristicBot-1-G8": 0.5793,
+      "HeuristicBot-1-G9": 0.5941,
+      "HeuristicBot-2-G1": 0.7578,
+      "HeuristicBot-2-G10": 0.8274,
+      "HeuristicBot-2-G2": 0.7941,
+      "HeuristicBot-2-G3": 1.8933,
+      "HeuristicBot-2-G4": 0.543,
+      "HeuristicBot-2-G5": 1.9111,
+      "HeuristicBot-2-G6": 0.5011,
+      "HeuristicBot-2-G7": 0.4956,
+      "HeuristicBot-2-G8": 1.8767,
+      "HeuristicBot-2-G9": 1.807,
+      "HeuristicBot-3-G1": 0.6341,
+      "HeuristicBot-3-G10": 1.9111,
+      "HeuristicBot-3-G2": 0.5978,
+      "HeuristicBot-3-G3": 0.6415,
+      "HeuristicBot-3-G4": 1.8933,
+      "HeuristicBot-3-G5": 0.74,
+      "HeuristicBot-3-G6": 1.8674,
+      "HeuristicBot-3-G7": 1.8507,
+      "HeuristicBot-3-G8": 0.7511,
+      "HeuristicBot-3-G9": 0.7185
     },
     "completedGames": 10,
     "failedGames": 0,
     "wins": {
+      "HeuristicBot-1-G1": 1,
       "HeuristicBot-1-G2": 1,
-      "HeuristicBot-1-G3": 1,
-      "HeuristicBot-1-G4": 1,
-      "HeuristicBot-1-G6": 1,
-      "HeuristicBot-1-G7": 1,
-      "HeuristicBot-1-G8": 1,
-      "HeuristicBot-2-G10": 1,
-      "HeuristicBot-3-G1": 1,
-      "HeuristicBot-3-G5": 1,
-      "HeuristicBot-3-G9": 1
+      "HeuristicBot-2-G3": 1,
+      "HeuristicBot-2-G5": 1,
+      "HeuristicBot-2-G8": 1,
+      "HeuristicBot-2-G9": 1,
+      "HeuristicBot-3-G10": 1,
+      "HeuristicBot-3-G4": 1,
+      "HeuristicBot-3-G6": 1,
+      "HeuristicBot-3-G7": 1
     }
   }
 }

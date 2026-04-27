@@ -1472,20 +1472,19 @@ class BenchmarkCalibrationAgent:
     def _play_high_value_dev_card(self, state: Dict[str, Any]) -> None:
         dev_cards = self._dev_cards(state)
         myi = state.get("myIndex")
+        advice = self._get_server_dev_card_advice()
         if (
             int(dev_cards.get("roadBuilding", dev_cards.get("road_building", 0)) or 0) > 0
-            and isinstance(myi, int)
-            and not self._has_connected_settlement_target(state, myi)
-            and self._rank_strategic_road_edges(state, myi)
+            and self._should_play_road_building(state, myi, advice)
         ):
             self._execute("play_dev_card", {"card_type": "roadBuilding"})
             return
         if int(dev_cards.get("monopoly", 0) or 0) > 0:
-            resource = self._best_monopoly_resource(state)
+            resource = self._best_monopoly_resource(state, advice)
             self._execute("play_dev_card", {"card_type": "monopoly", "params": {"resource": resource}})
             return
         if int(dev_cards.get("yearOfPlenty", dev_cards.get("year_of_plenty", 0)) or 0) > 0:
-            picks = self._year_of_plenty_picks(state)
+            picks = self._year_of_plenty_picks(state, advice)
             if self._ok(self._execute("play_dev_card", {"card_type": "yearOfPlenty"})):
                 for resource in picks:
                     self._execute("year_of_plenty_pick", {"resource": resource})
@@ -1943,7 +1942,39 @@ class BenchmarkCalibrationAgent:
             coords += [(q - 1, r), (q, r - 1)]
         return str(hex_key) in {f"{hq},{hr}" for hq, hr in coords}
 
-    def _best_monopoly_resource(self, state: Dict[str, Any]) -> str:
+    def _should_play_road_building(
+        self,
+        state: Dict[str, Any],
+        myi: Any,
+        advice: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        if isinstance(advice, dict):
+            options = advice.get("roadBuildingOptions")
+            if isinstance(options, list) and options:
+                best = max(
+                    [option for option in options if isinstance(option, dict) and option.get("id") in {"play-now", "hold"}],
+                    key=lambda option: float(option.get("score", 0.0) or 0.0),
+                    default=None,
+                )
+                if isinstance(best, dict):
+                    return str(best.get("id")) == "play-now"
+        return (
+            isinstance(myi, int)
+            and not self._has_connected_settlement_target(state, myi)
+            and bool(self._rank_strategic_road_edges(state, myi))
+        )
+
+    def _best_monopoly_resource(self, state: Dict[str, Any], advice: Optional[Dict[str, Any]] = None) -> str:
+        if isinstance(advice, dict):
+            options = advice.get("monopolyOptions")
+            if isinstance(options, list) and options:
+                best = max(
+                    [option for option in options if isinstance(option, dict) and option.get("id")],
+                    key=lambda option: float(option.get("score", 0.0) or 0.0),
+                    default=None,
+                )
+                if isinstance(best, dict):
+                    return str(best.get("id"))
         totals = {r: 0 for r in RESOURCES}
         myi = state.get("myIndex")
         for index, player in enumerate(state.get("players") or []):
@@ -1954,8 +1985,9 @@ class BenchmarkCalibrationAgent:
                 totals[resource] += int(resources.get(resource, 0) or 0)
         return max(totals, key=lambda r: (totals[r], r))
 
-    def _year_of_plenty_picks(self, state: Dict[str, Any]) -> List[str]:
-        advice = self._get_server_dev_card_advice()
+    def _year_of_plenty_picks(self, state: Dict[str, Any], advice: Optional[Dict[str, Any]] = None) -> List[str]:
+        if advice is None:
+            advice = self._get_server_dev_card_advice()
         if isinstance(advice, dict):
             options = advice.get("yearOfPlentyOptions")
             if isinstance(options, list) and options:

@@ -1543,10 +1543,14 @@ function buildYearOfPlentyOptions(game, playerId, resources = {}, needMap = null
 
 function buildBenchmarkDevCardAdvice(game, playerId) {
   const knightTask = buildKnightDecisionTaskPayload(game, playerId, 'hold');
+  const roadBuildingTask = buildRoadBuildingDecisionTaskPayload(game, playerId, 'hold');
+  const monopolyTask = buildMonopolyTaskPayload(game, playerId, RESOURCE_TYPES[0]);
   const player = game.players.find(candidate => candidate.id === playerId);
   if (!player) return null;
   return {
     knightOptions: knightTask?.evaluationContext?.options || [],
+    roadBuildingOptions: roadBuildingTask?.evaluationContext?.options || [],
+    monopolyOptions: monopolyTask?.evaluationContext?.options || [],
     yearOfPlentyOptions: buildYearOfPlentyOptions(game, playerId, player.resources, scoreResourceNeed(game, playerId))
       .sort((left, right) => right.score - left.score),
   };
@@ -1746,9 +1750,9 @@ function shouldConsiderLongestRoadRace(game, playerId) {
   return (
     snapshot.playerHasLongestRoad
     || snapshot.targetHasLongestRoad
-    || snapshot.playerRoadLength >= 5
-    || snapshot.targetRoadLength >= 6
-    || (snapshot.playerRoadLength >= 4 && roadGap <= 2 && roadPlanScore >= 0.45)
+    || snapshot.playerRoadLength >= 6
+    || snapshot.targetRoadLength >= 7
+    || (snapshot.playerRoadLength >= 5 && roadGap <= 2 && roadPlanScore >= 0.5)
   );
 }
 
@@ -1778,9 +1782,9 @@ function shouldConsiderLargestArmyRace(game, playerId) {
   return (
     snapshot.playerHasLargestArmy
     || snapshot.targetHasLargestArmy
-    || snapshot.playerKnights >= 3
-    || snapshot.targetKnights >= 4
-    || (snapshot.playerKnights >= 2 && hasRequiredResources(player, PLAN_COSTS.devCard))
+    || snapshot.playerKnights >= 4
+    || snapshot.targetKnights >= 5
+    || (snapshot.playerKnights >= 3 && hasRequiredResources(player, PLAN_COSTS.devCard))
   );
 }
 

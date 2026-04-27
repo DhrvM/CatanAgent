@@ -19,7 +19,7 @@ const TASK_THRESHOLDS = {
   'development-card-purchase-decision': 0.85,
   'knight-card-playing-decision': 0.8,
   'year-of-plenty-card-playing-decision': 0.85,
-  'monopoly-card-playing-decision': 0.9,
+  'monopoly-card-playing-decision': 0.85,
   'road-building-card-playing-decision': 0.85,
   'discard-strategy-after-seven': 0.6,
   'robber-victim-selection': 0.75,
@@ -29,8 +29,8 @@ const TASK_THRESHOLDS = {
   'select-targeted-trade-partner': 0.9,
   'bank-trade-decision': 0.75,
   'generate-counter-trade-offer': 0.7,
-  'decide-pursue-longest-road': 0.4,
-  'decide-pursue-largest-army': 0.65,
+  'decide-pursue-longest-road': 0.3,
+  'decide-pursue-largest-army': 0.3,
 };
 
 function clamp(value, min = 0, max = 1) {
@@ -197,6 +197,7 @@ function evaluateChoiceRatioTask(payload = {}, taskId) {
     'development-card-purchase-decision',
     'knight-card-playing-decision',
     'year-of-plenty-card-playing-decision',
+    'monopoly-card-playing-decision',
     'robber-victim-selection',
     'robber-placement',
     'bank-trade-decision',

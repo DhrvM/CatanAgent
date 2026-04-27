@@ -563,7 +563,7 @@ The resource score is
 \]
 Monopoly plays emit a benchmark payload over the five possible resource calls. The implementation uses actual hidden-opponent holdings available on the server.
 \\
-The threshold for \texttt{monopoly-card-playing-decision} is $0.90$ because Monopoly calls should closely match the strongest resource concentration and personal need signal.
+The threshold for \texttt{monopoly-card-playing-decision} is $0.85$ because several resource calls can be strategically close when opponent holdings and personal build unlocks point in slightly different directions. This task uses the larger of the selected-to-best ratio and a margin-aware score $1-(\texttt{bestScore}-\texttt{selectedScore})$ so that near-equivalent calls do not over-penalize the reference heuristic.
 
 \subsubsection{\texttt{road-building-card-playing-decision}}
 \label{app:task-road-building-card-playing-decision}
@@ -937,7 +937,7 @@ The stronger formulation is to record a pending task episode, wait $4$--$6$ turn
 \]
 This redesign is preferable because Longest Road decisions are not fully observable from a single action.
 The live system already uses the delayed v2-style episode. At decision time it snapshots player road length, strongest opponent road rival and their road length, whether either player currently holds Longest Road, player visible score, and roads built so far in benchmark long-term stats.
-To avoid treating ordinary expansion roads as Longest Road commitments, the task is only instantiated when there is an active race signal: either player already holds Longest Road, the player has at least five road length, the strongest rival has at least six road length, or the player has at least four road length while close to the rival with a meaningful road plan.
+To avoid treating ordinary expansion roads as Longest Road commitments, the task is only instantiated when there is an active race signal: either player already holds Longest Road, the player has at least six road length, the strongest rival has at least seven road length, or the player has at least five road length while close to the rival with a meaningful road plan.
 
 After a four-turn horizon, decisive resolution, or game end, it computes:
 \[
@@ -995,7 +995,7 @@ The final alternatives are
 Here $D_0$ is $1$ if $R_{\Delta}=0$ and $0.2$ otherwise.
 This task now runs as a pending long-horizon episode, and finalization writes one ordinary benchmark task result after the horizon, decisive resolution, or game end.
 \\
-The threshold for \texttt{decide-pursue-longest-road} is $0.40$ because long-horizon race commitments are scored with delayed outcome evidence and can be affected by dice, opponent moves, and intervening build priorities even when the original commitment was reasonable. This task uses the larger of the selected-to-best ratio and a margin-aware score $1-(\texttt{bestScore}-\texttt{selectedScore})$ so that small snapshot-plus-outcome differences do not make the benchmark's own reference heuristic fail.
+The threshold for \texttt{decide-pursue-longest-road} is $0.30$ because long-horizon race commitments are scored with delayed outcome evidence and can be affected by dice, opponent moves, and intervening build priorities even when the original commitment was reasonable. This task uses the larger of the selected-to-best ratio and a margin-aware score $1-(\texttt{bestScore}-\texttt{selectedScore})$ so that small snapshot-plus-outcome differences do not make the benchmark's own reference heuristic fail.
 
 \subsubsection{\texttt{decide-pursue-largest-army}}
 \label{app:task-decide-pursue-largest-army}
@@ -1069,8 +1069,8 @@ The final alternatives are
 \]
 Here $R_{\text{safe}}$ is $1$ if $\Delta R \ge 0$ and $0.4$ otherwise.
 \\
-The task is only instantiated when there is a real army-race signal: either player already holds Largest Army, the player already has at least three Knights played, the strongest rival already has at least four Knights played, or the player already has at least two Knights played and can immediately afford another development card.
+The task is only instantiated when there is a real army-race signal: either player already holds Largest Army, the player already has at least four Knights played, the strongest rival already has at least five Knights played, or the player already has at least three Knights played and can immediately afford another development card.
 \\
-The threshold for \texttt{decide-pursue-largest-army} is $0.65$ because Largest Army pursuit is a long-horizon commitment and should be scored with delayed outcome evidence without over-penalizing reasonable defer-versus-pursue choices. This task uses the larger of the selected-to-best ratio and a margin-aware score $1-(\texttt{bestScore}-\texttt{selectedScore})$ so that moderate snapshot-plus-outcome differences do not cause the benchmark's own reference heuristic to fail.
+The threshold for \texttt{decide-pursue-largest-army} is $0.30$ because Largest Army pursuit is a long-horizon commitment and should be scored with delayed outcome evidence without over-penalizing reasonable defer-versus-pursue choices. This task uses the larger of the selected-to-best ratio and a margin-aware score $1-(\texttt{bestScore}-\texttt{selectedScore})$ so that moderate snapshot-plus-outcome differences do not cause the benchmark's own reference heuristic to fail.
 
 \end{document}

@@ -145,11 +145,15 @@ export class BenchmarkStore {
     const entries = await fsp.readdir(dir).catch(() => []);
     await Promise.all(entries.filter(name => name.endsWith('.json')).map(async fileName => {
       const fullPath = path.join(dir, fileName);
-      const raw = await fsp.readFile(fullPath, 'utf8');
-      const parsed = JSON.parse(raw);
-      const id = parsed.id || parsed.gameId || parsed.runId;
-      if (id) {
-        targetMap.set(id, parsed);
+      try {
+        const raw = await fsp.readFile(fullPath, 'utf8');
+        const parsed = JSON.parse(raw);
+        const id = parsed.id || parsed.gameId || parsed.runId;
+        if (id) {
+          targetMap.set(id, parsed);
+        }
+      } catch (error) {
+        console.warn(`[benchmarkStore] Skipping unreadable JSON file: ${fullPath}`, error?.message || error);
       }
     }));
   }
@@ -157,8 +161,12 @@ export class BenchmarkStore {
   async #loadSnapshot() {
     const snapshotPath = path.join(this.dirMap.snapshots, 'overview.json');
     if (!fs.existsSync(snapshotPath)) return;
-    const raw = await fsp.readFile(snapshotPath, 'utf8');
-    this.snapshots = JSON.parse(raw);
+    try {
+      const raw = await fsp.readFile(snapshotPath, 'utf8');
+      this.snapshots = JSON.parse(raw);
+    } catch (error) {
+      console.warn(`[benchmarkStore] Skipping unreadable snapshot: ${snapshotPath}`, error?.message || error);
+    }
   }
 
   async #writeJson(filePath, payload) {
