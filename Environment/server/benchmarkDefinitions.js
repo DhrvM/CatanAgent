@@ -34,7 +34,7 @@ export const BENCHMARK_TASKS = [
     name: 'Road Placement Direction',
     category: 'shortTerm',
     difficulty: 'easy',
-    description: 'Choose the strongest legal road placement for reach, follow-up value, and blocking.',
+    description: 'Choose the strongest legal road placement for frontier reach, settlement follow-up value, and blocking.',
     scoring: '0.25 futureReachability + 0.20 reachableIntersectionValue + 0.10 blockingValue + 0.25 settlementTargetValue + 0.15 extensionValue + 0.05 cycleAvoidance',
   },
   {
@@ -146,7 +146,7 @@ export const BENCHMARK_TASKS = [
     name: 'Discard Strategy After Seven',
     category: 'mediumTerm',
     difficulty: 'medium',
-    description: 'Choose the discard set that preserves the strongest retained hand.',
+    description: 'Choose the discard set that preserves the strongest retained hand, including off-turn seven-roll discards.',
     scoring: 'RetainedHandValue / BestRetainedValue',
   },
   {

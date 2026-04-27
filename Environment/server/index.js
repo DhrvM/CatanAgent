@@ -84,6 +84,22 @@ app.get('/status', (req, res) => {
   });
 });
 
+/** Remove finished in-memory games so automated self-play can run many games. */
+app.post('/api/admin/cleanup-finished-games', (req, res) => {
+  let cleanedCount = 0;
+  games.forEach((game, id) => {
+    if (game.phase === 'finished') {
+      games.delete(id);
+      cleanedCount++;
+    }
+  });
+  res.json({
+    success: true,
+    cleanedCount,
+    activeGames: games.size,
+  });
+});
+
 /** Lightweight keep-alive ping (prevents Render free tier from sleeping) */
 app.get('/ping', (req, res) => {
   res.send('pong');
@@ -614,9 +630,9 @@ function cityUpgradeScore(game, vKey) {
   );
 }
 
-function buildSettlementEvaluationContext(game, playerId) {
+function buildSettlementEvaluationContext(game, playerId, isSetup = false) {
   const legalOptions = Object.keys(game.vertices || {})
-    .filter(vKey => GameLogic.canPlaceSettlement(game, playerId, vKey, true).valid)
+    .filter(vKey => GameLogic.canPlaceSettlement(game, playerId, vKey, Boolean(isSetup)).valid)
     .map(vKey => ({
       id: vKey,
       ...scoreVertexPlacement(game, vKey),
@@ -692,11 +708,16 @@ function buildPlanDecisionData(game, playerId, resourcesOverride = null) {
   });
 }
 
+function discardRiskPenalty(resourceTotal = 0) {
+  const total = Number.isFinite(Number(resourceTotal)) ? Number(resourceTotal) : 0;
+  return clamp01(Math.max(0, total - 7) * 0.08);
+}
+
 function scoreSaveOption(planDecisionData = [], resourceTotal = 0) {
   const bestFutureScore = Math.max(0, ...planDecisionData
     .filter(plan => plan.missingCount > 0)
     .map(plan => plan.effectiveScore));
-  return clamp01(Math.max(0.35, bestFutureScore + (resourceTotal > 7 ? 0.1 : 0)));
+  return clamp01(Math.max(0.2, bestFutureScore - discardRiskPenalty(resourceTotal)));
 }
 
 function buildBuildVsSaveTaskPayload(game, playerId, selectedOptionId) {
@@ -724,6 +745,69 @@ function buildBuildVsSaveTaskPayload(game, playerId, selectedOptionId) {
     evaluationContext: {
       options,
     },
+  };
+}
+
+function buildBenchmarkBuildAdvice(game, playerId) {
+  const player = game.players.find(candidate => candidate.id === playerId);
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  if (!player || playerIndex === -1) return null;
+
+  const planDecisionData = buildPlanDecisionData(game, playerId);
+  const saveScore = scoreSaveOption(planDecisionData, sumResources(player.resources));
+  const options = [
+    ...planDecisionData
+      .filter(plan => plan.affordable && plan.baseScore > 0)
+      .map(plan => ({
+        id: plan.id,
+        score: clamp01(plan.baseScore),
+        missingCount: plan.missingCount,
+        affordable: plan.affordable,
+      })),
+    {
+      id: 'save',
+      score: saveScore,
+      missingCount: 0,
+      affordable: true,
+    },
+  ].sort((left, right) => right.score - left.score);
+
+  const settlementTargets = Object.keys(game.vertices || {})
+    .filter(vKey => GameLogic.canPlaceSettlement(game, playerId, vKey, false).valid)
+    .map(vKey => ({
+      vertexKey: vKey,
+      score: settlementPlacementScore(scoreVertexPlacement(game, vKey)),
+    }))
+    .sort((left, right) => right.score - left.score);
+
+  const cityTargets = Object.entries(game.vertices || {})
+    .filter(([, vertex]) => vertex?.building === 'settlement' && vertex.owner === playerIndex)
+    .map(([vKey]) => ({
+      vertexKey: vKey,
+      score: cityUpgradeScore(game, vKey),
+    }))
+    .sort((left, right) => right.score - left.score);
+
+  const roadTargets = Object.keys(game.edges || {})
+    .filter(eKey => GameLogic.canPlaceRoad(game, playerId, eKey, false, null).valid)
+    .map(eKey => ({
+      edgeKey: eKey,
+      score: roadPlacementPriorityScore(scoreRoadPlacement(game, eKey, null)),
+    }))
+    .sort((left, right) => right.score - left.score);
+
+  return {
+    options,
+    planDecisionData: planDecisionData.map(plan => ({
+      id: plan.id,
+      baseScore: clamp01(plan.baseScore),
+      missingCount: plan.missingCount,
+      affordable: plan.affordable,
+    })),
+    saveScore,
+    settlementTargets: settlementTargets.slice(0, 25),
+    cityTargets: cityTargets.slice(0, 15),
+    roadTargets: roadTargets.slice(0, 25),
   };
 }
 
@@ -1102,13 +1186,16 @@ function buildBankTradeTaskPayload(game, playerId, giveResource, giveAmount, get
   const needMap = scoreResourceNeed(game, playerId);
   const surplusMap = scoreResourceSurplus(game, playerId);
   const candidateOptions = [];
+  const currentTotal = sumResources(player?.resources);
 
   Object.keys(player.resources || {}).forEach(resourceToGive => {
     const requiredRatio = GameLogic.getTradeRatio(game, playerIndex, resourceToGive);
     if ((player.resources?.[resourceToGive] || 0) < requiredRatio) return;
     Object.keys(player.resources || {}).forEach(resourceToGet => {
       if (resourceToGet === resourceToGive) return;
-      const score = Math.max(0, Math.min(1, (needMap[resourceToGet] || 0) - ((surplusMap[resourceToGive] || 0) * 0.5) + 0.5));
+      const futureTotal = currentTotal - requiredRatio + 1;
+      const discardRelief = Math.max(0, discardRiskPenalty(currentTotal) - discardRiskPenalty(futureTotal));
+      const score = Math.max(0, Math.min(1, (needMap[resourceToGet] || 0) - ((surplusMap[resourceToGive] || 0) * 0.5) + 0.5 + discardRelief));
       candidateOptions.push({
         id: `${resourceToGive}:${requiredRatio}:${resourceToGet}`,
         score,
@@ -1118,7 +1205,7 @@ function buildBankTradeTaskPayload(game, playerId, giveResource, giveAmount, get
 
   candidateOptions.push({
     id: 'no-trade',
-    score: 0.45,
+    score: Math.max(0.2, 0.45 - discardRiskPenalty(currentTotal)),
   });
 
   return {
@@ -1127,6 +1214,48 @@ function buildBankTradeTaskPayload(game, playerId, giveResource, giveAmount, get
     evaluationContext: {
       options: candidateOptions,
     },
+  };
+}
+
+function buildBenchmarkBankTradeAdvice(game, playerId) {
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  const player = game.players[playerIndex];
+  if (playerIndex === -1 || !player) return null;
+
+  const needMap = scoreResourceNeed(game, playerId);
+  const surplusMap = scoreResourceSurplus(game, playerId);
+  const currentTotal = sumResources(player.resources);
+  const options = [];
+
+  Object.keys(player.resources || {}).forEach(resourceToGive => {
+    const requiredRatio = GameLogic.getTradeRatio(game, playerIndex, resourceToGive);
+    if ((player.resources?.[resourceToGive] || 0) < requiredRatio) return;
+    Object.keys(player.resources || {}).forEach(resourceToGet => {
+      if (resourceToGet === resourceToGive) return;
+      const futureTotal = currentTotal - requiredRatio + 1;
+      const discardRelief = Math.max(0, discardRiskPenalty(currentTotal) - discardRiskPenalty(futureTotal));
+      const score = Math.max(0, Math.min(1, (needMap[resourceToGet] || 0) - ((surplusMap[resourceToGive] || 0) * 0.5) + 0.5 + discardRelief));
+      options.push({
+        id: `${resourceToGive}:${requiredRatio}:${resourceToGet}`,
+        giveResource: resourceToGive,
+        giveAmount: requiredRatio,
+        getResource: resourceToGet,
+        score,
+      });
+    });
+  });
+
+  options.push({
+    id: 'no-trade',
+    giveResource: null,
+    giveAmount: 0,
+    getResource: null,
+    score: Math.max(0.2, 0.45 - discardRiskPenalty(currentTotal)),
+  });
+
+  options.sort((left, right) => right.score - left.score);
+  return {
+    options,
   };
 }
 
@@ -1200,7 +1329,10 @@ function buildCounterTradeTaskPayload(game, playerId, offer, request) {
 }
 
 function buildRoadEvaluationContext(game, playerId, lastSettlement) {
-  const legalOptions = Object.keys(game.edges || {})
+  const candidateEdges = lastSettlement
+    ? GameLogic.getVertexEdges(lastSettlement)
+    : Object.keys(game.edges || {});
+  const legalOptions = [...new Set(candidateEdges)]
     .filter(eKey => GameLogic.canPlaceRoad(game, playerId, eKey, true, lastSettlement).valid)
     .map(eKey => ({
       id: eKey,
@@ -1371,8 +1503,20 @@ function buildPlanDecisionDataFromResources(game, playerId, resources) {
 function buildYearOfPlentyChoiceTaskPayload(game, playerId, chosenResources = []) {
   const state = ensureBenchmarkTaskState(game).yearOfPlenty[playerId];
   if (!state || chosenResources.length !== 2) return null;
-  const snapshotResources = normalizeResourceSnapshot(state.resources);
-  const needMap = state.needMap || {};
+  const options = buildYearOfPlentyOptions(game, playerId, state.resources, state.needMap || {});
+
+  return {
+    taskId: 'year-of-plenty-card-playing-decision',
+    selectedOptionId: [...chosenResources].sort().join('+'),
+    evaluationContext: {
+      options,
+    },
+  };
+}
+
+function buildYearOfPlentyOptions(game, playerId, resources = {}, needMap = null) {
+  const snapshotResources = normalizeResourceSnapshot(resources);
+  const effectiveNeedMap = needMap || scoreResourceNeed(game, playerId);
   const beforePlanData = buildPlanDecisionDataFromResources(game, playerId, snapshotResources);
   const beforeBest = getBestAffordablePlanScoreFromData(beforePlanData);
 
@@ -1385,7 +1529,7 @@ function buildYearOfPlentyChoiceTaskPayload(game, playerId, chosenResources = []
       const afterPlanData = buildPlanDecisionDataFromResources(game, playerId, afterResources);
       const afterBest = getBestAffordablePlanScoreFromData(afterPlanData);
       const buildUnlock = clamp01(Math.max(0, afterBest - beforeBest) + (afterBest > beforeBest ? afterBest : 0));
-      const scarcity = clamp01(((needMap[left] || 0) + (needMap[right] || 0)) / 2);
+      const scarcity = clamp01(((effectiveNeedMap[left] || 0) + (effectiveNeedMap[right] || 0)) / 2);
       const diversityGain = clamp01((countDistinctPositiveResources(afterResources) - countDistinctPositiveResources(snapshotResources)) / 2);
       options.push({
         id: [left, right].sort().join('+'),
@@ -1394,12 +1538,61 @@ function buildYearOfPlentyChoiceTaskPayload(game, playerId, chosenResources = []
     });
   });
 
+  return options;
+}
+
+function buildBenchmarkDevCardAdvice(game, playerId) {
+  const knightTask = buildKnightDecisionTaskPayload(game, playerId, 'hold');
+  const player = game.players.find(candidate => candidate.id === playerId);
+  if (!player) return null;
   return {
-    taskId: 'year-of-plenty-card-playing-decision',
-    selectedOptionId: [...chosenResources].sort().join('+'),
-    evaluationContext: {
-      options,
-    },
+    knightOptions: knightTask?.evaluationContext?.options || [],
+    yearOfPlentyOptions: buildYearOfPlentyOptions(game, playerId, player.resources, scoreResourceNeed(game, playerId))
+      .sort((left, right) => right.score - left.score),
+  };
+}
+
+function buildBenchmarkRobberAdvice(game, playerId, hexKeyValue = null) {
+  const actingPlayerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  if (actingPlayerIndex === -1) return null;
+
+  const hexOptions = Object.keys(game.hexes || {})
+    .filter(candidateHexKey => candidateHexKey !== game.robber)
+    .map(candidateHexKey => ({
+      id: candidateHexKey,
+      ...scoreRobberHexPlacement(game, actingPlayerIndex, candidateHexKey),
+      score: clamp01(
+        (scoreRobberHexPlacement(game, actingPlayerIndex, candidateHexKey).hurtLeader * 0.35)
+        + (scoreRobberHexPlacement(game, actingPlayerIndex, candidateHexKey).productionDamage * 0.30)
+        + (scoreRobberHexPlacement(game, actingPlayerIndex, candidateHexKey).theftValue * 0.20)
+        + (scoreRobberHexPlacement(game, actingPlayerIndex, candidateHexKey).selfHarmAvoidance * 0.15)
+      ),
+    }))
+    .sort((left, right) => right.score - left.score);
+
+  let victimOptions = [];
+  if (hexKeyValue) {
+    victimOptions = (GameLogic.getPlayersOnHex(game, hexKeyValue, actingPlayerIndex) || [])
+      .map(playerIndex => {
+        const player = game.players[playerIndex];
+        const resourceTotal = sumResources(player?.resources);
+        const isLeader = playerIndex === identifyLeaderIndex(game);
+        return {
+          id: player?.id || `player-${playerIndex}`,
+          score: Math.min(
+            1,
+            (isLeader ? 0.55 : 0.25)
+            + Math.min(0.35, resourceTotal / 20)
+            + Math.min(0.1, getPlayerVisibleScore(player) / 20)
+          ),
+        };
+      })
+      .sort((left, right) => right.score - left.score);
+  }
+
+  return {
+    hexOptions,
+    victimOptions,
   };
 }
 
@@ -1505,6 +1698,28 @@ function buildDiscardTaskPayload(game, playerId, discardedResources = {}) {
   };
 }
 
+function buildBenchmarkDiscardAdvice(game, playerId) {
+  const player = game.players.find(candidate => candidate.id === playerId);
+  if (!player) return null;
+  const discardCount = Math.floor(sumResources(player.resources) / 2);
+  const options = enumerateDiscardChoices(player.resources, discardCount).map(bundle => {
+    const retainedResources = normalizeResourceSnapshot(player.resources);
+    RESOURCE_TYPES.forEach(resource => {
+      retainedResources[resource] = Math.max(0, retainedResources[resource] - (bundle[resource] || 0));
+    });
+    const id = RESOURCE_TYPES.map(resource => `${resource}:${bundle[resource] || 0}`).join('|');
+    return {
+      id,
+      discardedResources: bundle,
+      retainedHandValue: scoreRetainedHandValue(game, playerId, retainedResources),
+    };
+  }).sort((left, right) => right.retainedHandValue - left.retainedHandValue);
+
+  return {
+    discardOptions: options,
+  };
+}
+
 function getLongestRoadRaceSnapshot(game, playerId) {
   const playerIndex = getPlayerIndex(game, playerId);
   if (playerIndex === -1) return null;
@@ -1526,7 +1741,15 @@ function getLongestRoadRaceSnapshot(game, playerId) {
 function shouldConsiderLongestRoadRace(game, playerId) {
   const snapshot = getLongestRoadRaceSnapshot(game, playerId);
   if (!snapshot) return false;
-  return snapshot.playerRoadLength >= 3 || snapshot.targetRoadLength >= 4 || bestRoadPlanScore(game, playerId) > 0;
+  const roadPlanScore = bestRoadPlanScore(game, playerId);
+  const roadGap = (snapshot.targetRoadLength || 0) - (snapshot.playerRoadLength || 0);
+  return (
+    snapshot.playerHasLongestRoad
+    || snapshot.targetHasLongestRoad
+    || snapshot.playerRoadLength >= 5
+    || snapshot.targetRoadLength >= 6
+    || (snapshot.playerRoadLength >= 4 && roadGap <= 2 && roadPlanScore >= 0.45)
+  );
 }
 
 function getLargestArmyRaceSnapshot(game, playerId) {
@@ -1552,7 +1775,13 @@ function shouldConsiderLargestArmyRace(game, playerId) {
   const snapshot = getLargestArmyRaceSnapshot(game, playerId);
   if (!snapshot) return false;
   const player = game.players.find(candidate => candidate.id === playerId);
-  return snapshot.playerKnights >= 1 || snapshot.targetKnights >= 2 || hasRequiredResources(player, PLAN_COSTS.devCard);
+  return (
+    snapshot.playerHasLargestArmy
+    || snapshot.targetHasLargestArmy
+    || snapshot.playerKnights >= 3
+    || snapshot.targetKnights >= 4
+    || (snapshot.playerKnights >= 2 && hasRequiredResources(player, PLAN_COSTS.devCard))
+  );
 }
 
 async function maybeCreatePendingLongTermEpisode(game, playerId, taskId, selectedOptionId) {
@@ -1992,6 +2221,37 @@ io.on('connection', (socket) => {
     
     callback(result);
   });
+
+  /** Delete a game from memory (host only). Useful for automated self-play runs. */
+  socket.on('deleteGame', (callback) => {
+    const playerInfo = playerSockets.get(socket.id);
+    if (!playerInfo) {
+      callback({ success: false, error: 'Not in a game' });
+      return;
+    }
+
+    const game = games.get(playerInfo.gameId);
+    if (!game) {
+      callback({ success: false, error: 'Game not found' });
+      return;
+    }
+
+    if (game.players[0]?.id !== playerInfo.playerId) {
+      callback({ success: false, error: 'Only host can delete the game' });
+      return;
+    }
+
+    const gameId = playerInfo.gameId;
+    games.delete(gameId);
+    for (const [socketId, info] of playerSockets.entries()) {
+      if (info.gameId === gameId) {
+        playerSockets.delete(socketId);
+      }
+    }
+    io.to(gameId).emit('gameDeleted', { gameCode: gameId });
+    io.in(gameId).socketsLeave(gameId);
+    callback({ success: true, gameCode: gameId, activeGames: games.size });
+  });
   
   // --------------------------------------------------------------------
   // TURN ACTIONS
@@ -2164,7 +2424,7 @@ io.on('connection', (socket) => {
           ? {
             taskId: 'initial-settlement-location-selection',
             selectedOptionId: vertexKey,
-            evaluationContext: buildSettlementEvaluationContext(game, playerInfo.playerId),
+            evaluationContext: buildSettlementEvaluationContext(game, playerInfo.playerId, true),
           }
           : [
             buildBuildVsSaveTaskPayload(game, playerInfo.playerId, 'settlement'),
@@ -2172,7 +2432,7 @@ io.on('connection', (socket) => {
             {
               taskId: 'settlement-location-selection',
               selectedOptionId: vertexKey,
-              evaluationContext: buildSettlementEvaluationContext(game, playerInfo.playerId),
+              evaluationContext: buildSettlementEvaluationContext(game, playerInfo.playerId, false),
             },
           ].filter(Boolean)
       )
@@ -2738,6 +2998,124 @@ io.on('connection', (socket) => {
     }));
     
     callback({ success: true, players });
+  });
+
+  socket.on('getBenchmarkBuildAdvice', (payload, callback) => {
+    const playerInfo = playerSockets.get(socket.id);
+    if (!playerInfo) {
+      callback({ success: false, error: 'Not in a game' });
+      return;
+    }
+
+    const game = games.get(playerInfo.gameId);
+    if (!game) {
+      callback({ success: false, error: 'Game not found' });
+      return;
+    }
+
+    const advice = buildBenchmarkBuildAdvice(game, playerInfo.playerId);
+    callback({
+      success: true,
+      ...(advice || {
+        options: [{ id: 'save', score: 0.35, missingCount: 0, affordable: true }],
+        planDecisionData: [],
+        saveScore: 0.35,
+        settlementTargets: [],
+        cityTargets: [],
+        roadTargets: [],
+      }),
+    });
+  });
+
+  socket.on('getBenchmarkBankTradeAdvice', (payload, callback) => {
+    const playerInfo = playerSockets.get(socket.id);
+    if (!playerInfo) {
+      callback({ success: false, error: 'Not in a game' });
+      return;
+    }
+
+    const game = games.get(playerInfo.gameId);
+    if (!game) {
+      callback({ success: false, error: 'Game not found' });
+      return;
+    }
+
+    const advice = buildBenchmarkBankTradeAdvice(game, playerInfo.playerId);
+    callback({
+      success: true,
+      ...(advice || {
+        options: [{ id: 'no-trade', giveResource: null, giveAmount: 0, getResource: null, score: 0.45 }],
+      }),
+    });
+  });
+
+  socket.on('getBenchmarkDevCardAdvice', (payload, callback) => {
+    const playerInfo = playerSockets.get(socket.id);
+    if (!playerInfo) {
+      callback({ success: false, error: 'Not in a game' });
+      return;
+    }
+
+    const game = games.get(playerInfo.gameId);
+    if (!game) {
+      callback({ success: false, error: 'Game not found' });
+      return;
+    }
+
+    const advice = buildBenchmarkDevCardAdvice(game, playerInfo.playerId);
+    callback({
+      success: true,
+      ...(advice || {
+        knightOptions: [],
+        yearOfPlentyOptions: [],
+      }),
+    });
+  });
+
+  socket.on('getBenchmarkRobberAdvice', (payload, callback) => {
+    const playerInfo = playerSockets.get(socket.id);
+    if (!playerInfo) {
+      callback({ success: false, error: 'Not in a game' });
+      return;
+    }
+
+    const game = games.get(playerInfo.gameId);
+    if (!game) {
+      callback({ success: false, error: 'Game not found' });
+      return;
+    }
+
+    const hexKeyValue = payload && typeof payload.hexKey === 'string' ? payload.hexKey : null;
+    const advice = buildBenchmarkRobberAdvice(game, playerInfo.playerId, hexKeyValue);
+    callback({
+      success: true,
+      ...(advice || {
+        hexOptions: [],
+        victimOptions: [],
+      }),
+    });
+  });
+
+  socket.on('getBenchmarkDiscardAdvice', (payload, callback) => {
+    const playerInfo = playerSockets.get(socket.id);
+    if (!playerInfo) {
+      callback({ success: false, error: 'Not in a game' });
+      return;
+    }
+
+    const game = games.get(playerInfo.gameId);
+    if (!game) {
+      callback({ success: false, error: 'Game not found' });
+      return;
+    }
+
+    const advice = buildBenchmarkDiscardAdvice(game, playerInfo.playerId);
+    callback({
+      success: true,
+      ...(advice || {
+        discardOptions: [],
+      }),
+    });
   });
   
   // --------------------------------------------------------------------

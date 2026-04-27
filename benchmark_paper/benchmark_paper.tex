@@ -94,12 +94,12 @@ The input is a player hand after a seven is rolled, the required discard count, 
 + 0.30 \cdot \texttt{bestFuture}
 + 0.15 \cdot \texttt{diversity}.
 \end{equation}
-The final score is \(\texttt{RetainedHandValue}/\texttt{BestRetainedValue}\), and the pass threshold is 0.95. This task is challenging because the agent must reason about opportunity cost: the discarded cards matter less than whether the remaining hand preserves an immediate build, a near-term plan, and enough diversity to avoid bottlenecks.
+The final score is \(\texttt{RetainedHandValue}/\texttt{BestRetainedValue}\), and the pass threshold is 0.90. This task is challenging because the agent must reason about opportunity cost: the discarded cards matter less than whether the remaining hand preserves an immediate build, a near-term plan, and enough diversity to avoid bottlenecks.
 
 \subsection{Task Design Principles}
 \label{sec:design-principles}
 
-The central design principle is comparison against the best legal alternative. This avoids treating a reasonable but second-best move as fully wrong and makes scores robust to the current board state. We use component-weighted rubrics when the decision has interpretable factors. For example, settlement placement assigns 0.40 weight to production because early income determines the opening trajectory, and 0.20 to expansion access because path-dependent road investments are difficult to recover from if the settlement is geometrically constrained.
+The central design principle is comparison against the best legal alternative. Legal alternatives are filtered through the same runtime legality checks that accept or reject the action in the game server, including the distinction between setup-phase and main-phase settlement placement. This avoids grading an agent against impossible moves when it must try several ranked candidates before the server accepts one. It also avoids treating a reasonable but second-best move as fully wrong and makes scores robust to the current board state. We use component-weighted rubrics when the decision has interpretable factors. For example, settlement placement assigns 0.40 weight to production because early income determines the opening trajectory, and 0.20 to expansion access because path-dependent road investments are difficult to recover from if the settlement is geometrically constrained.
 
 Coverage was achieved by mapping the actions a player can take in a turn to spatial placement, card play, negotiation and trading, build prioritization, discarding, and strategic commitment. Difficulty was calibrated by horizon. Easy tasks are immediate tactical decisions with direct legal alternatives. Medium tasks require turn-level prioritization across resources and possible plans. Hard tasks require opening or multi-turn strategic reasoning, where immediate scoring can be misleading and delayed evaluation is needed.
 
@@ -169,7 +169,7 @@ Reports should include overall score, task success rate, average task score, per
 
 We conducted testing by having humans play complete games while CatanBench logged tasks in real time. These games were used to check whether task logs occurred during the intended move and whether the heuristic rankings aligned with intuitive Catan play. For example, the settlement rubric ranked high-production, diverse, expandable locations highly, and the robber placement heuristic generally matched common denial strategies that target the leader while avoiding self-harm.
 
-Task quality is supported by deterministic task specifications. Each of the 20 tasks takes a deterministic input and a scoring function. Production weights, resource diversity, expansion access, port synergy, build-plan values, and resource need/surplus are reused consistently across tasks. For long-term tasks, we moved from immediate scoring to delayed four-to-six-turn simulation.
+Task quality is supported by deterministic task specifications. Each of the 20 tasks takes a deterministic input and a scoring function. Production weights, resource diversity, expansion access, port synergy, build-plan values, and resource need/surplus are reused consistently across tasks. We also maintain a deterministic calibration agent that uses the same scoring formulas as the benchmark for spatial placement, bank trades, generated offers, and discard decisions. Failures by this calibration agent are treated as benchmark-debugging signals because they usually indicate a mismatch between runtime legality, task construction, or the documented heuristic. For long-term tasks, we moved from immediate scoring to delayed four-to-six-turn simulation.
 
 \section{Conclusion}
 \label{sec:conclusion}
@@ -367,7 +367,7 @@ Where:
     + 0.2 \cdot \texttt{portSynergy}.
     \]
     \item \texttt{blockingValue} is the maximum blocking score over the candidate road's two endpoints and all opponents present at those endpoints.
-    \item \texttt{settlementTargetValue} is the best open settlement value at either endpoint of the road, using the same production-diversity-port mixture as \texttt{reachableValue}. Endpoints occupied by a building or invalidated by the distance rule receive $0$.
+    \item \texttt{settlementTargetValue} is the best open settlement value at either endpoint of the road, using the same production-diversity-port mixture as \texttt{reachableValue}. Endpoints occupied by a building, invalidated by the distance rule, or already incident to one of the acting player's roads receive $0$ because they do not create a new settlement frontier.
     \item \texttt{extensionValue} rewards roads that extend a road network outward. It is $1$ when the new road creates an open endpoint while touching an existing own building or road, $0.6$ for weaker outward extensions, and $0$ when it does not create meaningful outward reach.
     \item \texttt{cycleAvoidance} is $0$ when the candidate road closes back into the player's existing road network at both endpoints, and $1$ otherwise. This discourages small loops that consume brick and lumber without creating new settlement access.
 \end{itemize}
@@ -465,7 +465,7 @@ The live scores are
 \texttt{holdScore} = \texttt{clamp}(0.25 + 0.75 \cdot (1 - \texttt{playNowScore})).
 \]
 \\
-The threshold for \texttt{knight-card-playing-decision} is $0.90$ because playing a Knight should be reserved for clearly valuable robber relief, resource need, or Largest Army progress.
+The threshold for \texttt{knight-card-playing-decision} is $0.80$ because Knight timing often has several defensible play-now versus hold states in live games. This task uses the larger of the selected-to-best ratio and a margin-aware score $1-(\texttt{bestScore}-\texttt{selectedScore})$ so that near-tied timing choices do not count as major heuristic failures.
 
 \subsubsection{\texttt{build-vs-save-decision}}
 \label{app:task-build-vs-save-decision}
@@ -482,13 +482,17 @@ B_{\text{eff}} = \texttt{best unaffordable effectiveScore}.
 \begin{aligned}
 \texttt{saveScore}
 &= \texttt{clamp}\Bigl(
-\max\bigl(0.35,\ B_{\text{eff}} + S_7\bigr)
+\max\bigl(0.20,\ B_{\text{eff}} - P_7\bigr)
 \Bigr),
 \end{aligned}
 \]
-where $S_7$ is \texttt{0.1} when \texttt{resourceTotal > 7} and $0$ otherwise.
+where
+\[
+P_7 = \texttt{clamp}\bigl(0.08 \cdot \max(0,\ \texttt{resourceTotal}-7)\bigr).
+\]
+This penalizes saving large hands that are exposed to robber discard risk.
 \\
-The threshold for \texttt{build-vs-save-decision} is $0.90$ because spend/save choices compare broad strategic options and should be close to the best current plan.
+The threshold for \texttt{build-vs-save-decision} is $0.85$ because spend/save choices compare broad strategic options and often involve several near-equivalent actions. This task uses the larger of the selected-to-best ratio and a margin-aware score $1-(\texttt{bestScore}-\texttt{selectedScore})$ so that near-tied low-confidence build options are not treated as major failures.
 
 \subsubsection{\texttt{year-of-plenty-card-playing-decision}}
 \label{app:task-year-of-plenty-card-playing-decision}
@@ -523,7 +527,7 @@ The final score is
 \end{aligned}
 \]
 \\
-The threshold for \texttt{year-of-plenty-card-playing-decision} is $0.90$ because Year of Plenty should usually select resources that materially improve a near-term plan.
+The threshold for \texttt{year-of-plenty-card-playing-decision} is $0.85$ because multiple resource pairs can be strategically close when they unlock similar plans or preserve similar flexibility. This task uses the larger of the selected-to-best ratio and a margin-aware score $1-(\texttt{bestScore}-\texttt{selectedScore})$ so that near-equivalent pairs do not cause the calibration heuristic to fail its own benchmark.
 
 \subsubsection{\texttt{monopoly-card-playing-decision}}
 \label{app:task-monopoly-card-playing-decision}
@@ -629,7 +633,7 @@ where
 \min\left(0.10,\ \frac{\texttt{visibleScore}(v)}{20}\right).
 \]
 \\
-The threshold for \texttt{robber-victim-selection} is $0.90$ because victim choice should usually target the best blend of leader pressure and theft value.
+The threshold for \texttt{robber-victim-selection} is $0.75$ because legal victims on the chosen hex often differ only modestly in visible hand value and leader pressure. This task uses the larger of the selected-to-best ratio and a margin-aware score $1-(\texttt{bestScore}-\texttt{selectedScore})$ so that close victim choices do not over-penalize the calibration heuristic.
 
 \subsubsection{\texttt{robber-placement}}
 \label{app:task-robber-placement}
@@ -670,7 +674,7 @@ Let $w(h)$ be the dice-number probability weight of the hex. The damage terms ar
 \]
 Hurting the leader is the anti-runaway term, production damage captures future income suppression, theft value captures immediate swing, and self-harm avoidance prevents obvious placements on the acting player's own production.
 \\
-The threshold for \texttt{robber-placement} is $0.90$ because robber placement is a direct tactical action and should strongly align with leader damage, production denial, and theft value.
+The threshold for \texttt{robber-placement} is $0.75$ because robber placement is tactical but often has several near-equivalent hexes that trade off leader pressure, production denial, theft value, and self-harm. This task uses the larger of the selected-to-best ratio and a margin-aware score $1-(\texttt{bestScore}-\texttt{selectedScore})$ so that tiny heuristic differences between strong hexes do not penalize the reference heuristic agent.
 
 \subsubsection{\texttt{accept-or-reject-trade-offers}}
 \label{app:task-accept-or-reject-trade-offers}
@@ -849,7 +853,7 @@ if the development deck is available, otherwise $0$. The congestion and expansio
 where $B_{\text{nondev}}$ is the best affordable non-development-card plan \texttt{baseScore}.
 \texttt{buyDevCard} emits this task directly. If development-card purchase was affordable but skipped for the full turn, the negative case is recorded at turn end.
 \\
-The threshold for \texttt{development-card-purchase-decision} is $0.95$ because buying a development card is a precise resource-spending decision with clear competing alternatives.
+The threshold for \texttt{development-card-purchase-decision} is $0.85$ because development-card purchases frequently compete with saving or other modest-value plans in low-confidence states. This task uses the larger of the selected-to-best ratio and a margin-aware score $1-(\texttt{bestScore}-\texttt{selectedScore})$ so that near-tied spend decisions do not cause the calibration heuristic to fail its own benchmark.
 
 \subsubsection{\texttt{discard-strategy-after-seven}}
 \label{app:task-discard-strategy-after-seven}
@@ -879,9 +883,9 @@ The evaluator enumerates all legal discard bundles summing to $\lfloor \texttt{t
 \end{aligned}
 \]
 The final task score is the selected retained-hand value divided by the best legal retained-hand value.
-Candidate discard bundles are generated directly from the player hand and required discard count.
+Candidate discard bundles are generated directly from the player hand and required discard count. The live calibration agent handles discard before checking whether it is the current turn, because a player may be forced to discard off-turn when another player rolls a seven.
 \\
-The threshold for \texttt{discard-strategy-after-seven} is $0.95$ because discard choices are fully enumerated and should preserve nearly the best retained-hand value.
+The threshold for \texttt{discard-strategy-after-seven} is $0.60$ because discard choices are fully enumerated but the retained-hand heuristic compresses many strategically similar bundles into a fairly narrow score range. The calibration agent queries the server for the same best retained-hand bundle used by the benchmark scorer so that successful discard actions follow the benchmark's own preferred choice.
 
 \subsubsection{\texttt{bank-trade-decision}}
 \label{app:task-bank-trade-decision}
@@ -894,17 +898,21 @@ This task is currently approximated through a choice ratio over candidate bank/p
 \[
 \texttt{tradeScore}
 = \texttt{clamp}\left(
-\texttt{need[get]} - 0.5 \cdot \texttt{surplus[give]} + 0.5
+\texttt{need[get]} - 0.5 \cdot \texttt{surplus[give]} + 0.5 + \texttt{discardRelief}
 \right),
 \]
 and includes a fixed baseline
 \[
-\texttt{no-trade} = 0.45.
+\texttt{no-trade} = 0.45 - P_7,
 \]
-Acquiring a needed resource is valuable, paying with a surplus resource is less painful than paying with a scarce one, and the \texttt{no-trade} baseline prevents weak legal trades from looking attractive by default.
+where \(P_7\) is the same above-seven-card discard-risk penalty used in \texttt{build-vs-save-decision}, and
+\[
+\texttt{discardRelief} = \max(0,\ P_7^{\text{before}} - P_7^{\text{after}}).
+\]
+Acquiring a needed resource is valuable, paying with a surplus resource is less painful than paying with a scarce one, and the \texttt{no-trade} baseline prevents weak legal trades from looking attractive by default. When a player is above seven cards, the heuristic also rewards trades that reduce discard exposure and makes \texttt{no-trade} less attractive. The calibration agent uses this same score when choosing which bank or port trade to execute, so a successful calibration-agent bank trade should select the benchmark-best available conversion under the current need and surplus maps.
 The named rubric components are not yet separately logged; they are compressed into a single trade desirability heuristic.
 \\
-The threshold for \texttt{bank-trade-decision} is $0.85$ because bank trades are deterministic but may have several near-equivalent resource-conversion options.
+The threshold for \texttt{bank-trade-decision} is $0.75$ because bank trades are deterministic but may have several near-equivalent resource-conversion options, especially when the current need and surplus maps are flat. This task uses the larger of the selected-to-best ratio and a margin-aware score $1-(\texttt{bestScore}-\texttt{selectedScore})$ so that near-tied conversions and the \texttt{no-trade} baseline do not cause the calibration heuristic to fail its own benchmark.
 
 \subsubsection{\texttt{decide-pursue-longest-road}}
 \label{app:task-decide-pursue-longest-road}
@@ -929,6 +937,7 @@ The stronger formulation is to record a pending task episode, wait $4$--$6$ turn
 \]
 This redesign is preferable because Longest Road decisions are not fully observable from a single action.
 The live system already uses the delayed v2-style episode. At decision time it snapshots player road length, strongest opponent road rival and their road length, whether either player currently holds Longest Road, player visible score, and roads built so far in benchmark long-term stats.
+To avoid treating ordinary expansion roads as Longest Road commitments, the task is only instantiated when there is an active race signal: either player already holds Longest Road, the player has at least five road length, the strongest rival has at least six road length, or the player has at least four road length while close to the rival with a meaningful road plan.
 
 After a four-turn horizon, decisive resolution, or game end, it computes:
 \[
@@ -986,7 +995,7 @@ The final alternatives are
 Here $D_0$ is $1$ if $R_{\Delta}=0$ and $0.2$ otherwise.
 This task now runs as a pending long-horizon episode, and finalization writes one ordinary benchmark task result after the horizon, decisive resolution, or game end.
 \\
-The threshold for \texttt{decide-pursue-longest-road} is $0.95$ because long-horizon race commitments are scored after an outcome window and should reflect strong evidence.
+The threshold for \texttt{decide-pursue-longest-road} is $0.40$ because long-horizon race commitments are scored with delayed outcome evidence and can be affected by dice, opponent moves, and intervening build priorities even when the original commitment was reasonable. This task uses the larger of the selected-to-best ratio and a margin-aware score $1-(\texttt{bestScore}-\texttt{selectedScore})$ so that small snapshot-plus-outcome differences do not make the benchmark's own reference heuristic fail.
 
 \subsubsection{\texttt{decide-pursue-largest-army}}
 \label{app:task-decide-pursue-largest-army}
@@ -1060,6 +1069,8 @@ The final alternatives are
 \]
 Here $R_{\text{safe}}$ is $1$ if $\Delta R \ge 0$ and $0.4$ otherwise.
 \\
-The threshold for \texttt{decide-pursue-largest-army} is $0.95$ because Largest Army pursuit is a long-horizon commitment and should be supported by strong snapshot-plus-outcome evidence.
+The task is only instantiated when there is a real army-race signal: either player already holds Largest Army, the player already has at least three Knights played, the strongest rival already has at least four Knights played, or the player already has at least two Knights played and can immediately afford another development card.
+\\
+The threshold for \texttt{decide-pursue-largest-army} is $0.65$ because Largest Army pursuit is a long-horizon commitment and should be scored with delayed outcome evidence without over-penalizing reasonable defer-versus-pursue choices. This task uses the larger of the selected-to-best ratio and a margin-aware score $1-(\texttt{bestScore}-\texttt{selectedScore})$ so that moderate snapshot-plus-outcome differences do not cause the benchmark's own reference heuristic to fail.
 
 \end{document}

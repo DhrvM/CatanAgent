@@ -51,7 +51,9 @@ case "$agent_type" in
     ;;
 esac
 
-if command -v python3 >/dev/null 2>&1; then
+if [[ -x ".venv/bin/python" ]]; then
+  python_bin=".venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
   python_bin="python3"
 elif command -v python >/dev/null 2>&1; then
   python_bin="python"
@@ -59,6 +61,9 @@ else
   echo "Could not find python3 or python on PATH." >&2
   exit 1
 fi
+
+echo "[start_agent] using python: $python_bin" >&2
+echo "[start_agent] mode=$mode game_code=$game_code name=$name" >&2
 
 exec "$python_bin" -m Agent.main \
   --mode "$mode" \
