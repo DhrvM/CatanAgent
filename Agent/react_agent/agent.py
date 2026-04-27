@@ -101,6 +101,7 @@ class ReactCatanAgent:
 
         # off-turn trade reactivity (avoid duplicate responses to same offer)
         self._last_reactive_offer_sig: Optional[str] = None
+        self._last_discard_sig: Optional[str] = None
 
         # avoid repeating failed placements in one ReAct turn
         self._failed_placements: set = set()
@@ -108,6 +109,7 @@ class ReactCatanAgent:
         # per ReAct turn: throttle summary spam; auto end_turn after lone propose_trade
         self._summary_calls_this_turn: int = 0
         self._propose_trade_awaiting_end: bool = False
+        self._proposed_trade_this_turn: bool = False
 
     # ──────────────────────────────────────────────────────────────
     # public entry
@@ -135,6 +137,7 @@ class ReactCatanAgent:
                         continue
 
                     if not is_my_turn(state):
+                        self._handle_offturn_discard_if_needed(state)
                         self._handle_reactive_trade_offer(state)
                         # Even when not our turn, feed server events to summarizer
                         self._sync_events()
@@ -182,6 +185,7 @@ class ReactCatanAgent:
         self._failed_placements.clear()
         self._summary_calls_this_turn = 0
         self._propose_trade_awaiting_end = False
+        self._proposed_trade_this_turn = False
 
         # 1. Observe
         processed = self.processor.process(initial_state)
@@ -274,15 +278,55 @@ class ReactCatanAgent:
             # 4. Execute ALL tool calls and feed results back
             success_non_observe: set = set()
             propose_trade_succeeded = False
+            block_remaining_calls = False
 
             for tc in tool_calls:
                 name = tc["name"]
                 args = tc["arguments"]
                 tc_id = tc["id"]
 
+                if block_remaining_calls:
+                    result = {
+                        "success": False,
+                        "error": (
+                            "Skipped: waiting for trade resolution/cancellation after propose_trade. "
+                            "No other actions are allowed in the meantime."
+                        ),
+                    }
+                    print(f"  [action] {name}({json.dumps(args, default=str)})")
+                    print(f"  [result] {json.dumps(result, default=str)}")
+                    self.stats.record_tool_call(name, success=False)
+                    self.summarizer.record_event(name, {
+                        "args": args,
+                        "success": False,
+                        "skipped_due_to_trade_wait": True,
+                    })
+                    messages.append(self.openai.build_tool_result_message(tc_id, result))
+                    continue
+
                 print(f"  [action] {name}({json.dumps(args, default=str)})")
 
                 result = self._react_validate_and_execute(name, args)
+
+                if (
+                    name == "propose_trade"
+                    and isinstance(result, dict)
+                    and bool(result.get("success", True))
+                ):
+                    wait_info = self._wait_for_trade_resolution_or_cancel(timeout_s=120.0, poll_s=1.0)
+                    result = dict(result)
+                    result["trade_wait"] = wait_info
+                    if wait_info.get("cancel_attempted"):
+                        cancel_success = bool(wait_info.get("cancel_success", False))
+                        self.stats.record_tool_call("cancel_trade", success=cancel_success)
+                        self.summarizer.record_event("cancel_trade", {
+                            "auto": True,
+                            "reason": "trade_wait_timeout",
+                            "success": cancel_success,
+                        })
+                    # Enforce "no other action while waiting for trade completion".
+                    block_remaining_calls = True
+
                 print(f"  [result] {json.dumps(result, default=str)}")
 
                 # Record stats
@@ -311,6 +355,7 @@ class ReactCatanAgent:
                     success_non_observe.add(name)
                 if name == "propose_trade" and success:
                     propose_trade_succeeded = True
+                    self._proposed_trade_this_turn = True
 
             other_substantive = {n for n in success_non_observe if n != "propose_trade"}
             if propose_trade_succeeded and not turn_ended and not other_substantive:
@@ -527,6 +572,15 @@ class ReactCatanAgent:
                     "error": "propose_trade needs non-empty offer and request (positive amounts).",
                 }
 
+        if name == "get_trade_offer_status" and self._has_active_outgoing_trade(state):
+            return {
+                "success": False,
+                "error": (
+                    "An outgoing trade offer from you is still active. Do not poll get_trade_offer_status "
+                    "repeatedly; wait for acceptance/decline, and cancel only if it times out."
+                ),
+            }
+
         if name == "place_settlement":
             vk = args.get("vertex_key")
             if isinstance(vk, str):
@@ -599,7 +653,8 @@ class ReactCatanAgent:
         if name == "move_robber":
             sid = args.get("steal_from_player_id")
             if sid not in (None, ""):
-                if not self._is_valid_player_id(state, sid):
+                canonical_sid = self._resolve_player_id(state, sid)
+                if canonical_sid is None:
                     return {
                         "success": False,
                         "error": (
@@ -607,6 +662,8 @@ class ReactCatanAgent:
                             "from state.players[*].id (e.g. p1 or UUID), not display name."
                         ),
                     }
+                args = dict(args)
+                args["steal_from_player_id"] = canonical_sid
 
         result = self._registry.execute(name, args)
         success = bool(result.get("success", True)) if isinstance(result, dict) else False
@@ -653,9 +710,152 @@ class ReactCatanAgent:
         except Exception:
             return "State refresh after tool result: unavailable; call get_game_summary if needed."
 
+    @staticmethod
+    def _extract_active_trade_offer(state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not isinstance(state, dict):
+            return None
+        for key in ("activeTradeOffer", "tradeOffer", "currentTradeOffer"):
+            v = state.get(key)
+            if isinstance(v, dict):
+                return v
+        return None
+
+    def _has_active_outgoing_trade(self, state: Dict[str, Any]) -> bool:
+        offer = self._extract_active_trade_offer(state)
+        if not isinstance(offer, dict):
+            return False
+
+        players = state.get("players")
+        myi = state.get("myIndex")
+        my_id = None
+        if isinstance(players, list) and isinstance(myi, int) and 0 <= myi < len(players):
+            me = players[myi] if isinstance(players[myi], dict) else {}
+            my_id = me.get("id")
+
+        offer_from = offer.get("from")
+        if offer_from is None:
+            offer_from = offer.get("fromId")
+        if offer_from is None:
+            offer_from = offer.get("from_id")
+        if offer_from is None:
+            return False
+
+        candidates = set()
+        if isinstance(myi, int):
+            candidates.add(str(myi))
+        if my_id is not None:
+            candidates.add(str(my_id))
+        return str(offer_from) in candidates
+
+    def _wait_for_trade_resolution_or_cancel(
+        self, timeout_s: float = 120.0, poll_s: float = 1.0,
+    ) -> Dict[str, Any]:
+        """
+        After proposing a trade, block until it resolves.
+        If still unresolved after timeout_s, attempt cancel_trade.
+        """
+        deadline = time.time() + max(1.0, float(timeout_s))
+        sleep_s = max(0.2, float(poll_s))
+        while time.time() < deadline:
+            state = self.client.latest_state() or {}
+            if not self._has_active_outgoing_trade(state):
+                return {
+                    "resolved": True,
+                    "timed_out": False,
+                    "cancel_attempted": False,
+                }
+            time.sleep(sleep_s)
+
+        cancel_res = self._react_validate_and_execute("cancel_trade", {})
+        cancel_success = bool(isinstance(cancel_res, dict) and cancel_res.get("success", False))
+        return {
+            "resolved": False,
+            "timed_out": True,
+            "cancel_attempted": True,
+            "cancel_success": cancel_success,
+            "cancel_result": cancel_res,
+        }
+
     # ──────────────────────────────────────────────────────────────
     # Reactive/off-turn trade handling ("awake" behavior)
     # ──────────────────────────────────────────────────────────────
+    def _handle_offturn_discard_if_needed(self, state: Dict[str, Any]) -> None:
+        """
+        During a 7 discard window, non-current players may still be required to act.
+        Wake up and discard immediately when our player appears in discardingPlayers.
+        """
+        requirement = self._get_discard_requirement(state)
+        if requirement is None:
+            self._last_discard_sig = None
+            return
+
+        # Include hand snapshot to avoid repeating the exact same failed payload.
+        me = self._me(state)
+        hand = me.get("resources") if isinstance(me.get("resources"), dict) else {}
+        req_sig = json.dumps(
+            {"cards_to_discard": requirement, "hand": hand},
+            sort_keys=True,
+            default=str,
+        )
+        if req_sig == self._last_discard_sig:
+            return
+
+        actions = _build_discard_action(state)
+        if not actions:
+            print("  [awake] discard required but no valid discard payload computed")
+            self._last_discard_sig = req_sig
+            return
+
+        payload = actions[0].payload if isinstance(actions[0].payload, dict) else {}
+        resources = payload.get("resources") if isinstance(payload.get("resources"), dict) else {}
+        if not resources:
+            print("  [awake] discard required but discard payload is empty")
+            self._last_discard_sig = req_sig
+            return
+
+        print(f"  [thought] I must discard {requirement} card(s) now, so I will discard from my largest piles.")
+        print(f"  [action] discard_cards({json.dumps({'resources': resources}, default=str)})")
+        result = self._react_validate_and_execute("discard_cards", {"resources": resources})
+        print(f"  [result] {json.dumps(result, default=str)}")
+
+        success = bool(isinstance(result, dict) and result.get("success", True))
+        self.stats.record_tool_call("discard_cards", success=success)
+        self.summarizer.record_event("discard_cards", {
+            "reactive": True,
+            "required_cards": requirement,
+            "resources": resources,
+            "success": success,
+        })
+
+        if success:
+            print("  [awake] discard=done")
+            self._last_discard_sig = None
+        else:
+            print(f"  [awake] discard=failed error={result}")
+            self._last_discard_sig = req_sig
+
+    @staticmethod
+    def _get_discard_requirement(state: Dict[str, Any]) -> Optional[int]:
+        if not isinstance(state, dict):
+            return None
+        if state.get("turnPhase") != "discard":
+            return None
+        discarding = state.get("discardingPlayers")
+        myi = state.get("myIndex")
+        if not isinstance(discarding, list) or not isinstance(myi, int):
+            return None
+        entry = next(
+            (d for d in discarding if isinstance(d, dict) and d.get("playerIndex") == myi),
+            None,
+        )
+        if not isinstance(entry, dict):
+            return None
+        try:
+            cards_to_discard = int(entry.get("cardsToDiscard", 0) or 0)
+        except Exception:
+            return None
+        return cards_to_discard if cards_to_discard > 0 else None
+
     def _handle_reactive_trade_offer(self, state: Dict[str, Any]) -> None:
         """
         React to incoming trade offers while off-turn.
@@ -946,3 +1146,49 @@ class ReactCatanAgent:
             if isinstance(p, dict) and p.get("id") is not None
         }
         return target in valid_ids
+
+    @staticmethod
+    def _resolve_player_id(state: Dict[str, Any], player_ref: Any) -> Optional[str]:
+        """
+        Resolve a player reference to canonical state.players[*].id.
+        Accepts canonical id directly, player display name, or numeric index.
+        """
+        players = state.get("players")
+        if not isinstance(players, list):
+            return None
+
+        ref = str(player_ref).strip()
+        if not ref:
+            return None
+
+        # 1) Canonical id already provided.
+        for p in players:
+            if not isinstance(p, dict):
+                continue
+            pid = p.get("id")
+            if pid is not None and str(pid) == ref:
+                return str(pid)
+
+        # 2) Player index provided (e.g., "1").
+        try:
+            idx = int(ref)
+        except Exception:
+            idx = None
+        if idx is not None and 0 <= idx < len(players):
+            p = players[idx]
+            if isinstance(p, dict) and p.get("id") is not None:
+                return str(p.get("id"))
+
+        # 3) Display name provided (case-insensitive).
+        ref_cf = ref.casefold()
+        for p in players:
+            if not isinstance(p, dict):
+                continue
+            name = p.get("name")
+            pid = p.get("id")
+            if name is None or pid is None:
+                continue
+            if str(name).strip().casefold() == ref_cf:
+                return str(pid)
+
+        return None
