@@ -33,6 +33,11 @@ retry the same vertex_key after \"Location occupied\" or \"Must be connected\".
 e.g. {\"brick\": 2}, {\"grain\": 1}.
 - Trade semantics: \"offer\" is what the proposer gives; \"request\" is what they want from you. \
 Evaluate net change to your hand before accepting.
+- Build/purchase costs (check hand before planning actions):
+  road = 1 brick + 1 lumber
+  settlement = 1 brick + 1 lumber + 1 wool + 1 grain
+  city upgrade = 3 ore + 2 grain
+  development card = 1 ore + 1 grain + 1 wool
 
 Always consider your long-term strategy: are you going for cities, longest road, \
 largest army, or a balanced approach?
