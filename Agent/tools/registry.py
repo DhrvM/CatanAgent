@@ -677,7 +677,7 @@ def build_tool_registry(
     def _get_game_summary() -> Dict[str, Any]:
         state = client.latest_state() or {}
         processed = processor.process(state)
-        return {"summary": processor.format_for_llm(processed, detail="compact")}
+        return {"summary": processor.format_for_llm(processed)}
 
     reg.register(ToolDefinition(
         name="get_game_summary",
