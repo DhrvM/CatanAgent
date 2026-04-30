@@ -29,6 +29,7 @@ function GameBoard({ socket, gameState, playerId, gameCode, chatMessages, onLeav
   const [lastNotifiedRoll, setLastNotifiedRoll] = useState(null);
   const [unreadMessages, setUnreadMessages] = useState(0);
   const [lastMessageCount, setLastMessageCount] = useState(0);
+  const [heuristicAgentCount, setHeuristicAgentCount] = useState(1);
 
   // Info popup for right-click
   const { popup: infoPopup, showInfo, showHexInfo, closePopup: closeInfoPopup } = useInfoPopup();
@@ -389,6 +390,17 @@ function GameBoard({ socket, gameState, playerId, gameCode, chatMessages, onLeav
     });
   }, [socket, addNotification]);
 
+  const handleAddHeuristicAgents = useCallback(() => {
+    socket.emit('addHeuristicAgents', { count: heuristicAgentCount }, (response) => {
+      if (response.success) {
+        const addedCount = response.addedAgents?.length || heuristicAgentCount;
+        addNotification(`Added ${addedCount} heuristic agent${addedCount === 1 ? '' : 's'}.`);
+      } else {
+        addNotification(response.error);
+      }
+    });
+  }, [socket, heuristicAgentCount, addNotification]);
+
   const handleSendChat = useCallback((message) => {
     socket.emit('chatMessage', { message });
   }, [socket]);
@@ -524,6 +536,31 @@ function GameBoard({ socket, gameState, playerId, gameCode, chatMessages, onLeav
                   >
                     🔀 Shuffle Board
                   </button>
+                  <div className="heuristic-agent-controls">
+                    <label htmlFor="heuristicAgentCount">Heuristic agents</label>
+                    <div className="heuristic-agent-row">
+                      <input
+                        id="heuristicAgentCount"
+                        type="number"
+                        min="1"
+                        max={Math.max(1, (gameState.maxPlayers || (gameState.isExtended ? 6 : 4)) - gameState.players.length)}
+                        value={heuristicAgentCount}
+                        onChange={(e) => {
+                          const maxToAdd = Math.max(1, (gameState.maxPlayers || (gameState.isExtended ? 6 : 4)) - gameState.players.length);
+                          const nextValue = Math.max(1, Math.min(Number(e.target.value) || 1, maxToAdd));
+                          setHeuristicAgentCount(nextValue);
+                        }}
+                        disabled={gameState.players.length >= (gameState.maxPlayers || (gameState.isExtended ? 6 : 4))}
+                      />
+                      <button
+                        className="add-agent-btn"
+                        onClick={handleAddHeuristicAgents}
+                        disabled={gameState.players.length >= (gameState.maxPlayers || (gameState.isExtended ? 6 : 4))}
+                      >
+                        Add
+                      </button>
+                    </div>
+                  </div>
                   <button
                     className="start-game-btn"
                     onClick={handleStartGame}

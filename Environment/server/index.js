@@ -225,7 +225,10 @@ const playerSockets = new Map();
 // Connection limits for free tier hosting (Render, Heroku, etc.)
 const MAX_CONCURRENT_GAMES = 10;
 const MAX_TOTAL_PLAYERS = 200;
+const BOT_ACTION_DELAY_MS = 450;
+const MAX_BOT_ACTIONS_PER_GAME_TICK = 40;
 let totalConnectedPlayers = 0;
+const botTurnTimers = new Map();
 
 // ============================================================================
 // AUTOMATIC CLEANUP
@@ -274,6 +277,8 @@ function broadcastGameState(gameId) {
       io.to(socketId).emit('gameState', playerView);
     }
   });
+
+  scheduleHeuristicBots(gameId);
 }
 
 /** Broadcast an event to all players in a game (same data to everyone) */
@@ -2043,6 +2048,298 @@ function maybeStartBenchmarkTurn(game) {
   benchmarkStore.startTurn(game, currentPlayer.id);
 }
 
+function isHeuristicBot(player) {
+  return Boolean(player?.isBot && player?.botType === 'heuristic');
+}
+
+function gameNeedsHeuristicBotAction(game) {
+  if (!game || game.phase === 'waiting' || game.phase === 'finished') return false;
+  if (game.turnPhase === 'discard') {
+    return (game.discardingPlayers || []).some(info => isHeuristicBot(game.players?.[info.playerIndex]));
+  }
+  if (game.turnPhase === 'specialBuild') {
+    return isHeuristicBot(game.players?.[game.specialBuildIndex]);
+  }
+  return isHeuristicBot(game.players?.[game.currentPlayerIndex]);
+}
+
+function scheduleHeuristicBots(gameId, delayMs = BOT_ACTION_DELAY_MS) {
+  const game = games.get(gameId);
+  if (!gameNeedsHeuristicBotAction(game) || botTurnTimers.has(gameId)) return;
+
+  const timer = setTimeout(() => {
+    botTurnTimers.delete(gameId);
+    runHeuristicBots(gameId).catch(error => {
+      console.error(`Heuristic bot error in game ${gameId}:`, error);
+    });
+  }, delayMs);
+  botTurnTimers.set(gameId, timer);
+}
+
+async function runHeuristicBots(gameId) {
+  const game = games.get(gameId);
+  if (!gameNeedsHeuristicBotAction(game)) return;
+
+  let acted = false;
+  for (let i = 0; i < MAX_BOT_ACTIONS_PER_GAME_TICK; i++) {
+    const result = performHeuristicBotAction(game);
+    if (!result?.success) break;
+    acted = true;
+    if (!gameNeedsHeuristicBotAction(game)) break;
+  }
+
+  if (acted) {
+    broadcastGameState(gameId);
+  }
+}
+
+function ensureBotState(game) {
+  if (!game.botState) {
+    game.botState = {
+      setupSettlements: {},
+    };
+  }
+  return game.botState;
+}
+
+function performHeuristicBotAction(game) {
+  if (!gameNeedsHeuristicBotAction(game)) {
+    return { success: false, error: 'No bot action needed' };
+  }
+
+  if (game.turnPhase === 'discard') {
+    const discardInfo = (game.discardingPlayers || []).find(info => isHeuristicBot(game.players?.[info.playerIndex]));
+    if (!discardInfo) return { success: false, error: 'No bot discard needed' };
+    const player = game.players[discardInfo.playerIndex];
+    return GameLogic.discardCards(game, player.id, chooseBotDiscard(player, discardInfo.cardsToDiscard));
+  }
+
+  if (game.turnPhase === 'specialBuild') {
+    const player = game.players?.[game.specialBuildIndex];
+    if (!isHeuristicBot(player)) return { success: false, error: 'No bot special build needed' };
+    performBotBuilds(game, player.id);
+    return GameLogic.endSpecialBuild(game, player.id);
+  }
+
+  const player = game.players?.[game.currentPlayerIndex];
+  if (!isHeuristicBot(player)) {
+    return { success: false, error: 'Current player is not a bot' };
+  }
+
+  if (game.phase === 'setup') {
+    return performBotSetupAction(game, player.id);
+  }
+
+  if (game.turnPhase === 'roll') {
+    return GameLogic.rollDice(game, player.id);
+  }
+
+  if (game.turnPhase === 'robber') {
+    const { hexKey, stealFromPlayerId } = chooseBotRobberMove(game);
+    return GameLogic.moveRobber(game, player.id, hexKey, stealFromPlayerId);
+  }
+
+  if (game.turnPhase === 'main') {
+    performBotBuilds(game, player.id);
+    return GameLogic.endTurn(game, player.id);
+  }
+
+  return { success: false, error: `Unsupported bot phase ${game.turnPhase}` };
+}
+
+function performBotSetupAction(game, playerId) {
+  const botState = ensureBotState(game);
+  const lastSettlement = botState.setupSettlements[playerId];
+
+  if (!lastSettlement) {
+    for (const vertexKey of rankBotSettlementVertices(game, playerId, true)) {
+      const result = GameLogic.placeSettlement(game, playerId, vertexKey);
+      if (result.success) {
+        botState.setupSettlements[playerId] = vertexKey;
+        return result;
+      }
+    }
+    return { success: false, error: 'Bot could not place setup settlement' };
+  }
+
+  for (const edgeKey of rankBotRoadEdges(game, playerId, true, lastSettlement)) {
+    const result = GameLogic.placeRoad(game, playerId, edgeKey, true, lastSettlement);
+    if (result.success) {
+      delete botState.setupSettlements[playerId];
+      return GameLogic.advanceSetup(game, playerId);
+    }
+  }
+  return { success: false, error: 'Bot could not place setup road' };
+}
+
+function performBotBuilds(game, playerId) {
+  const maxBuildActions = 6;
+  for (let i = 0; i < maxBuildActions; i++) {
+    const action = chooseBotBuildAction(game, playerId);
+    if (!action) return;
+
+    let result = null;
+    if (action.type === 'city') {
+      result = GameLogic.upgradeToCity(game, playerId, action.target);
+    } else if (action.type === 'settlement') {
+      result = GameLogic.placeSettlement(game, playerId, action.target);
+    } else if (action.type === 'road') {
+      result = GameLogic.placeRoad(game, playerId, action.target);
+    } else if (action.type === 'devCard') {
+      result = GameLogic.buyDevCard(game, playerId);
+    } else if (action.type === 'bankTrade') {
+      result = GameLogic.bankTrade(game, playerId, action.giveResource, action.giveAmount, action.getResource);
+    }
+
+    if (!result?.success) return;
+    if (game.phase === 'finished') return;
+  }
+}
+
+function chooseBotBuildAction(game, playerId) {
+  const playerIndex = game.players.findIndex(player => player.id === playerId);
+  const player = game.players[playerIndex];
+  if (!player) return null;
+
+  const cityTargets = Object.entries(game.vertices || {})
+    .filter(([, vertex]) => vertex?.building === 'settlement' && vertex.owner === playerIndex)
+    .map(([vertexKey]) => ({ target: vertexKey, score: scoreBotVertex(game, vertexKey) }))
+    .sort((a, b) => b.score - a.score);
+  if (hasBotResources(player, GameLogic.BUILDING_COSTS?.city || { ore: 3, grain: 2 }) && cityTargets.length) {
+    return { type: 'city', target: cityTargets[0].target };
+  }
+
+  const settlements = rankBotSettlementVertices(game, playerId, false);
+  if (hasBotResources(player, { brick: 1, lumber: 1, wool: 1, grain: 1 }) && settlements.length) {
+    return { type: 'settlement', target: settlements[0] };
+  }
+
+  const roads = rankBotRoadEdges(game, playerId, false);
+  if (hasBotResources(player, { brick: 1, lumber: 1 }) && roads.length) {
+    return { type: 'road', target: roads[0] };
+  }
+
+  const bankTrade = chooseBotBankTrade(game, player);
+  if (bankTrade) return bankTrade;
+
+  if (hasBotResources(player, { ore: 1, grain: 1, wool: 1 }) && (game.devCardDeck || []).length > 0) {
+    return { type: 'devCard' };
+  }
+
+  return null;
+}
+
+function chooseBotBankTrade(game, player) {
+  const targets = [
+    { resource: 'ore', wanted: 3 },
+    { resource: 'grain', wanted: 2 },
+    { resource: 'brick', wanted: 1 },
+    { resource: 'lumber', wanted: 1 },
+    { resource: 'wool', wanted: 1 },
+  ];
+  const need = targets.find(target => (player.resources?.[target.resource] || 0) < target.wanted)?.resource;
+  if (!need) return null;
+
+  for (const resource of RESOURCE_TYPES) {
+    if (resource === need) continue;
+    const amount = player.resources?.[resource] || 0;
+    if (amount >= 4) {
+      return {
+        type: 'bankTrade',
+        giveResource: resource,
+        giveAmount: 4,
+        getResource: need,
+      };
+    }
+  }
+  return null;
+}
+
+function chooseBotDiscard(player, cardsToDiscard) {
+  const discard = Object.fromEntries(RESOURCE_TYPES.map(resource => [resource, 0]));
+  let remaining = cardsToDiscard;
+  const resourcesByCount = RESOURCE_TYPES
+    .map(resource => ({ resource, count: player.resources?.[resource] || 0 }))
+    .sort((a, b) => b.count - a.count);
+
+  while (remaining > 0) {
+    const candidate = resourcesByCount.find(item => (player.resources[item.resource] - discard[item.resource]) > 0);
+    if (!candidate) break;
+    discard[candidate.resource]++;
+    remaining--;
+    resourcesByCount.sort((a, b) => (player.resources[b.resource] - discard[b.resource]) - (player.resources[a.resource] - discard[a.resource]));
+  }
+  return discard;
+}
+
+function chooseBotRobberMove(game) {
+  const currentIndex = game.currentPlayerIndex;
+  const candidates = Object.keys(game.hexes || {})
+    .filter(hexKey => hexKey !== game.robber)
+    .map(hexKey => {
+      const victimIndexes = GameLogic.getPlayersOnHex(game, hexKey, currentIndex)
+        .filter(index => !isHeuristicBot(game.players?.[currentIndex]) || index !== currentIndex);
+      const score = victimIndexes.reduce((sum, index) => {
+        const player = game.players[index];
+        return sum + (player?.victoryPoints || 0) + totalCards(player) * 0.1;
+      }, 0);
+      return { hexKey, victimIndexes, score };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  const pick = candidates[0] || { hexKey: Object.keys(game.hexes || {}).find(hexKey => hexKey !== game.robber), victimIndexes: [] };
+  const victimIndex = pick.victimIndexes
+    ?.sort((a, b) => (game.players[b]?.victoryPoints || 0) - (game.players[a]?.victoryPoints || 0))[0];
+
+  return {
+    hexKey: pick.hexKey,
+    stealFromPlayerId: Number.isInteger(victimIndex) ? game.players[victimIndex]?.id : null,
+  };
+}
+
+function rankBotSettlementVertices(game, playerId, isSetup) {
+  return Object.keys(game.vertices || {})
+    .filter(vertexKey => GameLogic.canPlaceSettlement(game, playerId, vertexKey, isSetup).valid)
+    .map(vertexKey => ({ vertexKey, score: scoreBotVertex(game, vertexKey) }))
+    .sort((a, b) => b.score - a.score)
+    .map(item => item.vertexKey);
+}
+
+function rankBotRoadEdges(game, playerId, isSetup, lastSettlement = null) {
+  return Object.keys(game.edges || {})
+    .filter(edgeKey => GameLogic.canPlaceRoad(game, playerId, edgeKey, isSetup, lastSettlement).valid)
+    .map(edgeKey => ({ edgeKey, score: Math.random() }))
+    .sort((a, b) => b.score - a.score)
+    .map(item => item.edgeKey);
+}
+
+function scoreBotVertex(game, vertexKey) {
+  const adjacentHexes = GameLogic.getVertexAdjacentHexes(game, vertexKey);
+  const resources = new Set();
+  let score = 0;
+
+  adjacentHexes.forEach(hex => {
+    if (!hex?.resource) return;
+    resources.add(hex.resource);
+    score += dicePipValue(hex.number);
+  });
+
+  return score + resources.size * 0.8;
+}
+
+function dicePipValue(number) {
+  if (!number || number === 7) return 0;
+  return 6 - Math.abs(7 - number);
+}
+
+function hasBotResources(player, costs) {
+  return Object.entries(costs).every(([resource, amount]) => (player.resources?.[resource] || 0) >= amount);
+}
+
+function totalCards(player) {
+  return Object.values(player?.resources || {}).reduce((sum, amount) => sum + amount, 0);
+}
+
 // ============================================================================
 // SOCKET.IO EVENT HANDLERS
 // ============================================================================
@@ -2143,6 +2440,70 @@ io.on('connection', (socket) => {
     // Notify all players
     broadcastToGame(gameCode.toUpperCase(), 'playerJoined', { playerName });
     broadcastGameState(gameCode.toUpperCase());
+  });
+
+  /** Add one or more server-controlled heuristic agents while waiting for players */
+  socket.on('addHeuristicAgents', async ({ count = 1 } = {}, callback) => {
+    const playerInfo = playerSockets.get(socket.id);
+    if (!playerInfo) {
+      callback({ success: false, error: 'Not in a game' });
+      return;
+    }
+
+    const game = games.get(playerInfo.gameId);
+    if (!game) {
+      callback({ success: false, error: 'Game not found' });
+      return;
+    }
+
+    if (game.players[0]?.id !== playerInfo.playerId) {
+      callback({ success: false, error: 'Only host can add heuristic agents' });
+      return;
+    }
+
+    if (game.phase !== 'waiting') {
+      callback({ success: false, error: 'Can only add heuristic agents before the game starts' });
+      return;
+    }
+
+    const seatsAvailable = game.maxPlayers - game.players.length;
+    if (seatsAvailable <= 0) {
+      callback({ success: false, error: 'Game is full' });
+      return;
+    }
+    const requestedCount = Math.max(1, Math.min(Number(count) || 1, seatsAvailable));
+
+    const addedAgents = [];
+    for (let i = 0; i < requestedCount; i++) {
+      const botNumber = game.players.filter(player => isHeuristicBot(player)).length + 1;
+      const playerId = uuidv4();
+      const playerName = `Heuristic Agent ${botNumber}`;
+      const result = GameLogic.addPlayer(game, { id: playerId, name: playerName });
+      if (!result.success) {
+        break;
+      }
+
+      const botPlayer = game.players[game.players.length - 1];
+      botPlayer.isBot = true;
+      botPlayer.botType = 'heuristic';
+      botPlayer.disconnected = false;
+      addedAgents.push({ id: playerId, name: playerName });
+
+      await ensureBenchmarkEnabled(game, playerId, playerName, game.players.length - 1, {
+        agentId: 'heuristic-agent',
+        agentVersion: 'server-js',
+      });
+    }
+
+    if (!addedAgents.length) {
+      callback({ success: false, error: 'No heuristic agents could be added' });
+      return;
+    }
+
+    console.log(`Added ${addedAgents.length} heuristic agent(s) to game ${playerInfo.gameId}`);
+    addedAgents.forEach(agent => broadcastToGame(playerInfo.gameId, 'playerJoined', { playerName: agent.name }));
+    broadcastGameState(playerInfo.gameId);
+    callback({ success: true, addedAgents, gameState: GameLogic.getPlayerView(game, playerInfo.playerId) });
   });
   
   // --------------------------------------------------------------------
