@@ -51,9 +51,13 @@ CATAN RULES REFERENCE (compact):
              * Year of Plenty = take any 2 resources from the bank;
              * Monopoly = take ALL of one resource from every opponent;
              * VP cards = +1 VP each (revealed on final turn only).
-- TRADING: bank default 4:1; generic port 3:1; specific-resource port 2:1.
-           Player-to-player trades must be agreed; you can only trade on
-           your own turn (others may only respond/counter).
+- TRADING: Strategy only states resource intent; Trading chooses whether to
+           use the bank, propose to players, respond/counter, or do nothing.
+           Bank trades give N of one resource for 1 of another.  N is dynamic:
+           default 4:1, generic port 3:1, specific-resource port 2:1 when our
+           buildings grant that port.  Use current tradeRatios/get_trade_options
+           as the authority.  Player-to-player trades must be agreed; on our
+           turn we may propose, while off-turn we may only respond/counter.
 - DISTANCE RULE: settlements cannot be placed adjacent to any other
                  building (minimum 2 edges apart).
 - SETUP: snake draft — each player places 2 settlements + 2 roads;
@@ -110,7 +114,9 @@ RULES:
 - If any opponent is at 8+ VP, shift aggressive (block them).
 - build_queue targets MUST be exact vertex/edge keys from the provided
   Available Building Spots — do NOT invent keys.
-- trade_policy must balance urgency with not feeding opponents.
+- trade_policy should only express resource intent: resources Trading may give,
+  resources we need, acceptable bank ratio, whether Trading may act, and accept
+  threshold.  Do not prescribe bank-vs-player mechanics; Trading owns that.
 - If unsure, prefer empty/conservative fields over hallucinating spots.
 - Respond with ONLY the JSON object, no surrounding prose, no markdown.
 """
@@ -151,9 +157,10 @@ You execute the turn by calling TOOLS.  There are three families:
        pass a single action ({{action,target,priority?}}) and it will be
        executed alone, or pass nothing to run the current plan's build
        queue as-is.  Returns per-action success/failure.
-   - delegate_trade()       : Trading Agent executes a full proactive
-       trade round under your current trade_policy.  BLOCKS (up to ~60s)
-       until any trade either completes, fails, or times out.
+   - delegate_trade()       : Trading Agent executes one proactive trade
+       decision under your current trade_policy, choosing bank trade, player
+       proposal, or no trade.  Returns immediately after a bank trade completes,
+       a player proposal is posted as pending, or no viable trade is found.
 
 3. DIRECT GAME TOOLS (registry):
    - get_building_spots / get_best_building_spots_ev / get_expected_income

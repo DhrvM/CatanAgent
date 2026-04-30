@@ -8,12 +8,11 @@ Trading Agent — GPT-4o tool-calling for trades (TODO.md).
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional
 
 from Agent.shared.base_agent import BaseAgent
-from Agent.shared.scratchpad import ActionRecord, Scratchpad, StrategyPlan, TradePolicy, TradeState
+from Agent.shared.scratchpad import ActionRecord, RiskAnalysis, Scratchpad, StrategyPlan, TradePolicy, TradeState
 from Agent.trading_agent.prompts import (
     TRADING_SYSTEM_PROMPT,
     build_awake_trade_user_message,
@@ -21,8 +20,6 @@ from Agent.trading_agent.prompts import (
 )
 
 RESOURCES = ["brick", "lumber", "wool", "grain", "ore"]
-TRADE_RESPONSE_TIMEOUT_SEC = 60
-TRADE_POLL_INTERVAL_SEC = 2
 
 _AWAKE_LLM_MAX_ROUNDS = 2
 _THOUGHT_LOG_CHARS = 200
@@ -136,7 +133,7 @@ class TradingAgent(BaseAgent):
             results["executed"].extend(llm_trace)
             results["source"] = "llm"
             if self._proactive_trace_has_completed_trade(llm_trace):
-                results["reason"] = "completed via LLM tool calls"
+                results["reason"] = "LLM executed a bank trade or posted a pending player proposal"
                 self._report_results(results)
                 return
 
@@ -200,6 +197,18 @@ class TradingAgent(BaseAgent):
             "short_term_goals": list(plan.short_term_goals or []),
             "long_term_goal": plan.long_term_goal,
             "risk_tolerance": plan.risk_tolerance,
+            "risk_context": self._compact_risk_context(),
+        }
+
+    def _compact_risk_context(self) -> Dict[str, Any]:
+        """Keep Trading's LLM context focused on opponent and win-risk signals."""
+        risk = self.scratchpad.risk_analysis
+        if not isinstance(risk, RiskAnalysis) or risk.updated_at <= 0:
+            return {}
+        return {
+            "top_opponent_threats": list(risk.opponent_threats or [])[:3],
+            "win_probabilities": dict(risk.win_probabilities or {}),
+            "threat_narrative": risk.threat_narrative,
         }
 
     def _proactive_trade_with_llm(self, policy: TradePolicy) -> List[Dict[str, Any]]:
@@ -278,7 +287,7 @@ class TradingAgent(BaseAgent):
                     "result": result,
                 }
                 if bool(result.get("success")):
-                    self._apply_proactive_tool_side_effects(name, args, policy, step)
+                    self._apply_proactive_tool_side_effects(name, args, step)
                 trace.append(step)
 
                 self.scratchpad.append_action(ActionRecord(
@@ -289,8 +298,8 @@ class TradingAgent(BaseAgent):
                     success=bool(result.get("success", True)),
                 ))
 
-                # One outgoing proposal is enough for this main-phase pass; avoid a no-op LLM round.
-                if name == "propose_trade" and bool(result.get("success")):
+                # One proactive trade decision per pass: bank, player proposal, or no-op.
+                if name in {"bank_trade", "propose_trade"} and bool(result.get("success")):
                     return trace
 
         return trace
@@ -299,7 +308,6 @@ class TradingAgent(BaseAgent):
         self,
         name: str,
         args: Dict[str, Any],
-        policy: TradePolicy,
         step: Dict[str, Any],
     ) -> None:
         """Update trade_state / reputation after a successful proactive tool."""
@@ -321,9 +329,10 @@ class TradingAgent(BaseAgent):
                 "request": dict(args.get("request") or {}),
                 "target": target,
                 "kind": "propose_llm",
+                "status": "pending_player_response",
             }
             self.scratchpad.write_trade_state(self.trade_state)
-            step["post_await"] = self._await_offer_response_or_timeout(policy)
+            step["status"] = "pending_player_response"
 
     def respond_to_offer(self) -> None:
         """
@@ -422,9 +431,9 @@ class TradingAgent(BaseAgent):
                         "request": counter_payload["request"],
                         "target": proposer,
                         "kind": "counter",
+                        "status": "pending_player_response",
                     }
                     self.scratchpad.write_trade_state(self.trade_state)
-                    counter_followup = self._await_offer_response_or_timeout(policy)
                 else:
                     action = "decline"
                     tool_result = self._exec_tool("respond_to_trade", {"accept": False})
@@ -433,12 +442,13 @@ class TradingAgent(BaseAgent):
         else:
             tool_result = self._exec_tool("respond_to_trade", {"accept": False})
 
-        self._record_trade_outcome(
-            counterpart=proposer,
-            offer=offer,
-            request=request,
-            accepted=action == "accept" and bool(tool_result.get("success", True)),
-        )
+        if action != "counter":
+            self._record_trade_outcome(
+                counterpart=proposer,
+                offer=offer,
+                request=request,
+                accepted=action == "accept" and bool(tool_result.get("success", True)),
+            )
 
         result = {
             "mode": "reactive",
@@ -451,8 +461,8 @@ class TradingAgent(BaseAgent):
         }
         if counter_payload:
             result["counter_offer"] = counter_payload
-            if "counter_followup" in locals():
-                result["counter_followup"] = counter_followup
+            if action == "counter" and bool(tool_result.get("success", False)):
+                result["status"] = "pending_player_response"
         self._report_trade_response(result)
         if bool(tool_result.get("success", True)) and action in ("accept", "decline", "counter"):
             self._last_awake_offer_sig = sig
@@ -489,6 +499,7 @@ class TradingAgent(BaseAgent):
             tp_dict,
             ts_dict,
             offer_ctx,
+            risk_context=self._compact_risk_context(),
         )
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": TRADING_SYSTEM_PROMPT},
@@ -596,16 +607,15 @@ class TradingAgent(BaseAgent):
             return
 
         if action == "counter_trade":
-            counter_followup: Optional[Dict[str, Any]] = None
             if bool(tool_result.get("success", False)):
                 self.trade_state.pending_offer = {
                     "offer": args.get("offer") or {},
                     "request": args.get("request") or {},
                     "target": proposer,
                     "kind": "counter_awake",
+                    "status": "pending_player_response",
                 }
                 self.scratchpad.write_trade_state(self.trade_state)
-                counter_followup = self._await_offer_response_or_timeout(policy)
             print("  [awake] decision=counter")
             out: Dict[str, Any] = {
                 "mode": "reactive_awake",
@@ -618,8 +628,8 @@ class TradingAgent(BaseAgent):
                 "tool_result": tool_result,
                 "counter_args": {"offer": args.get("offer"), "request": args.get("request")},
             }
-            if counter_followup is not None:
-                out["counter_followup"] = counter_followup
+            if bool(tool_result.get("success", False)):
+                out["status"] = "pending_player_response"
             self._report_trade_response(out)
             self.scratchpad.append_action(ActionRecord(
                 agent="trading",
@@ -697,16 +707,17 @@ class TradingAgent(BaseAgent):
                 "offer": {give: 1},
                 "request": {desired: 1},
                 "target": target,
+                "kind": "propose_heuristic",
+                "status": "pending_player_response",
             }
             self.scratchpad.write_trade_state(self.trade_state)
-            timeout_result = self._await_offer_response_or_timeout(policy)
             return {
                 "type": "player_trade",
                 "target": target,
                 "offer": {give: 1},
                 "request": {desired: 1},
                 "result": result,
-                "post_offer": timeout_result,
+                "status": "pending_player_response",
             }
         return {
             "type": "player_trade",
@@ -836,33 +847,41 @@ class TradingAgent(BaseAgent):
             return {"success": False, "error": f"tool registry unavailable for {name}"}
         return self.registry.execute(name, args)
 
-    def _await_offer_response_or_timeout(self, policy: TradePolicy) -> Dict[str, Any]:
-        """Wait for offer resolution; if stale at 60s, cancel and fallback."""
-        deadline = time.monotonic() + TRADE_RESPONSE_TIMEOUT_SEC
-        while time.monotonic() < deadline:
-            status = self._exec_tool("get_trade_offer_status", {})
-            has_offer = bool(status.get("has_offer", False))
-            from_me = bool(status.get("offer_from_me", False))
-            if not has_offer or not from_me:
-                self.trade_state.pending_offer = None
-                self.scratchpad.write_trade_state(self.trade_state)
-                return {
-                    "status": "resolved_before_timeout",
-                    "timeout_sec": TRADE_RESPONSE_TIMEOUT_SEC,
-                    "offer_status": status,
-                }
-            time.sleep(TRADE_POLL_INTERVAL_SEC)
+    def check_pending_offer(self) -> Dict[str, Any]:
+        """
+        Non-blocking status check called by Strategy after we post a player offer.
 
-        cancel_result = self._exec_tool("cancel_trade", {})
-        fallback_result = self._attempt_bank_trade(policy)
+        The current server status only exposes whether our outgoing offer still exists,
+        not whether it was accepted or declined, so resolved offers are reported as
+        outcome_unknown and the pending marker is cleared.
+        """
+        pending = self.trade_state.pending_offer
+        if not pending:
+            return {"success": True, "status": "none"}
+
+        status = self._exec_tool("get_trade_offer_status", {})
+        if not bool(status.get("success", True)):
+            return {"success": False, "status": "check_failed", "offer_status": status}
+
+        has_offer = bool(status.get("has_offer", False))
+        from_me = bool(status.get("offer_from_me", False))
+        if has_offer and from_me:
+            return {
+                "success": True,
+                "status": "pending_player_response",
+                "offer_status": status,
+            }
+
+        resolved = {
+            "success": True,
+            "status": "resolved_outcome_unknown",
+            "pending_offer": dict(pending),
+            "offer_status": status,
+        }
         self.trade_state.pending_offer = None
         self.scratchpad.write_trade_state(self.trade_state)
-        return {
-            "status": "timeout",
-            "timeout_sec": TRADE_RESPONSE_TIMEOUT_SEC,
-            "cancel_result": cancel_result,
-            "fallback": fallback_result or {"type": "none"},
-        }
+        self._report_results({"mode": "pending_followup", **resolved})
+        return resolved
 
     def _extract_offer_proposer(self, offer_state: Dict[str, Any]) -> str:
         for key in ("from", "from_id", "fromId", "proposer", "player"):

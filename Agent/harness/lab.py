@@ -15,7 +15,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 try:
@@ -29,10 +29,24 @@ from Agent.harness import scenarios as S
 from Agent.shared.base_agent import BaseAgent
 from Agent.shared.scratchpad import Scratchpad, StrategyPlan, TradePolicy
 from Agent.utils.game_state_processor import GameStateProcessor
+from Agent.utils.stats_tracker import AgentStatsTracker
 from Agent.tools.registry import build_tool_registry
 
 from Agent.trading_agent.agent import TradingAgent, extract_incoming_offer_for_me
 from Agent.development_agent.agent import DevelopmentAgent
+from Agent.strategy_agent.agent import StrategyAgent
+
+
+def _configure_console_output() -> None:
+    """Avoid Windows cp1252 crashes when harness output includes arrows."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+_configure_console_output()
 
 
 # ── Harness LLM (set by configure_harness before any check runs) ─────────────
@@ -379,6 +393,125 @@ def check_development_build_queue() -> CheckResult:
     return CheckResult("development_build_queue", ok, f"action_log={logged}; socket={events}")
 
 
+def check_state_json_board_block() -> CheckResult:
+    _banner("10) [Scratchpad] state_json.board — full board serialization")
+    st = S.state_for_board_block_and_validation()
+    sp, mock, proc, reg = _make_env(st)
+    state_json = sp.to_state_json()
+    board = state_json.get("board") if isinstance(state_json.get("board"), dict) else {}
+    hexes = board.get("hexes") if isinstance(board.get("hexes"), list) else []
+    buildings = board.get("buildings") if isinstance(board.get("buildings"), list) else []
+    roads = board.get("roads") if isinstance(board.get("roads"), list) else []
+
+    robber_hex = next((h for h in hexes if h.get("key") == st["robber"]), None)
+    lumber_8 = next((h for h in hexes if h.get("key") == "0,-1"), None)
+    building_vertices = {b.get("vertex"): b for b in buildings}
+    road_edges = {r.get("edge"): r for r in roads}
+
+    ok = (
+        len(hexes) == len(st["hexes"])
+        and robber_hex is not None
+        and robber_hex.get("has_robber") is True
+        and lumber_8 is not None
+        and lumber_8.get("pips") == 5
+        and {"v_0_-1_0", "v_1_-1_3", "v_1_0_0"}.issubset(building_vertices)
+        and all(building_vertices[v].get("production") for v in ("v_0_-1_0", "v_1_-1_3", "v_1_0_0"))
+        and road_edges.get("e_0_-1_1", {}).get("owner_index") == 0
+    )
+    detail = (
+        f"hexes={len(hexes)}/{len(st['hexes'])}; "
+        f"buildings={sorted(building_vertices)}; "
+        f"roads={sorted(road_edges)}; "
+        f"robber={robber_hex}"
+    )
+    return CheckResult("state_json_board_block", bool(ok), detail)
+
+
+def check_strategy_validates_build_queue() -> CheckResult:
+    _banner("11) [Strategy] build queue target validation — no LLM")
+    sp, mock, proc, reg = _make_env(S.state_for_board_block_and_validation())
+    strat = StrategyAgent(
+        sp,
+        StubOpenAIClient(),
+        mock,
+        proc,
+        reg,
+        AgentStatsTracker("strategy-harness"),
+    )
+    queue = [
+        {"action": "place_settlement", "target": "v_0_-1_2", "priority": 1},
+        {"action": "place_settlement", "target": "v_1_0_0", "priority": 2},
+        {"action": "upgrade_to_city", "target": "v_99_99_9", "priority": 3},
+        {"action": "buy_dev_card", "target": None, "priority": 4},
+    ]
+    valid, errors = strat._validate_build_queue(queue)
+    valid_actions = [(v.get("action"), v.get("target")) for v in valid]
+    error_by_target = {e.get("target"): e.get("reason") for e in errors}
+    ok = (
+        valid_actions == [("place_settlement", "v_0_-1_2"), ("buy_dev_card", None)]
+        and error_by_target.get("v_1_0_0") == "vertex already occupied"
+        and error_by_target.get("v_99_99_9") == "vertex not on board"
+    )
+    return CheckResult(
+        "strategy_build_queue_validation",
+        bool(ok),
+        f"valid={valid_actions}; errors={error_by_target}",
+    )
+
+
+def check_strategy_plan_uses_board_data() -> CheckResult:
+    mode = "mock" if _harness_mock else "OpenAI (real planning)"
+    _banner(f"12) [Strategy] plan uses board data — {mode}")
+    if _harness_mock:
+        return CheckResult(
+            "strategy_plan_uses_board_data",
+            True,
+            "skipped under --mock; run without --mock for live planner assertion",
+        )
+
+    st = S.state_for_board_block_and_validation()
+    sp, mock, proc, reg = _make_env(st)
+    strat = StrategyAgent(
+        sp,
+        _llm(),
+        mock,
+        proc,
+        reg,
+        AgentStatsTracker("strategy-harness"),
+    )
+    try:
+        strat._plan(st)
+    except Exception as e:
+        return CheckResult("strategy_plan_uses_board_data", False, str(e))
+
+    plan = sp.strategy_plan
+    aggressive = plan.risk_tolerance == "aggressive" or plan.long_term_goal != "balanced"
+    vertices = set((st.get("vertices") or {}).keys())
+    edges = set((st.get("edges") or {}).keys())
+
+    bad_targets: List[str] = []
+    for item in plan.build_queue or []:
+        if not isinstance(item, dict):
+            continue
+        target = item.get("target")
+        if not target:
+            continue
+        target = str(target)
+        if target.startswith("v_") and target not in vertices:
+            bad_targets.append(target)
+        elif target.startswith("e_") and target not in edges:
+            bad_targets.append(target)
+        elif not target.startswith(("v_", "e_")):
+            bad_targets.append(target)
+
+    ok = aggressive and not bad_targets
+    detail = (
+        f"plan={asdict(plan)}; "
+        f"aggressive_or_shifted={aggressive}; bad_targets={bad_targets}"
+    )
+    return CheckResult("strategy_plan_uses_board_data", bool(ok), detail)
+
+
 ALL_CHECKS: List[Callable[[], CheckResult]] = [
     check_trading_incoming_detection,
     check_trading_proactive_live,
@@ -389,6 +522,9 @@ ALL_CHECKS: List[Callable[[], CheckResult]] = [
     check_development_discard_llm,
     check_development_robber_llm,
     check_development_build_queue,
+    check_state_json_board_block,
+    check_strategy_validates_build_queue,
+    check_strategy_plan_uses_board_data,
 ]
 
 CHECKS_BY_ID: Dict[str, Callable[[], CheckResult]] = {
@@ -405,6 +541,9 @@ SCENARIO_ALIASES: Dict[str, str] = {
     "d1": "7",
     "d2": "8",
     "d3": "9",
+    "d4": "10",
+    "d5": "11",
+    "s1": "12",
 }
 
 
@@ -450,8 +589,13 @@ def _print_scenario_menu() -> None:
         "  7  (d1)  Discard phase — LLM + discard_cards",
         "  8  (d2)  Robber phase — LLM + move_robber",
         "  9  (d3)  Build queue — registry tools (no LLM)",
+        " 10  (d4)  Scratchpad board block — state_json.board",
+        " 11  (d5)  Strategy build queue validation — no LLM",
         "",
-        "Commands: 1–9 | t1–t6 | d1–d3 | all | help | quit",
+        "Strategy — StrategyAgent",
+        " 12  (s1)  Plan uses board data — live OpenAI only",
+        "",
+        "Commands: 1–12 | t1–t6 | d1–d5 | s1 | all | help | quit",
         "",
     ]
     print("\n".join(lines))

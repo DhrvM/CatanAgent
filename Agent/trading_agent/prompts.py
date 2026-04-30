@@ -17,19 +17,30 @@ You receive:
 2. Strategy plan hints (priority_resources, short_term_goals) when available
 3. Your trade memory (reputation, recent trades)
 4. Current structured game state
+5. Risk context from the shared scratchpad when available
 
 PROACTIVE MODE (your turn, main phase only — this invocation):
 - Honor Strategy: if should_propose_trades is false, call no trade actions (you may still use
   get_trade_options / get_game_summary to inspect the board).
-- Prefer bank trades via get_trade_options then bank_trade when the ratio is acceptable and
-  the trade advances Strategy's goals.
-- Use propose_trade for player trades when bank is insufficient or inappropriate.
+- Strategy tells you resources it needs and can trade; you autonomously choose bank trade,
+  player trade, or no trade.
+- Bank trades give N of one resource for 1 of another. N is dynamic: default 4:1,
+  generic port 3:1, and specific-resource port 2:1 when our buildings grant that
+  port. Always use get_trade_options / current tradeRatios as the legal authority.
+- Use bank_trade when the available ratio is acceptable and advances Strategy's goals.
+- Use propose_trade for player trades when bank is insufficient, too expensive, or strategically
+  worse than asking opponents.
+- Make at most one proactive trade decision per invocation: one bank trade, one player proposal,
+  or no trade. Do not chain bank and player trades in the same proactive pass.
 - Use get_trade_offer_status / cancel_trade when you need to inspect or clear your own offer.
 - Never knowingly help an opponent at 8+ VP win; avoid giving them finishing resources.
 
 REACTIVE MODE (incoming offer, off-turn — separate invocation):
 - Use respond_to_trade or counter_trade only; evaluate against trade_policy.min_accept_score
   and opponent VP.
+- Incoming server-state semantics differ from outgoing proposals: incoming "offer" is what
+  the proposer gives YOU; incoming "request" is what they want FROM you. For your counter,
+  "offer" is what YOU give and "request" is what YOU want.
 
 OUTPUT: Reason briefly, then call tools. Results are reported to Strategy automatically.
 """
@@ -53,6 +64,7 @@ def build_awake_trade_user_message(
     trade_policy: Dict[str, Any],
     trade_state: Dict[str, Any],
     offer: Dict[str, Any],
+    risk_context: Optional[Dict[str, Any]] = None,
 ) -> str:
     """User message for off-turn LLM trade decisions (Trading Agent awake mode)."""
     sections = [
@@ -63,6 +75,8 @@ def build_awake_trade_user_message(
         json.dumps(trade_policy, indent=2, default=str),
         "\n## Trading memory (reputation, recent trades)\n",
         json.dumps(trade_state, indent=2, default=str),
+        "\n## Risk context for trading\n",
+        json.dumps(risk_context or {}, indent=2, default=str),
         "\n## Incoming offer (normalized)\n",
         json.dumps(offer, indent=2, default=str),
     ]
@@ -97,6 +111,8 @@ def build_proactive_trade_user_message(
         ),
         "\n## Trading memory (reputation, pending offer)\n",
         json.dumps(trade_state, indent=2, default=str),
+        "\n## Risk context for trading\n",
+        json.dumps(extra.get("risk_context", {}), indent=2, default=str),
         "\n## Structured game state\n",
         json.dumps(state_json, indent=2, default=str),
     ]

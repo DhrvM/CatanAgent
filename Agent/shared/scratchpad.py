@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional
 
-from Agent.utils.game_state_processor import GameStateProcessor, RESOURCES
+from Agent.utils.game_state_processor import GameStateProcessor, PIPS, RESOURCES
 
 
 # ── Sub-schemas (agent-produced data) ─────────────────────────────
@@ -286,6 +286,73 @@ class Scratchpad:
 
         # Active trade
         trade_offer = processed.get("trade_offer")
+        players = raw.get("players") if isinstance(raw.get("players"), list) else []
+        hexes = raw.get("hexes") if isinstance(raw.get("hexes"), dict) else {}
+        vertices = raw.get("vertices") if isinstance(raw.get("vertices"), dict) else {}
+        edges = raw.get("edges") if isinstance(raw.get("edges"), dict) else {}
+        robber = raw.get("robber")
+
+        def owner_name(owner_index: Any) -> str:
+            try:
+                idx = int(owner_index)
+            except (TypeError, ValueError):
+                return ""
+            if 0 <= idx < len(players) and isinstance(players[idx], dict):
+                return str(players[idx].get("name") or f"Player{idx}")
+            return f"Player{idx}"
+
+        board_hexes: List[Dict[str, Any]] = []
+        for hk, h in hexes.items():
+            if not isinstance(h, dict):
+                continue
+            resource = h.get("resource")
+            if not resource:
+                continue
+            number = h.get("number")
+            board_hexes.append({
+                "key": hk,
+                "resource": resource,
+                "number": number,
+                "has_robber": hk == robber,
+                "pips": PIPS.get(int(number), 0) if isinstance(number, int) else 0,
+            })
+
+        board_buildings: List[Dict[str, Any]] = []
+        for vk, v in vertices.items():
+            if not isinstance(v, dict):
+                continue
+            owner = v.get("owner")
+            building = v.get("building")
+            if owner is None or not building:
+                continue
+            try:
+                owner_index = int(owner)
+            except (TypeError, ValueError):
+                continue
+            board_buildings.append({
+                "vertex": vk,
+                "owner_index": owner_index,
+                "owner_name": owner_name(owner_index),
+                "type": building,
+                "production": processor._vertex_production(vk, hexes),
+            })
+
+        board_roads: List[Dict[str, Any]] = []
+        for ek, e in edges.items():
+            if not isinstance(e, dict):
+                continue
+            owner = e.get("owner")
+            if owner is None:
+                continue
+            try:
+                owner_index = int(owner)
+            except (TypeError, ValueError):
+                continue
+            board_roads.append({
+                "edge": ek,
+                "owner_index": owner_index,
+                "owner_name": owner_name(owner_index),
+            })
 
         return {
             "meta": {
@@ -331,6 +398,11 @@ class Scratchpad:
                 "longest_road": processed.get("longest_road", {}),
                 "largest_army": processed.get("largest_army", {}),
                 "dev_cards_remaining": processed.get("dev_cards_remaining", 0),
+            },
+            "board": {
+                "hexes": board_hexes,
+                "buildings": board_buildings,
+                "roads": board_roads,
             },
             "risk_summary": risk_summary,
             "active_trade": trade_offer,
