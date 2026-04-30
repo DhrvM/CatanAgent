@@ -10,7 +10,7 @@ import { BENCHMARK_WEIGHTS } from './benchmarkDefinitions.js';
 const choiceOptions = [
   { id: 'best', score: 1 },
   { id: 'near', score: 0.91 },
-  { id: 'bad', score: 0.3 },
+  { id: 'bad', score: 0.2 },
 ];
 
 const messageChecks = (overrides = {}) => ({

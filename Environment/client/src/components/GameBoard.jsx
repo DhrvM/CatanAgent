@@ -90,26 +90,27 @@ function GameBoard({ socket, gameState, playerId, gameCode, chatMessages, onLeav
   useEffect(() => {
     const handleResourcesDistributed = ({ fromRoll, allGains }) => {
       const resourceNames = { brick: '🧱', lumber: '🪵', wool: '🐑', grain: '🌾', ore: '⛏️' };
-
-      allGains.forEach(({ playerName, playerId: gainPlayerId, gains }) => {
+      const gainSummaries = allGains.map(({ playerName, playerId: gainPlayerId, gains }) => {
         const gainsList = Object.entries(gains)
           .filter(([_, amount]) => amount > 0)
           .map(([resource, amount]) => `${resourceNames[resource]}${amount}`)
           .join(' ');
 
-        if (gainPlayerId === playerId) {
-          // Your own gains
-          addNotification(`🎲 You received: ${gainsList}`);
-        } else {
-          // Other player's gains
-          addNotification(`🎲 ${playerName} received: ${gainsList}`);
-        }
-      });
+        if (!gainsList) return null;
+        const name = gainPlayerId === playerId ? 'You' : playerName;
+        return `${name}: ${gainsList}`;
+      }).filter(Boolean);
+
+      if (gainSummaries.length) {
+        addNotification(`🎲 Roll ${fromRoll}: ${gainSummaries.join('  |  ')}`, {
+          roundNumber: gameState.roundNumber,
+        });
+      }
     };
 
     socket.on('resourcesDistributed', handleResourcesDistributed);
     return () => socket.off('resourcesDistributed', handleResourcesDistributed);
-  }, [socket, playerId, addNotification]);
+  }, [socket, playerId, addNotification, gameState.roundNumber]);
 
   // Listen for steal notifications
   useEffect(() => {
@@ -239,7 +240,10 @@ function GameBoard({ socket, gameState, playerId, gameCode, chatMessages, onLeav
       // Only notify for 7 (robber) - regular rolls are shown in the dice display
       if (rollKey !== lastNotifiedRoll && gameState.diceRoll.total === 7) {
         const roller = gameState.players[gameState.currentPlayerIndex];
-        addNotification(`⚠️ ${roller.name} rolled a 7! Move the robber.`);
+        const message = gameState.currentPlayerIndex === gameState.myIndex
+          ? '⚠️ You rolled a 7! Move the robber.'
+          : `⚠️ ${roller.name} rolled a 7 and will move the robber.`;
+        addNotification(message, { roundNumber: gameState.roundNumber });
         setLastNotifiedRoll(rollKey);
       } else if (rollKey !== lastNotifiedRoll) {
         setLastNotifiedRoll(rollKey);

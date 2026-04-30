@@ -105,6 +105,9 @@ class CatanSocketClient:
     def end_turn(self):
         return self.sio.call("endTurn", timeout=10)
 
+    def call(self, event: str, payload: Optional[Dict[str, Any]] = None, timeout: float = 10):
+        return self.sio.call(event, payload or {}, timeout=timeout)
+
     # ── event history ────────────────────────────────────────
     def _record_event(self, event_type: str, data: Any) -> None:
         with self._event_lock:

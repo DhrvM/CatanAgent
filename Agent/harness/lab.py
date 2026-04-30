@@ -29,7 +29,7 @@ from Agent.harness import scenarios as S
 from Agent.shared.base_agent import BaseAgent
 from Agent.shared.scratchpad import Scratchpad, StrategyPlan, TradePolicy
 from Agent.utils.game_state_processor import GameStateProcessor
-from Agent.tools.registry import build_tool_registry
+from Agent.Tools.registry import build_tool_registry
 
 from Agent.trading_agent.agent import TradingAgent, extract_incoming_offer_for_me
 from Agent.development_agent.agent import DevelopmentAgent
