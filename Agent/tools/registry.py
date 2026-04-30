@@ -22,6 +22,9 @@ from Agent.tools.game_tools import (
     _score_vertex_for_city,
     _ranked_setup_settlements,
     _ranked_setup_roads,
+    ranked_main_settlement_vertices,
+    projected_settlement_vertices_after_one_road,
+    _can_afford_settlement,
     _build_discard_action,
     _bank_trade_actions,
     _me,
@@ -533,19 +536,51 @@ def build_tool_registry(
             spots = ranked_main_road_edges(state, myi, top_k=40)
             return {"building_type": "road", "spots": spots}
 
-        ranked = _ranked_setup_settlements(state, top_k=10)
-        spots = []
+        spots: List[Dict[str, Any]] = []
         hexes = state.get("hexes") or {}
-        for vk in ranked:
-            score = _score_vertex_for_setup(state, vk)
+        if state.get("phase") == "setup":
+            ranked = _ranked_setup_settlements(state, top_k=10)
+            for vk in ranked:
+                score = _score_vertex_for_setup(state, vk)
+                prod = processor._vertex_production(vk, hexes)
+                spots.append({"vertex": vk, "score": round(score, 2), "production": prod})
+            return {"building_type": "settlement", "spots": spots}
+
+        if not isinstance(myi, int):
+            return {"building_type": "settlement", "spots": []}
+
+        affordable_now = _can_afford_settlement(state, myi)
+        ranked_legal = ranked_main_settlement_vertices(state, myi, top_k=20)
+        for item in ranked_legal:
+            vk = item.get("vertex")
+            if not isinstance(vk, str):
+                continue
             prod = processor._vertex_production(vk, hexes)
-            spots.append({"vertex": vk, "score": round(score, 2), "production": prod})
-        return {"building_type": "settlement", "spots": spots}
+            spots.append({
+                "vertex": vk,
+                "score": item.get("score", 0.0),
+                "base_score": item.get("base_score", 0.0),
+                "horizon_score": item.get("horizon_score", 0.0),
+                "affordable_now": affordable_now,
+                "production": prod,
+            })
+
+        payload: Dict[str, Any] = {
+            "building_type": "settlement",
+            "spots": spots,
+            "affordable_now": affordable_now,
+        }
+        if not affordable_now:
+            payload["note"] = (
+                "Settlement spots are legal by board position, but you cannot afford a "
+                "settlement yet; gather resources first."
+            )
+        return payload
 
     reg.register(ToolDefinition(
         name="get_building_spots",
         description=(
-            "List the best legal spots to build. Returns vertices ranked by production score. "
+            "List legal spots to build now. For settlement/city returns vertices ranked by score; "
             "Use building_type='settlement', 'city', or 'road' (for main phase edges to place_road). "
             "NOTE: The server still validates legality — some spots may be already taken."
         ),
@@ -555,6 +590,47 @@ def build_tool_registry(
         ],
         handler=_get_building_spots,
         phases=["main", "setup"],
+        agents=["strategy", "development"],
+    ))
+
+    # ── 13b. get_settlement_horizon_spots ────────────────────────
+    def _get_settlement_horizon_spots() -> Dict[str, Any]:
+        state = client.latest_state() or {}
+        myi = state.get("myIndex")
+        if not isinstance(myi, int):
+            return {"spots": []}
+
+        hexes = state.get("hexes") or {}
+        future_spots = projected_settlement_vertices_after_one_road(state, myi, top_k=12)
+        spots: List[Dict[str, Any]] = []
+        for item in future_spots:
+            vk = item.get("vertex")
+            if not isinstance(vk, str):
+                continue
+            prod = processor._vertex_production(vk, hexes)
+            spots.append({
+                "vertex": vk,
+                "score": item.get("score", 0.0),
+                "reachable_via_edges": item.get("reachable_via_edges", []),
+                "production": prod,
+            })
+        return {
+            "spots": spots,
+            "note": (
+                "Projected expansion targets: settlement vertices that can become reachable "
+                "after placing one legal connecting road."
+            ),
+        }
+
+    reg.register(ToolDefinition(
+        name="get_settlement_horizon_spots",
+        description=(
+            "Plan expansion horizon: show promising settlement vertices that can be opened "
+            "after one additional legal road."
+        ),
+        parameters=[],
+        handler=_get_settlement_horizon_spots,
+        phases=["main"],
         agents=["strategy", "development"],
     ))
 
