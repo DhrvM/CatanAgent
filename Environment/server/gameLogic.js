@@ -216,14 +216,11 @@ const PORT_POSITIONS_EXTENDED = [
 // UTILITY FUNCTIONS
 // ============================================================================
 
-/** Fisher-Yates shuffle algorithm - returns a new shuffled array 
- * Update:
- * uses a deterministic pseudo-random generator (Mulberry32)
- * to ensure the same shuffle is used for the same seed
- * this is important for the game to be deterministic
- * and for the same game to be played multiple times by the Agent
-*/
-function shuffle(array, seed = 1) {
+/** Fisher-Yates shuffle algorithm - returns a new shuffled array.
+ * Pass a numeric seed when deterministic ordering is needed; otherwise
+ * Math.random() gives each new game a fresh board and dev-card deck.
+ */
+function shuffle(array, seed) {
   function mulberry32(a) {
     return function() {
       let t = a += 0x6D2B79F5;
@@ -232,7 +229,7 @@ function shuffle(array, seed = 1) {
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
   }
-  const rng = mulberry32(seed);
+  const rng = Number.isFinite(seed) ? mulberry32(seed) : Math.random;
   const shuffled = [...array];
   for (let i = shuffled.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
