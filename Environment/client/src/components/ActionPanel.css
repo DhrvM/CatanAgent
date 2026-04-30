@@ -1,0 +1,188 @@
+.action-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-height: 0;
+}
+
+.action-panel h3 {
+  color: var(--accent-gold);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 0.15rem;
+}
+
+.action-panel h4 {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin: 0.2rem 0 0.15rem;
+}
+
+.action-section {
+  border-top: 1px solid var(--border-color);
+  padding-top: 0.2rem;
+}
+
+.action-btn {
+  width: 100%;
+  padding: 0.42rem 0.65rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  text-align: left;
+}
+
+.action-btn:hover:not(:disabled) {
+  border-color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.action-btn:disabled {
+  opacity: 0.4;
+}
+
+.action-btn.active {
+  border-color: var(--accent-gold);
+  background: rgba(212, 169, 66, 0.15);
+  box-shadow: 0 0 10px rgba(212, 169, 66, 0.2);
+}
+
+.action-btn.primary {
+  background: linear-gradient(135deg, var(--accent-gold), var(--accent-copper));
+  border-color: var(--accent-gold);
+  color: var(--bg-primary);
+  font-weight: 600;
+}
+
+.action-btn.primary:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 15px rgba(212, 169, 66, 0.4);
+}
+
+.action-btn.highlight {
+  border-color: var(--accent-green);
+  background: rgba(74, 139, 60, 0.2);
+}
+
+.action-btn.highlight:hover:not(:disabled) {
+  background: rgba(74, 139, 60, 0.3);
+}
+
+.roll-btn {
+  font-size: 0.85rem;
+  padding: 0.5rem 0.6rem;
+}
+
+.build-btn {
+  flex-wrap: wrap;
+}
+
+.build-btn .btn-icon {
+  font-size: 0.95rem;
+  width: 18px;
+  text-align: center;
+}
+
+.build-btn .btn-label {
+  flex: 1;
+}
+
+.build-btn .cost {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  width: 100%;
+  margin-top: 0.1rem;
+  padding-left: 22px;
+}
+
+.build-btn .remaining {
+  font-size: 0.62rem;
+  color: var(--accent-copper);
+  margin-left: 0.35rem;
+}
+
+.trade-btn {
+  background: rgba(69, 123, 157, 0.2);
+  border-color: var(--accent-blue);
+}
+
+.trade-btn:hover:not(:disabled) {
+  background: rgba(69, 123, 157, 0.3);
+}
+
+.end-turn-btn {
+  margin-top: 0.3rem;
+}
+
+.special-action {
+  background: rgba(212, 169, 66, 0.15);
+  border: 1px solid var(--accent-gold);
+  border-radius: 8px;
+  padding: 0.5rem 0.6rem;
+  margin-bottom: 0.25rem;
+}
+
+.special-action p {
+  color: var(--accent-gold);
+  font-size: 0.78rem;
+  margin-bottom: 0.35rem;
+}
+
+.special-action button {
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  background: var(--accent-gold);
+  border: none;
+  border-radius: 6px;
+  color: var(--bg-primary);
+  font-weight: 600;
+  font-size: 0.76rem;
+}
+
+.special-action button.active {
+  background: var(--accent-copper);
+}
+
+/* Special Build Phase indicator */
+.special-build-indicator {
+  background: linear-gradient(135deg, rgba(106, 153, 78, 0.2) 0%, rgba(74, 124, 62, 0.2) 100%);
+  border: 1px solid #6a994e;
+  border-radius: 8px;
+  padding: 0.45rem 0.6rem;
+  color: #8fb974;
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-align: center;
+  margin-bottom: 0.25rem;
+  animation: specialBuildGlow 1.5s ease-in-out infinite;
+}
+
+@keyframes specialBuildGlow {
+  0%, 100% { box-shadow: 0 0 5px rgba(106, 153, 78, 0.3); }
+  50% { box-shadow: 0 0 15px rgba(106, 153, 78, 0.5); }
+}
+
+.special-build-indicator .no-trade-hint {
+  display: block;
+  font-size: 0.65rem;
+  font-weight: normal;
+  color: var(--text-muted);
+  margin-top: 0.1rem;
+}
+
+.action-section h4 .disabled-hint {
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  font-weight: normal;
+  font-style: italic;
+}
+
+
