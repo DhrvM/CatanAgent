@@ -18,7 +18,7 @@ from Agent.development_agent.prompts import (
     build_robber_user_message,
     build_dev_consult_context,
 )
-from Agent.Tools.game_tools import (
+from Agent.tools.game_tools import (
     RESOURCES,
     _build_discard_action,
 )

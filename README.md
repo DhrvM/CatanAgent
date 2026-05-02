@@ -100,6 +100,32 @@ for Vercel serverless functions. Host the web/game server on a platform like
 Render or Vercel if desired, but run the agents themselves on a long-running
 process host such as Render, Railway, Fly.io, a VPS, or your local machine.
 
+### 8. Benchmark Matchups (React/Strategy vs Heuristic)
+
+Run automated benchmark matchup series against heuristic bots:
+
+```powershell
+python -m Agent.benchmark_agent.run_matchups --server http://localhost:3001 --games 3 --agents both
+```
+
+This runner executes:
+
+- React agent vs heuristic bots
+- Strategy (multi-agent) vs heuristic bots
+
+Each series gets a dedicated benchmark `runId`, and results are recorded by the
+Environment benchmark store so you can compare win rate, VP, tasks, and latency
+in the Observation Deck.
+
+By default, matchup games run as **1v1** (tested agent vs one heuristic agent).
+To run larger games, pass `--total-players <N>`.
+
+### 9. Spectator View Mode (Environment UI)
+
+In the Environment lobby, use **Spectate Game** to watch an active game by code
+without occupying a player seat. This is useful for visually monitoring
+agent-vs-agent benchmark matches while they run.
+
 ### Agent Directory structure
 
 ```

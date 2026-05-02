@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from Agent.utils.socket_client import CatanSocketClient
 from Agent.utils.game_state_processor import GameStateProcessor
-from Agent.Tools.game_tools import (
+from Agent.tools.game_tools import (
     _all_vertex_keys_from_state,
     _all_edge_keys_from_state,
     _all_hex_keys_from_state,
@@ -728,7 +728,7 @@ def build_tool_registry(
     ))
 
     # ── Risk analysis tools (from probabilities.py) ─────────────
-    from Agent.Tools.risk_tools import register_risk_tools
+    from Agent.tools.risk_tools import register_risk_tools
     register_risk_tools(reg, client)
 
     return reg

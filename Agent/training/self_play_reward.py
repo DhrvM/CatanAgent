@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Mapping, Optional
 
-from Agent.Tools.game_tools import (
+from Agent.tools.game_tools import (
     RESOURCES,
     _adjacent_hexes_for_vertex,
     _adjacent_vertices,
