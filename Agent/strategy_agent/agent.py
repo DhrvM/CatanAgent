@@ -41,7 +41,7 @@ from Agent.utils.socket_client import CatanSocketClient
 from Agent.utils.game_state_processor import GameStateProcessor
 from Agent.utils.openai_client import OpenAIClient
 from Agent.utils.stats_tracker import AgentStatsTracker
-from Agent.tools.registry import ToolRegistry
+from Agent.Tools.registry import ToolRegistry
 from Agent.trading_agent.agent import TradingAgent
 
 from Agent.strategy_agent.prompts import (
@@ -55,7 +55,7 @@ from Agent.strategy_agent.prompts import (
 )
 
 # Heuristic helpers reused for setup fallback + discard/robber fallback
-from Agent.tools.game_tools import (
+from Agent.Tools.game_tools import (
     _ranked_setup_settlements,
     _ranked_setup_roads,
     _build_discard_action,

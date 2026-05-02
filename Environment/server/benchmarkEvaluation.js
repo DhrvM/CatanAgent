@@ -14,23 +14,23 @@ const TASK_THRESHOLDS = {
   'initial-settlement-location-selection': 0.75,
   'settlement-location-selection': 0.9,
   'road-placement-direction': 0.8,
-  'build-vs-save-decision': 0.9,
+  'build-vs-save-decision': 0.85,
   'city-vs-settlement-vs-road-prioritization': 0.9,
-  'development-card-purchase-decision': 0.95,
-  'knight-card-playing-decision': 0.9,
-  'year-of-plenty-card-playing-decision': 0.9,
-  'monopoly-card-playing-decision': 0.9,
+  'development-card-purchase-decision': 0.85,
+  'knight-card-playing-decision': 0.8,
+  'year-of-plenty-card-playing-decision': 0.85,
+  'monopoly-card-playing-decision': 0.85,
   'road-building-card-playing-decision': 0.85,
-  'discard-strategy-after-seven': 0.95,
-  'robber-victim-selection': 0.9,
-  'robber-placement': 0.9,
+  'discard-strategy-after-seven': 0.6,
+  'robber-victim-selection': 0.75,
+  'robber-placement': 0.75,
   'accept-or-reject-trade-offers': 0.95,
   'generate-trade-offers': 0.7,
   'select-targeted-trade-partner': 0.9,
-  'bank-trade-decision': 0.85,
+  'bank-trade-decision': 0.75,
   'generate-counter-trade-offer': 0.7,
-  'decide-pursue-longest-road': 0.95,
-  'decide-pursue-largest-army': 0.95,
+  'decide-pursue-longest-road': 0.3,
+  'decide-pursue-largest-army': 0.3,
 };
 
 function clamp(value, min = 0, max = 1) {
@@ -117,9 +117,12 @@ function settlementOptionScore(option) {
 
 function roadOptionScore(option) {
   return clamp(
-    (safeNumber(option.futureReachability, 0) * 0.5)
-    + (safeNumber(option.reachableIntersectionValue, 0) * 0.35)
-    + (safeNumber(option.blockingValue, 0) * 0.15)
+    (safeNumber(option.futureReachability, 0) * 0.25)
+    + (safeNumber(option.reachableIntersectionValue, 0) * 0.2)
+    + (safeNumber(option.blockingValue, 0) * 0.1)
+    + (safeNumber(option.settlementTargetValue, 0) * 0.25)
+    + (safeNumber(option.extensionValue, 0) * 0.15)
+    + (safeNumber(option.cycleAvoidance, 1) * 0.05)
   );
 }
 
@@ -186,15 +189,35 @@ function evaluateChoiceRatioTask(payload = {}, taskId) {
     option.score ?? option.ev ?? option.expectedValue ?? option.value ?? 0
   ));
   const { score, selected, best } = scoreFromOptionValue(selectedOptionId, options, option => option.score);
+  const absoluteGap = best && selected
+    ? Math.max(0, (best.score ?? 0) - (selected.score ?? 0))
+    : null;
+  const marginAwareTasks = new Set([
+    'build-vs-save-decision',
+    'development-card-purchase-decision',
+    'knight-card-playing-decision',
+    'year-of-plenty-card-playing-decision',
+    'monopoly-card-playing-decision',
+    'robber-victim-selection',
+    'robber-placement',
+    'bank-trade-decision',
+    'decide-pursue-longest-road',
+    'decide-pursue-largest-army',
+  ]);
+  const adjustedScore = marginAwareTasks.has(taskId) && absoluteGap !== null
+    ? Math.max(score ?? 0, clamp(1 - absoluteGap))
+    : score;
   return {
-    score: score ?? clamp(payload.score ?? 0),
-    passed: (score ?? 0) >= TASK_THRESHOLDS[taskId],
+    score: adjustedScore ?? clamp(payload.score ?? 0),
+    passed: (adjustedScore ?? 0) >= TASK_THRESHOLDS[taskId],
     explanation: payload.explanation || `${taskId} selected option scored ${((score ?? 0) * 100).toFixed(1)}% of the best available choice.`,
     evaluationDetails: {
       selectedOptionId,
       selectedScore: selected?.score ?? null,
       bestOptionId: best?.id ?? null,
       bestScore: best?.score ?? null,
+      absoluteGap,
+      ratioScore: score ?? null,
       threshold: TASK_THRESHOLDS[taskId],
     },
   };
@@ -236,15 +259,23 @@ function evaluateRobberTask(payload = {}) {
       + (safeNumber(option.selfHarmAvoidance, 0) * 0.15))
   ));
   const { score, selected, best } = scoreFromOptionValue(selectedPairId, options, option => option.score);
+  const absoluteGap = best && selected
+    ? Math.max(0, (best.score ?? 0) - (selected.score ?? 0))
+    : null;
+  const adjustedScore = absoluteGap !== null
+    ? Math.max(score ?? 0, clamp(1 - absoluteGap))
+    : score;
   return {
-    score: score ?? clamp(payload.score ?? 0),
-    passed: (score ?? 0) >= TASK_THRESHOLDS['robber-placement'],
+    score: adjustedScore ?? clamp(payload.score ?? 0),
+    passed: (adjustedScore ?? 0) >= TASK_THRESHOLDS['robber-placement'],
     explanation: payload.explanation || `Robber placement scored ${((score ?? 0) * 100).toFixed(1)}% of the best legal hex.`,
     evaluationDetails: {
       selectedHexId: selectedPairId,
       selectedScore: selected?.score ?? null,
       bestHexId: best?.id ?? null,
       bestScore: best?.score ?? null,
+      absoluteGap,
+      ratioScore: score ?? null,
       threshold: TASK_THRESHOLDS['robber-placement'],
     },
   };

@@ -16,7 +16,7 @@ from Agent.utils.game_state_processor import GameStateProcessor
 from Agent.utils.openai_client import OpenAIClient
 from Agent.utils.ollama_client import OllamaChat, OllamaConfig
 from Agent.utils.stats_tracker import AgentStatsTracker
-from Agent.tools.registry import ToolRegistry, build_tool_registry
+from Agent.Tools.registry import ToolRegistry, build_tool_registry
 from Agent.react_agent.summarizer import MoveSummarizer
 from Agent.react_agent.prompts import SYSTEM_PROMPT, MAX_STEPS_PER_TURN, build_turn_message
 
@@ -49,7 +49,7 @@ def _is_openai_rate_limit_error(exc: BaseException) -> bool:
 
 
 # Heuristic helpers reused for setup & fallback
-from Agent.tools.game_tools import (
+from Agent.Tools.game_tools import (
     _ranked_setup_settlements,
     _ranked_setup_roads,
     _build_discard_action,

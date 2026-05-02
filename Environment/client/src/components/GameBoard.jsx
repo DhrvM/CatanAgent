@@ -29,6 +29,7 @@ function GameBoard({ socket, gameState, playerId, gameCode, chatMessages, onLeav
   const [lastNotifiedRoll, setLastNotifiedRoll] = useState(null);
   const [unreadMessages, setUnreadMessages] = useState(0);
   const [lastMessageCount, setLastMessageCount] = useState(0);
+  const [heuristicAgentCount, setHeuristicAgentCount] = useState(1);
 
   // Info popup for right-click
   const { popup: infoPopup, showInfo, showHexInfo, closePopup: closeInfoPopup } = useInfoPopup();
@@ -90,26 +91,27 @@ function GameBoard({ socket, gameState, playerId, gameCode, chatMessages, onLeav
   useEffect(() => {
     const handleResourcesDistributed = ({ fromRoll, allGains }) => {
       const resourceNames = { brick: '🧱', lumber: '🪵', wool: '🐑', grain: '🌾', ore: '⛏️' };
-
-      allGains.forEach(({ playerName, playerId: gainPlayerId, gains }) => {
+      const gainSummaries = allGains.map(({ playerName, playerId: gainPlayerId, gains }) => {
         const gainsList = Object.entries(gains)
           .filter(([_, amount]) => amount > 0)
           .map(([resource, amount]) => `${resourceNames[resource]}${amount}`)
           .join(' ');
 
-        if (gainPlayerId === playerId) {
-          // Your own gains
-          addNotification(`🎲 You received: ${gainsList}`);
-        } else {
-          // Other player's gains
-          addNotification(`🎲 ${playerName} received: ${gainsList}`);
-        }
-      });
+        if (!gainsList) return null;
+        const name = gainPlayerId === playerId ? 'You' : playerName;
+        return `${name}: ${gainsList}`;
+      }).filter(Boolean);
+
+      if (gainSummaries.length) {
+        addNotification(`🎲 Roll ${fromRoll}: ${gainSummaries.join('  |  ')}`, {
+          roundNumber: gameState.roundNumber,
+        });
+      }
     };
 
     socket.on('resourcesDistributed', handleResourcesDistributed);
     return () => socket.off('resourcesDistributed', handleResourcesDistributed);
-  }, [socket, playerId, addNotification]);
+  }, [socket, playerId, addNotification, gameState.roundNumber]);
 
   // Listen for steal notifications
   useEffect(() => {
@@ -239,7 +241,10 @@ function GameBoard({ socket, gameState, playerId, gameCode, chatMessages, onLeav
       // Only notify for 7 (robber) - regular rolls are shown in the dice display
       if (rollKey !== lastNotifiedRoll && gameState.diceRoll.total === 7) {
         const roller = gameState.players[gameState.currentPlayerIndex];
-        addNotification(`⚠️ ${roller.name} rolled a 7! Move the robber.`);
+        const message = gameState.currentPlayerIndex === gameState.myIndex
+          ? '⚠️ You rolled a 7! Move the robber.'
+          : `⚠️ ${roller.name} rolled a 7 and will move the robber.`;
+        addNotification(message, { roundNumber: gameState.roundNumber });
         setLastNotifiedRoll(rollKey);
       } else if (rollKey !== lastNotifiedRoll) {
         setLastNotifiedRoll(rollKey);
@@ -385,6 +390,17 @@ function GameBoard({ socket, gameState, playerId, gameCode, chatMessages, onLeav
     });
   }, [socket, addNotification]);
 
+  const handleAddHeuristicAgents = useCallback(() => {
+    socket.emit('addHeuristicAgents', { count: heuristicAgentCount }, (response) => {
+      if (response.success) {
+        const addedCount = response.addedAgents?.length || heuristicAgentCount;
+        addNotification(`Added ${addedCount} heuristic agent${addedCount === 1 ? '' : 's'}.`);
+      } else {
+        addNotification(response.error);
+      }
+    });
+  }, [socket, heuristicAgentCount, addNotification]);
+
   const handleSendChat = useCallback((message) => {
     socket.emit('chatMessage', { message });
   }, [socket]);
@@ -520,6 +536,31 @@ function GameBoard({ socket, gameState, playerId, gameCode, chatMessages, onLeav
                   >
                     🔀 Shuffle Board
                   </button>
+                  <div className="heuristic-agent-controls">
+                    <label htmlFor="heuristicAgentCount">Heuristic agents</label>
+                    <div className="heuristic-agent-row">
+                      <input
+                        id="heuristicAgentCount"
+                        type="number"
+                        min="1"
+                        max={Math.max(1, (gameState.maxPlayers || (gameState.isExtended ? 6 : 4)) - gameState.players.length)}
+                        value={heuristicAgentCount}
+                        onChange={(e) => {
+                          const maxToAdd = Math.max(1, (gameState.maxPlayers || (gameState.isExtended ? 6 : 4)) - gameState.players.length);
+                          const nextValue = Math.max(1, Math.min(Number(e.target.value) || 1, maxToAdd));
+                          setHeuristicAgentCount(nextValue);
+                        }}
+                        disabled={gameState.players.length >= (gameState.maxPlayers || (gameState.isExtended ? 6 : 4))}
+                      />
+                      <button
+                        className="add-agent-btn"
+                        onClick={handleAddHeuristicAgents}
+                        disabled={gameState.players.length >= (gameState.maxPlayers || (gameState.isExtended ? 6 : 4))}
+                      >
+                        Add
+                      </button>
+                    </div>
+                  </div>
                   <button
                     className="start-game-btn"
                     onClick={handleStartGame}

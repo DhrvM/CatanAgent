@@ -5,6 +5,7 @@ CLI entry point for the Catan Agent.
 Supports modes:
   --mode react    →  Single ReAct agent (default)
   --mode multi    →  Multi-agent system (Strategy + Development + Trading + Risk)
+  --mode benchmark → Deterministic benchmark-calibration agent
   --mode harness  →  Offline agent harness: Trading + Development scenarios
 
 Usage:
@@ -97,8 +98,12 @@ def main() -> None:
     parser.add_argument("--strategy-model", default="gpt-5", help="OpenAI model for Strategy Agent in multi-agent mode")
     parser.add_argument("--ollama-model", default="qwen3:8b", help="Ollama model for summarization")
     parser.add_argument(
-        "--mode", choices=["react", "multi", "harness"], default="react",
-        help="'react' single agent | 'multi' multi-agent | 'harness' offline agent harness (Trading + Development)",
+        "--mode", choices=["react", "multi", "benchmark", "harness"], default="react",
+        help=(
+            "'react' single agent | 'multi' multi-agent | "
+            "'benchmark' deterministic calibration agent | "
+            "'harness' offline agent harness (Trading + Development)"
+        ),
     )
     parser.add_argument(
         "--harness-auto",
@@ -148,8 +153,10 @@ def main() -> None:
 
     if args.mode == "react":
         _run_react(args)
-    else:
+    elif args.mode == "multi":
         _run_multi(args)
+    else:
+        _run_benchmark(args)
 
 
 def _run_react(args) -> None:
@@ -184,7 +191,7 @@ def _run_multi(args) -> None:
     from Agent.utils.openai_client import OpenAIClient
     from Agent.utils.ollama_client import OllamaChat, OllamaConfig
     from Agent.utils.stats_tracker import AgentStatsTracker
-    from Agent.tools.registry import build_tool_registry
+    from Agent.Tools.registry import build_tool_registry
 
     # ── Core infrastructure ───────────────────────────────────────
     scratchpad = Scratchpad()
@@ -230,6 +237,18 @@ def _run_multi(args) -> None:
 
     # ── Strategy owns the game loop ──────────────────────────────
     strategy.run()
+
+
+def _run_benchmark(args) -> None:
+    """Launch the deterministic benchmark-calibration agent."""
+    from Agent.benchmark_agent.agent import BenchmarkCalibrationAgent
+
+    agent = BenchmarkCalibrationAgent(
+        server_url=args.server,
+        game_code=args.game_code,
+        player_name=args.name,
+    )
+    agent.run()
 
 
 if __name__ == "__main__":

@@ -84,6 +84,22 @@ app.get('/status', (req, res) => {
   });
 });
 
+/** Remove finished in-memory games so automated self-play can run many games. */
+app.post('/api/admin/cleanup-finished-games', (req, res) => {
+  let cleanedCount = 0;
+  games.forEach((game, id) => {
+    if (game.phase === 'finished') {
+      games.delete(id);
+      cleanedCount++;
+    }
+  });
+  res.json({
+    success: true,
+    cleanedCount,
+    activeGames: games.size,
+  });
+});
+
 /** Lightweight keep-alive ping (prevents Render free tier from sleeping) */
 app.get('/ping', (req, res) => {
   res.send('pong');
@@ -209,7 +225,10 @@ const playerSockets = new Map();
 // Connection limits for free tier hosting (Render, Heroku, etc.)
 const MAX_CONCURRENT_GAMES = 10;
 const MAX_TOTAL_PLAYERS = 200;
+const BOT_ACTION_DELAY_MS = 450;
+const MAX_BOT_ACTIONS_PER_GAME_TICK = 40;
 let totalConnectedPlayers = 0;
+const botTurnTimers = new Map();
 
 // ============================================================================
 // AUTOMATIC CLEANUP
@@ -258,6 +277,8 @@ function broadcastGameState(gameId) {
       io.to(socketId).emit('gameState', playerView);
     }
   });
+
+  scheduleHeuristicBots(gameId);
 }
 
 /** Broadcast an event to all players in a game (same data to everyone) */
@@ -285,6 +306,55 @@ function mergeBenchmarkPlayer(basePlayer, benchmarkPlayer = {}, fallbackSeat = 0
     benchmarkBaseline: Boolean(benchmarkPlayer.baseline),
     benchmarkStartingSeat: benchmarkPlayer.startingSeat ?? fallbackSeat,
   };
+}
+
+function buildBenchmarkPlayer(game, playerId, playerName, seatIndex, overrides = {}) {
+  const runId = game.benchmark?.runId || overrides.runId || uuidv4();
+  return {
+    playerId,
+    playerKey: overrides.playerKey || `${runId}:${playerId}`,
+    agentId: overrides.agentId || playerName,
+    agentVersion: overrides.agentVersion || 'unknown',
+    playerName,
+    baseline: Boolean(overrides.baseline),
+    startingSeat: overrides.startingSeat ?? seatIndex,
+    runId,
+  };
+}
+
+async function ensureBenchmarkEnabled(game, playerId, playerName, seatIndex = 0, overrides = {}) {
+  if (!game.benchmark?.enabled) {
+    const runId = overrides.runId || uuidv4();
+    game.benchmark = {
+      enabled: true,
+      runId,
+      benchmarkId: overrides.benchmarkId || 'catan-benchmark-v1',
+      taskId: null,
+      gameType: 'full-game',
+      mapLayoutId: null,
+      opponentPolicySet: 'random-opponents',
+      scenarioTags: [],
+      baselineAgentId: null,
+      metadata: {},
+      players: [],
+    };
+  }
+
+  const existing = game.benchmark.players.find(player => player.playerId === playerId);
+  if (existing) return existing;
+
+  const benchmarkPlayer = buildBenchmarkPlayer(game, playerId, playerName, seatIndex, {
+    ...overrides,
+    runId: game.benchmark.runId,
+  });
+  game.benchmark.players.push(benchmarkPlayer);
+
+  if (game.players[seatIndex]) {
+    game.players[seatIndex] = mergeBenchmarkPlayer(game.players[seatIndex], benchmarkPlayer, seatIndex);
+  }
+
+  await registerBenchmarkGameIfNeeded(game);
+  return benchmarkPlayer;
 }
 
 function extractClientTimestamp(payload) {
@@ -364,9 +434,12 @@ function settlementPlacementScore(score = {}) {
 
 function roadPlacementPriorityScore(score = {}) {
   return clamp01(
-    (Number(score.futureReachability) || 0) * 0.5
-    + (Number(score.reachableIntersectionValue) || 0) * 0.35
-    + (Number(score.blockingValue) || 0) * 0.15
+    (Number(score.futureReachability) || 0) * 0.25
+    + (Number(score.reachableIntersectionValue) || 0) * 0.20
+    + (Number(score.blockingValue) || 0) * 0.10
+    + (Number(score.settlementTargetValue) || 0) * 0.25
+    + (Number(score.extensionValue) || 0) * 0.15
+    + (Number(score.cycleAvoidance) || 0) * 0.05
   );
 }
 
@@ -458,6 +531,86 @@ function scoreRoadBlockingValue(game, playerId, edgeKeyValue) {
   return bestBlockingScore;
 }
 
+function hasConnectedSettlementTarget(game, playerId) {
+  return Object.keys(game.vertices || {}).some(vKey => (
+    GameLogic.canPlaceSettlement(game, playerId, vKey, false).valid
+  ));
+}
+
+function scoreRoadSettlementTargetValue(game, edgeKeyValue, playerId) {
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  const endpoints = getEdgeVerticesFromKey(edgeKeyValue);
+  if (!endpoints.length) return 0;
+
+  return Math.max(...endpoints.map(vKey => {
+    if (playerIndex !== -1 && ownRoadDegreeAtVertex(game, vKey, playerIndex) > 0) return 0;
+    if (!isOpenSettlementVertex(game, vKey)) return 0;
+    const vertexScore = scoreVertexPlacement(game, vKey);
+    return clamp01(
+      (vertexScore.resourceProductionExpectancy * 0.5)
+      + (vertexScore.resourceDiversity * 0.3)
+      + (vertexScore.portSynergy * 0.2)
+    );
+  }));
+}
+
+function ownRoadDegreeAtVertex(game, vKey, playerIndex) {
+  return GameLogic.getVertexEdges(vKey)
+    .filter(edgeKeyValue => getRoadOwnerAtEdge(game, edgeKeyValue) === playerIndex)
+    .length;
+}
+
+function scoreRoadExtensionValue(game, playerId, edgeKeyValue) {
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  if (playerIndex === -1) return 0;
+
+  const endpoints = getEdgeVerticesFromKey(edgeKeyValue);
+  if (endpoints.length !== 2) return 0;
+
+  const degrees = endpoints.map(vKey => ownRoadDegreeAtVertex(game, vKey, playerIndex));
+  const touchesOwnBuilding = endpoints.some(vKey => getBuildingAtVertex(game, vKey)?.owner === playerIndex);
+  if (degrees.some(degree => degree === 0) && (touchesOwnBuilding || Math.max(...degrees) > 0)) return 1;
+  if (Math.min(...degrees) === 0) return 0.6;
+  return 0;
+}
+
+function scoreRoadCycleAvoidance(game, playerId, edgeKeyValue) {
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  if (playerIndex === -1) return 1;
+
+  const endpoints = getEdgeVerticesFromKey(edgeKeyValue);
+  if (endpoints.length !== 2) return 1;
+
+  const closesExistingNetwork = endpoints.every(vKey => {
+    const building = getBuildingAtVertex(game, vKey);
+    return building?.owner === playerIndex || ownRoadDegreeAtVertex(game, vKey, playerIndex) > 0;
+  });
+  return closesExistingNetwork ? 0 : 1;
+}
+
+function roadForwardVertex(game, edgeKeyValue, playerId, lastSettlement = null) {
+  const endpoints = getEdgeVerticesFromKey(edgeKeyValue);
+  if (lastSettlement) {
+    return endpoints.find(vKey => !GameLogic.areVerticesEqual(vKey, lastSettlement)) || endpoints[0] || null;
+  }
+
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  const frontierEndpoints = playerIndex === -1 ? [] : endpoints.filter(vKey => {
+    const building = getBuildingAtVertex(game, vKey);
+    return building?.owner !== playerIndex && ownRoadDegreeAtVertex(game, vKey, playerIndex) === 0;
+  });
+  const scoredEndpoints = (frontierEndpoints.length ? frontierEndpoints : endpoints)
+    .map(vKey => ({
+      vKey,
+      score: scoreVertexPlacement(game, vKey),
+    }))
+    .sort((left, right) => (
+      ((right.score.resourceProductionExpectancy * 0.5) + (right.score.resourceDiversity * 0.3) + (right.score.portSynergy * 0.2))
+      - ((left.score.resourceProductionExpectancy * 0.5) + (left.score.resourceDiversity * 0.3) + (left.score.portSynergy * 0.2))
+    ));
+  return scoredEndpoints[0]?.vKey || endpoints[0] || null;
+}
+
 function bestSettlementPlanScore(game, playerId) {
   const settlementOptions = Object.keys(game.vertices || {})
     .filter(vKey => GameLogic.canPlaceSettlement(game, playerId, vKey, false).valid)
@@ -482,9 +635,9 @@ function cityUpgradeScore(game, vKey) {
   );
 }
 
-function buildSettlementEvaluationContext(game, playerId) {
+function buildSettlementEvaluationContext(game, playerId, isSetup = false) {
   const legalOptions = Object.keys(game.vertices || {})
-    .filter(vKey => GameLogic.canPlaceSettlement(game, playerId, vKey, true).valid)
+    .filter(vKey => GameLogic.canPlaceSettlement(game, playerId, vKey, Boolean(isSetup)).valid)
     .map(vKey => ({
       id: vKey,
       ...scoreVertexPlacement(game, vKey),
@@ -528,8 +681,19 @@ function buildPlanDecisionData(game, playerId, resourcesOverride = null) {
   const roadPlanScore = bestRoadPlanScore(game, playerId);
   const settlementPlanScore = bestSettlementPlanScore(game, playerId);
   const cityPlanScore = bestCityPlanScore(game, playerId);
+  const heldDevCards = Array.isArray(player.developmentCards) ? player.developmentCards.length : Number(player.developmentCards || 0) || 0;
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  const bestOpponentKnights = Math.max(
+    0,
+    ...game.players
+      .filter((candidate, index) => index !== playerIndex)
+      .map(candidate => candidate.knightsPlayed || 0)
+  );
+  const armyRaceBonus = ((player.knightsPlayed || 0) + heldDevCards + 1 >= Math.max(3, bestOpponentKnights + 1)) ? 0.2 : 0;
+  const devCardCongestionPenalty = heldDevCards >= 3 ? 0.35 : heldDevCards * 0.08;
+  const expansionPressurePenalty = (roadPlanScore > 0.45 || settlementPlanScore > 0.45 || cityPlanScore > 0.45) ? 0.18 : 0;
   const devCardPlanScore = devDeckAvailable
-    ? Math.max(0.2, 0.55 * (0.5 + (cityPlanScore * 0.5)))
+    ? clamp01(Math.max(0.15, 0.45 * (0.5 + (cityPlanScore * 0.5)) + armyRaceBonus - devCardCongestionPenalty - expansionPressurePenalty))
     : 0;
 
   return [
@@ -549,11 +713,16 @@ function buildPlanDecisionData(game, playerId, resourcesOverride = null) {
   });
 }
 
+function discardRiskPenalty(resourceTotal = 0) {
+  const total = Number.isFinite(Number(resourceTotal)) ? Number(resourceTotal) : 0;
+  return clamp01(Math.max(0, total - 7) * 0.08);
+}
+
 function scoreSaveOption(planDecisionData = [], resourceTotal = 0) {
   const bestFutureScore = Math.max(0, ...planDecisionData
     .filter(plan => plan.missingCount > 0)
     .map(plan => plan.effectiveScore));
-  return clamp01(Math.max(0.35, bestFutureScore + (resourceTotal > 7 ? 0.1 : 0)));
+  return clamp01(Math.max(0.2, bestFutureScore - discardRiskPenalty(resourceTotal)));
 }
 
 function buildBuildVsSaveTaskPayload(game, playerId, selectedOptionId) {
@@ -581,6 +750,69 @@ function buildBuildVsSaveTaskPayload(game, playerId, selectedOptionId) {
     evaluationContext: {
       options,
     },
+  };
+}
+
+function buildBenchmarkBuildAdvice(game, playerId) {
+  const player = game.players.find(candidate => candidate.id === playerId);
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  if (!player || playerIndex === -1) return null;
+
+  const planDecisionData = buildPlanDecisionData(game, playerId);
+  const saveScore = scoreSaveOption(planDecisionData, sumResources(player.resources));
+  const options = [
+    ...planDecisionData
+      .filter(plan => plan.affordable && plan.baseScore > 0)
+      .map(plan => ({
+        id: plan.id,
+        score: clamp01(plan.baseScore),
+        missingCount: plan.missingCount,
+        affordable: plan.affordable,
+      })),
+    {
+      id: 'save',
+      score: saveScore,
+      missingCount: 0,
+      affordable: true,
+    },
+  ].sort((left, right) => right.score - left.score);
+
+  const settlementTargets = Object.keys(game.vertices || {})
+    .filter(vKey => GameLogic.canPlaceSettlement(game, playerId, vKey, false).valid)
+    .map(vKey => ({
+      vertexKey: vKey,
+      score: settlementPlacementScore(scoreVertexPlacement(game, vKey)),
+    }))
+    .sort((left, right) => right.score - left.score);
+
+  const cityTargets = Object.entries(game.vertices || {})
+    .filter(([, vertex]) => vertex?.building === 'settlement' && vertex.owner === playerIndex)
+    .map(([vKey]) => ({
+      vertexKey: vKey,
+      score: cityUpgradeScore(game, vKey),
+    }))
+    .sort((left, right) => right.score - left.score);
+
+  const roadTargets = Object.keys(game.edges || {})
+    .filter(eKey => GameLogic.canPlaceRoad(game, playerId, eKey, false, null).valid)
+    .map(eKey => ({
+      edgeKey: eKey,
+      score: roadPlacementPriorityScore(scoreRoadPlacement(game, eKey, null)),
+    }))
+    .sort((left, right) => right.score - left.score);
+
+  return {
+    options,
+    planDecisionData: planDecisionData.map(plan => ({
+      id: plan.id,
+      baseScore: clamp01(plan.baseScore),
+      missingCount: plan.missingCount,
+      affordable: plan.affordable,
+    })),
+    saveScore,
+    settlementTargets: settlementTargets.slice(0, 25),
+    cityTargets: cityTargets.slice(0, 15),
+    roadTargets: roadTargets.slice(0, 25),
   };
 }
 
@@ -613,10 +845,16 @@ function buildDevelopmentCardPurchaseTaskPayload(game, playerId, selectedOptionI
 }
 
 function buildGoalAwarePlanCandidates(game, playerId) {
+  const priorityByType = {
+    city: 1.1,
+    settlement: 1.5,
+    devCard: 0.75,
+    road: 0.25,
+  };
   return buildPlanDecisionData(game, playerId).map(plan => ({
     type: plan.type,
     cost: plan.cost,
-    basePlanWeight: plan.baseScore,
+    basePlanWeight: plan.baseScore * (priorityByType[plan.type] || 1),
   })).filter(plan => plan.basePlanWeight > 0);
 }
 
@@ -660,18 +898,10 @@ function buildBuildPrioritizationTaskPayload(game, playerId, selectedOptionId) {
 
 function scoreRoadPlacement(game, edgeKeyValue, lastSettlement) {
   const actingPlayerId = game.currentPlayer;
-  const endpoints = getEdgeVerticesFromKey(edgeKeyValue);
-  const forwardVertex = lastSettlement
-    ? (endpoints.find(vKey => !GameLogic.areVerticesEqual(vKey, lastSettlement)) || endpoints[0] || null)
-    : (endpoints
-      .map(vKey => ({
-        vKey,
-        score: scoreVertexPlacement(game, vKey),
-      }))
-      .sort((left, right) => (
-        ((right.score.resourceProductionExpectancy * 0.5) + (right.score.resourceDiversity * 0.3) + (right.score.portSynergy * 0.2))
-        - ((left.score.resourceProductionExpectancy * 0.5) + (left.score.resourceDiversity * 0.3) + (left.score.portSynergy * 0.2))
-      ))[0]?.vKey || endpoints[0] || null);
+  const alreadyHasSettlementTarget = actingPlayerId && !lastSettlement
+    ? hasConnectedSettlementTarget(game, actingPlayerId)
+    : false;
+  const forwardVertex = roadForwardVertex(game, edgeKeyValue, actingPlayerId, lastSettlement);
   const forwardVertexScore = forwardVertex ? scoreVertexPlacement(game, forwardVertex) : {
     resourceProductionExpectancy: 0,
     resourceDiversity: 0,
@@ -690,6 +920,9 @@ function scoreRoadPlacement(game, edgeKeyValue, lastSettlement) {
       + (forwardVertexScore.portSynergy * 0.2)
     ),
     blockingValue: actingPlayerId ? scoreRoadBlockingValue(game, actingPlayerId, edgeKeyValue) : 0,
+    settlementTargetValue: alreadyHasSettlementTarget ? 0 : scoreRoadSettlementTargetValue(game, edgeKeyValue, actingPlayerId),
+    extensionValue: alreadyHasSettlementTarget ? 0 : (actingPlayerId ? scoreRoadExtensionValue(game, actingPlayerId, edgeKeyValue) : 0),
+    cycleAvoidance: actingPlayerId ? scoreRoadCycleAvoidance(game, actingPlayerId, edgeKeyValue) : 1,
   };
 }
 
@@ -829,19 +1062,81 @@ function tradeBundleValue(bundle = {}, scoreMap = {}) {
   ), 0);
 }
 
+function resourcesAfterTrade(resources = {}, incoming = {}, outgoing = {}) {
+  const next = normalizeResourceSnapshot(resources);
+  Object.entries(incoming || {}).forEach(([resource, amount]) => {
+    next[resource] = Math.max(0, (Number(next[resource]) || 0) + (Number(amount) || 0));
+  });
+  Object.entries(outgoing || {}).forEach(([resource, amount]) => {
+    next[resource] = Math.max(0, (Number(next[resource]) || 0) - (Number(amount) || 0));
+  });
+  return next;
+}
+
+function bestAffordablePlanScoreForResources(game, playerId, resources = {}) {
+  return Math.max(
+    0,
+    ...buildPlanDecisionData(game, playerId, resources)
+      .filter(plan => plan.affordable && plan.baseScore > 0)
+      .map(plan => {
+        const priorityByType = {
+          city: 1.1,
+          settlement: 1.5,
+          devCard: 0.75,
+          road: 0.25,
+        };
+        return clamp01(plan.baseScore * (priorityByType[plan.type] || 1));
+      })
+  );
+}
+
+function settlementProgressGain(before = {}, after = {}) {
+  const beforeMissing = countMissingResources(before, PLAN_COSTS.settlement);
+  const afterMissing = countMissingResources(after, PLAN_COSTS.settlement);
+  return clamp01((beforeMissing - afterMissing) / Math.max(1, Object.values(PLAN_COSTS.settlement).reduce((sum, value) => sum + value, 0)));
+}
+
+function scoreTradeQuality(offerScore = {}) {
+  const legality = offerScore.legal === false ? 0 : 1;
+  return clamp01(
+    (legality * 0.35)
+    + ((Number(offerScore.selfGain) || 0) * 0.45)
+    + ((1 - (Number(offerScore.leaderHelpPenalty) || 0)) * 0.15)
+    + ((1 - (Number(offerScore.fairnessPenalty) || 0)) * 0.05)
+  );
+}
+
 function scoreTradeOfferForPlayer(game, fromPlayer, toPlayer, offer = {}, request = {}) {
   const needMap = scoreResourceNeed(game, fromPlayer?.id);
   const surplusMap = scoreResourceSurplus(game, fromPlayer?.id);
   const giveCost = tradeBundleValue(offer, surplusMap);
   const requestValue = tradeBundleValue(request, needMap);
+  const beforeResources = normalizeResourceSnapshot(fromPlayer?.resources || {});
+  const afterResources = resourcesAfterTrade(beforeResources, request, offer);
+  const beforePlanScore = bestAffordablePlanScoreForResources(game, fromPlayer?.id, beforeResources);
+  const afterPlanScore = bestAffordablePlanScoreForResources(game, fromPlayer?.id, afterResources);
+  const planGain = clamp01(afterPlanScore - beforePlanScore);
+  const settlementGain = bestSettlementPlanScore(game, fromPlayer?.id) > 0
+    ? settlementProgressGain(beforeResources, afterResources)
+    : 0;
   const leaderIndex = identifyLeaderIndex(game);
   const toIndex = game.players.findIndex(candidate => candidate.id === toPlayer?.id);
   const leaderHelpPenalty = toIndex === leaderIndex ? 1 : 0;
   const fairnessPenalty = Math.max(0, giveCost - requestValue);
+  const selfGain = clamp01(
+    (requestValue * 0.45)
+    + (planGain * 0.35)
+    + (settlementGain * 0.2)
+    - (giveCost * 0.35)
+  );
 
   return {
-    legal: Object.entries(offer).every(([resource, amount]) => (fromPlayer.resources?.[resource] || 0) >= amount),
-    selfGain: Math.max(0, Math.min(1, requestValue - (giveCost * 0.5))),
+    legal: Object.entries(offer).every(([resource, amount]) => (fromPlayer?.resources?.[resource] || 0) >= amount),
+    selfGain,
+    requestValue: clamp01(requestValue),
+    giveCost: clamp01(giveCost),
+    planGain,
+    settlementGain,
     leaderHelpPenalty,
     fairnessPenalty: Math.min(1, fairnessPenalty),
   };
@@ -862,7 +1157,7 @@ function scoreTargetedTradePartner(game, fromPlayer, toPlayer, offer = {}, reque
       0,
       Math.min(
         1,
-        offerScore.selfGain + availabilityBonus - (offerScore.leaderHelpPenalty * 0.4)
+        scoreTradeQuality(offerScore) + availabilityBonus - (offerScore.leaderHelpPenalty * 0.4)
       )
     ),
     canFulfillRequest: canPlayerFulfillTradeBundle(toPlayer, request),
@@ -896,13 +1191,16 @@ function buildBankTradeTaskPayload(game, playerId, giveResource, giveAmount, get
   const needMap = scoreResourceNeed(game, playerId);
   const surplusMap = scoreResourceSurplus(game, playerId);
   const candidateOptions = [];
+  const currentTotal = sumResources(player?.resources);
 
   Object.keys(player.resources || {}).forEach(resourceToGive => {
     const requiredRatio = GameLogic.getTradeRatio(game, playerIndex, resourceToGive);
     if ((player.resources?.[resourceToGive] || 0) < requiredRatio) return;
     Object.keys(player.resources || {}).forEach(resourceToGet => {
       if (resourceToGet === resourceToGive) return;
-      const score = Math.max(0, Math.min(1, (needMap[resourceToGet] || 0) - ((surplusMap[resourceToGive] || 0) * 0.5) + 0.5));
+      const futureTotal = currentTotal - requiredRatio + 1;
+      const discardRelief = Math.max(0, discardRiskPenalty(currentTotal) - discardRiskPenalty(futureTotal));
+      const score = Math.max(0, Math.min(1, (needMap[resourceToGet] || 0) - ((surplusMap[resourceToGive] || 0) * 0.5) + 0.5 + discardRelief));
       candidateOptions.push({
         id: `${resourceToGive}:${requiredRatio}:${resourceToGet}`,
         score,
@@ -912,7 +1210,7 @@ function buildBankTradeTaskPayload(game, playerId, giveResource, giveAmount, get
 
   candidateOptions.push({
     id: 'no-trade',
-    score: 0.45,
+    score: Math.max(0.2, 0.45 - discardRiskPenalty(currentTotal)),
   });
 
   return {
@@ -921,6 +1219,48 @@ function buildBankTradeTaskPayload(game, playerId, giveResource, giveAmount, get
     evaluationContext: {
       options: candidateOptions,
     },
+  };
+}
+
+function buildBenchmarkBankTradeAdvice(game, playerId) {
+  const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  const player = game.players[playerIndex];
+  if (playerIndex === -1 || !player) return null;
+
+  const needMap = scoreResourceNeed(game, playerId);
+  const surplusMap = scoreResourceSurplus(game, playerId);
+  const currentTotal = sumResources(player.resources);
+  const options = [];
+
+  Object.keys(player.resources || {}).forEach(resourceToGive => {
+    const requiredRatio = GameLogic.getTradeRatio(game, playerIndex, resourceToGive);
+    if ((player.resources?.[resourceToGive] || 0) < requiredRatio) return;
+    Object.keys(player.resources || {}).forEach(resourceToGet => {
+      if (resourceToGet === resourceToGive) return;
+      const futureTotal = currentTotal - requiredRatio + 1;
+      const discardRelief = Math.max(0, discardRiskPenalty(currentTotal) - discardRiskPenalty(futureTotal));
+      const score = Math.max(0, Math.min(1, (needMap[resourceToGet] || 0) - ((surplusMap[resourceToGive] || 0) * 0.5) + 0.5 + discardRelief));
+      options.push({
+        id: `${resourceToGive}:${requiredRatio}:${resourceToGet}`,
+        giveResource: resourceToGive,
+        giveAmount: requiredRatio,
+        getResource: resourceToGet,
+        score,
+      });
+    });
+  });
+
+  options.push({
+    id: 'no-trade',
+    giveResource: null,
+    giveAmount: 0,
+    getResource: null,
+    score: Math.max(0.2, 0.45 - discardRiskPenalty(currentTotal)),
+  });
+
+  options.sort((left, right) => right.score - left.score);
+  return {
+    options,
   };
 }
 
@@ -936,14 +1276,16 @@ function buildTradeProposalTaskPayload(game, playerId, offer, request, targetPla
   ));
   const selectedTargetId = targetPlayerId || recipients[0]?.id || 'all-opponents';
   const selectedTarget = recipients.find(candidate => candidate.id === selectedTargetId) || recipients[0] || null;
+  const scoredOffer = scoreTradeOfferForPlayer(game, fromPlayer, selectedTarget, offer, request);
 
   return {
     taskId: 'generate-trade-offers',
     selectedOptionId: selectedTargetId,
     evaluationContext: {
       bestOfferScore: 1,
+      candidateOffer: scoredOffer,
     },
-    offerContext: scoreTradeOfferForPlayer(game, fromPlayer, selectedTarget, offer, request),
+    offerContext: scoredOffer,
     partnerContext: targetPlayerId ? {
       taskId: 'select-targeted-trade-partner',
       selectedOptionId: selectedTargetId,
@@ -960,8 +1302,11 @@ function buildTradeResponseTaskPayload(game, playerId, accept) {
   const playerIndex = game.players.findIndex(candidate => candidate.id === playerId);
   const responder = game.players[playerIndex];
   const proposer = game.players[tradeOffer.from];
-  const acceptScore = scoreTradeOfferForPlayer(game, responder, proposer, tradeOffer.request, tradeOffer.offer).selfGain;
-  const rejectScore = Math.max(0, Math.min(1, 1 - acceptScore + 0.1));
+  const offerScore = scoreTradeOfferForPlayer(game, responder, proposer, tradeOffer.request, tradeOffer.offer);
+  const acceptQuality = scoreTradeQuality(offerScore);
+  const shouldAccept = offerScore.legal !== false && acceptQuality >= 0.7;
+  const acceptScore = shouldAccept ? acceptQuality : Math.min(0.35, acceptQuality);
+  const rejectScore = shouldAccept ? Math.max(0.35, 1 - acceptQuality) : 1;
   return {
     taskId: 'accept-or-reject-trade-offers',
     selectedOptionId: accept ? 'accept' : 'reject',
@@ -989,7 +1334,10 @@ function buildCounterTradeTaskPayload(game, playerId, offer, request) {
 }
 
 function buildRoadEvaluationContext(game, playerId, lastSettlement) {
-  const legalOptions = Object.keys(game.edges || {})
+  const candidateEdges = lastSettlement
+    ? GameLogic.getVertexEdges(lastSettlement)
+    : Object.keys(game.edges || {});
+  const legalOptions = [...new Set(candidateEdges)]
     .filter(eKey => GameLogic.canPlaceRoad(game, playerId, eKey, true, lastSettlement).valid)
     .map(eKey => ({
       id: eKey,
@@ -1160,8 +1508,20 @@ function buildPlanDecisionDataFromResources(game, playerId, resources) {
 function buildYearOfPlentyChoiceTaskPayload(game, playerId, chosenResources = []) {
   const state = ensureBenchmarkTaskState(game).yearOfPlenty[playerId];
   if (!state || chosenResources.length !== 2) return null;
-  const snapshotResources = normalizeResourceSnapshot(state.resources);
-  const needMap = state.needMap || {};
+  const options = buildYearOfPlentyOptions(game, playerId, state.resources, state.needMap || {});
+
+  return {
+    taskId: 'year-of-plenty-card-playing-decision',
+    selectedOptionId: [...chosenResources].sort().join('+'),
+    evaluationContext: {
+      options,
+    },
+  };
+}
+
+function buildYearOfPlentyOptions(game, playerId, resources = {}, needMap = null) {
+  const snapshotResources = normalizeResourceSnapshot(resources);
+  const effectiveNeedMap = needMap || scoreResourceNeed(game, playerId);
   const beforePlanData = buildPlanDecisionDataFromResources(game, playerId, snapshotResources);
   const beforeBest = getBestAffordablePlanScoreFromData(beforePlanData);
 
@@ -1174,7 +1534,7 @@ function buildYearOfPlentyChoiceTaskPayload(game, playerId, chosenResources = []
       const afterPlanData = buildPlanDecisionDataFromResources(game, playerId, afterResources);
       const afterBest = getBestAffordablePlanScoreFromData(afterPlanData);
       const buildUnlock = clamp01(Math.max(0, afterBest - beforeBest) + (afterBest > beforeBest ? afterBest : 0));
-      const scarcity = clamp01(((needMap[left] || 0) + (needMap[right] || 0)) / 2);
+      const scarcity = clamp01(((effectiveNeedMap[left] || 0) + (effectiveNeedMap[right] || 0)) / 2);
       const diversityGain = clamp01((countDistinctPositiveResources(afterResources) - countDistinctPositiveResources(snapshotResources)) / 2);
       options.push({
         id: [left, right].sort().join('+'),
@@ -1183,12 +1543,65 @@ function buildYearOfPlentyChoiceTaskPayload(game, playerId, chosenResources = []
     });
   });
 
+  return options;
+}
+
+function buildBenchmarkDevCardAdvice(game, playerId) {
+  const knightTask = buildKnightDecisionTaskPayload(game, playerId, 'hold');
+  const roadBuildingTask = buildRoadBuildingDecisionTaskPayload(game, playerId, 'hold');
+  const monopolyTask = buildMonopolyTaskPayload(game, playerId, RESOURCE_TYPES[0]);
+  const player = game.players.find(candidate => candidate.id === playerId);
+  if (!player) return null;
   return {
-    taskId: 'year-of-plenty-card-playing-decision',
-    selectedOptionId: [...chosenResources].sort().join('+'),
-    evaluationContext: {
-      options,
-    },
+    knightOptions: knightTask?.evaluationContext?.options || [],
+    roadBuildingOptions: roadBuildingTask?.evaluationContext?.options || [],
+    monopolyOptions: monopolyTask?.evaluationContext?.options || [],
+    yearOfPlentyOptions: buildYearOfPlentyOptions(game, playerId, player.resources, scoreResourceNeed(game, playerId))
+      .sort((left, right) => right.score - left.score),
+  };
+}
+
+function buildBenchmarkRobberAdvice(game, playerId, hexKeyValue = null) {
+  const actingPlayerIndex = game.players.findIndex(candidate => candidate.id === playerId);
+  if (actingPlayerIndex === -1) return null;
+
+  const hexOptions = Object.keys(game.hexes || {})
+    .filter(candidateHexKey => candidateHexKey !== game.robber)
+    .map(candidateHexKey => ({
+      id: candidateHexKey,
+      ...scoreRobberHexPlacement(game, actingPlayerIndex, candidateHexKey),
+      score: clamp01(
+        (scoreRobberHexPlacement(game, actingPlayerIndex, candidateHexKey).hurtLeader * 0.35)
+        + (scoreRobberHexPlacement(game, actingPlayerIndex, candidateHexKey).productionDamage * 0.30)
+        + (scoreRobberHexPlacement(game, actingPlayerIndex, candidateHexKey).theftValue * 0.20)
+        + (scoreRobberHexPlacement(game, actingPlayerIndex, candidateHexKey).selfHarmAvoidance * 0.15)
+      ),
+    }))
+    .sort((left, right) => right.score - left.score);
+
+  let victimOptions = [];
+  if (hexKeyValue) {
+    victimOptions = (GameLogic.getPlayersOnHex(game, hexKeyValue, actingPlayerIndex) || [])
+      .map(playerIndex => {
+        const player = game.players[playerIndex];
+        const resourceTotal = sumResources(player?.resources);
+        const isLeader = playerIndex === identifyLeaderIndex(game);
+        return {
+          id: player?.id || `player-${playerIndex}`,
+          score: Math.min(
+            1,
+            (isLeader ? 0.55 : 0.25)
+            + Math.min(0.35, resourceTotal / 20)
+            + Math.min(0.1, getPlayerVisibleScore(player) / 20)
+          ),
+        };
+      })
+      .sort((left, right) => right.score - left.score);
+  }
+
+  return {
+    hexOptions,
+    victimOptions,
   };
 }
 
@@ -1294,6 +1707,28 @@ function buildDiscardTaskPayload(game, playerId, discardedResources = {}) {
   };
 }
 
+function buildBenchmarkDiscardAdvice(game, playerId) {
+  const player = game.players.find(candidate => candidate.id === playerId);
+  if (!player) return null;
+  const discardCount = Math.floor(sumResources(player.resources) / 2);
+  const options = enumerateDiscardChoices(player.resources, discardCount).map(bundle => {
+    const retainedResources = normalizeResourceSnapshot(player.resources);
+    RESOURCE_TYPES.forEach(resource => {
+      retainedResources[resource] = Math.max(0, retainedResources[resource] - (bundle[resource] || 0));
+    });
+    const id = RESOURCE_TYPES.map(resource => `${resource}:${bundle[resource] || 0}`).join('|');
+    return {
+      id,
+      discardedResources: bundle,
+      retainedHandValue: scoreRetainedHandValue(game, playerId, retainedResources),
+    };
+  }).sort((left, right) => right.retainedHandValue - left.retainedHandValue);
+
+  return {
+    discardOptions: options,
+  };
+}
+
 function getLongestRoadRaceSnapshot(game, playerId) {
   const playerIndex = getPlayerIndex(game, playerId);
   if (playerIndex === -1) return null;
@@ -1315,7 +1750,15 @@ function getLongestRoadRaceSnapshot(game, playerId) {
 function shouldConsiderLongestRoadRace(game, playerId) {
   const snapshot = getLongestRoadRaceSnapshot(game, playerId);
   if (!snapshot) return false;
-  return snapshot.playerRoadLength >= 3 || snapshot.targetRoadLength >= 4 || bestRoadPlanScore(game, playerId) > 0;
+  const roadPlanScore = bestRoadPlanScore(game, playerId);
+  const roadGap = (snapshot.targetRoadLength || 0) - (snapshot.playerRoadLength || 0);
+  return (
+    snapshot.playerHasLongestRoad
+    || snapshot.targetHasLongestRoad
+    || snapshot.playerRoadLength >= 6
+    || snapshot.targetRoadLength >= 7
+    || (snapshot.playerRoadLength >= 5 && roadGap <= 2 && roadPlanScore >= 0.5)
+  );
 }
 
 function getLargestArmyRaceSnapshot(game, playerId) {
@@ -1341,7 +1784,13 @@ function shouldConsiderLargestArmyRace(game, playerId) {
   const snapshot = getLargestArmyRaceSnapshot(game, playerId);
   if (!snapshot) return false;
   const player = game.players.find(candidate => candidate.id === playerId);
-  return snapshot.playerKnights >= 1 || snapshot.targetKnights >= 2 || hasRequiredResources(player, PLAN_COSTS.devCard);
+  return (
+    snapshot.playerHasLargestArmy
+    || snapshot.targetHasLargestArmy
+    || snapshot.playerKnights >= 4
+    || snapshot.targetKnights >= 5
+    || (snapshot.playerKnights >= 3 && hasRequiredResources(player, PLAN_COSTS.devCard))
+  );
 }
 
 async function maybeCreatePendingLongTermEpisode(game, playerId, taskId, selectedOptionId) {
@@ -1599,6 +2048,298 @@ function maybeStartBenchmarkTurn(game) {
   benchmarkStore.startTurn(game, currentPlayer.id);
 }
 
+function isHeuristicBot(player) {
+  return Boolean(player?.isBot && player?.botType === 'heuristic');
+}
+
+function gameNeedsHeuristicBotAction(game) {
+  if (!game || game.phase === 'waiting' || game.phase === 'finished') return false;
+  if (game.turnPhase === 'discard') {
+    return (game.discardingPlayers || []).some(info => isHeuristicBot(game.players?.[info.playerIndex]));
+  }
+  if (game.turnPhase === 'specialBuild') {
+    return isHeuristicBot(game.players?.[game.specialBuildIndex]);
+  }
+  return isHeuristicBot(game.players?.[game.currentPlayerIndex]);
+}
+
+function scheduleHeuristicBots(gameId, delayMs = BOT_ACTION_DELAY_MS) {
+  const game = games.get(gameId);
+  if (!gameNeedsHeuristicBotAction(game) || botTurnTimers.has(gameId)) return;
+
+  const timer = setTimeout(() => {
+    botTurnTimers.delete(gameId);
+    runHeuristicBots(gameId).catch(error => {
+      console.error(`Heuristic bot error in game ${gameId}:`, error);
+    });
+  }, delayMs);
+  botTurnTimers.set(gameId, timer);
+}
+
+async function runHeuristicBots(gameId) {
+  const game = games.get(gameId);
+  if (!gameNeedsHeuristicBotAction(game)) return;
+
+  let acted = false;
+  for (let i = 0; i < MAX_BOT_ACTIONS_PER_GAME_TICK; i++) {
+    const result = performHeuristicBotAction(game);
+    if (!result?.success) break;
+    acted = true;
+    if (!gameNeedsHeuristicBotAction(game)) break;
+  }
+
+  if (acted) {
+    broadcastGameState(gameId);
+  }
+}
+
+function ensureBotState(game) {
+  if (!game.botState) {
+    game.botState = {
+      setupSettlements: {},
+    };
+  }
+  return game.botState;
+}
+
+function performHeuristicBotAction(game) {
+  if (!gameNeedsHeuristicBotAction(game)) {
+    return { success: false, error: 'No bot action needed' };
+  }
+
+  if (game.turnPhase === 'discard') {
+    const discardInfo = (game.discardingPlayers || []).find(info => isHeuristicBot(game.players?.[info.playerIndex]));
+    if (!discardInfo) return { success: false, error: 'No bot discard needed' };
+    const player = game.players[discardInfo.playerIndex];
+    return GameLogic.discardCards(game, player.id, chooseBotDiscard(player, discardInfo.cardsToDiscard));
+  }
+
+  if (game.turnPhase === 'specialBuild') {
+    const player = game.players?.[game.specialBuildIndex];
+    if (!isHeuristicBot(player)) return { success: false, error: 'No bot special build needed' };
+    performBotBuilds(game, player.id);
+    return GameLogic.endSpecialBuild(game, player.id);
+  }
+
+  const player = game.players?.[game.currentPlayerIndex];
+  if (!isHeuristicBot(player)) {
+    return { success: false, error: 'Current player is not a bot' };
+  }
+
+  if (game.phase === 'setup') {
+    return performBotSetupAction(game, player.id);
+  }
+
+  if (game.turnPhase === 'roll') {
+    return GameLogic.rollDice(game, player.id);
+  }
+
+  if (game.turnPhase === 'robber') {
+    const { hexKey, stealFromPlayerId } = chooseBotRobberMove(game);
+    return GameLogic.moveRobber(game, player.id, hexKey, stealFromPlayerId);
+  }
+
+  if (game.turnPhase === 'main') {
+    performBotBuilds(game, player.id);
+    return GameLogic.endTurn(game, player.id);
+  }
+
+  return { success: false, error: `Unsupported bot phase ${game.turnPhase}` };
+}
+
+function performBotSetupAction(game, playerId) {
+  const botState = ensureBotState(game);
+  const lastSettlement = botState.setupSettlements[playerId];
+
+  if (!lastSettlement) {
+    for (const vertexKey of rankBotSettlementVertices(game, playerId, true)) {
+      const result = GameLogic.placeSettlement(game, playerId, vertexKey);
+      if (result.success) {
+        botState.setupSettlements[playerId] = vertexKey;
+        return result;
+      }
+    }
+    return { success: false, error: 'Bot could not place setup settlement' };
+  }
+
+  for (const edgeKey of rankBotRoadEdges(game, playerId, true, lastSettlement)) {
+    const result = GameLogic.placeRoad(game, playerId, edgeKey, true, lastSettlement);
+    if (result.success) {
+      delete botState.setupSettlements[playerId];
+      return GameLogic.advanceSetup(game, playerId);
+    }
+  }
+  return { success: false, error: 'Bot could not place setup road' };
+}
+
+function performBotBuilds(game, playerId) {
+  const maxBuildActions = 6;
+  for (let i = 0; i < maxBuildActions; i++) {
+    const action = chooseBotBuildAction(game, playerId);
+    if (!action) return;
+
+    let result = null;
+    if (action.type === 'city') {
+      result = GameLogic.upgradeToCity(game, playerId, action.target);
+    } else if (action.type === 'settlement') {
+      result = GameLogic.placeSettlement(game, playerId, action.target);
+    } else if (action.type === 'road') {
+      result = GameLogic.placeRoad(game, playerId, action.target);
+    } else if (action.type === 'devCard') {
+      result = GameLogic.buyDevCard(game, playerId);
+    } else if (action.type === 'bankTrade') {
+      result = GameLogic.bankTrade(game, playerId, action.giveResource, action.giveAmount, action.getResource);
+    }
+
+    if (!result?.success) return;
+    if (game.phase === 'finished') return;
+  }
+}
+
+function chooseBotBuildAction(game, playerId) {
+  const playerIndex = game.players.findIndex(player => player.id === playerId);
+  const player = game.players[playerIndex];
+  if (!player) return null;
+
+  const cityTargets = Object.entries(game.vertices || {})
+    .filter(([, vertex]) => vertex?.building === 'settlement' && vertex.owner === playerIndex)
+    .map(([vertexKey]) => ({ target: vertexKey, score: scoreBotVertex(game, vertexKey) }))
+    .sort((a, b) => b.score - a.score);
+  if (hasBotResources(player, GameLogic.BUILDING_COSTS?.city || { ore: 3, grain: 2 }) && cityTargets.length) {
+    return { type: 'city', target: cityTargets[0].target };
+  }
+
+  const settlements = rankBotSettlementVertices(game, playerId, false);
+  if (hasBotResources(player, { brick: 1, lumber: 1, wool: 1, grain: 1 }) && settlements.length) {
+    return { type: 'settlement', target: settlements[0] };
+  }
+
+  const roads = rankBotRoadEdges(game, playerId, false);
+  if (hasBotResources(player, { brick: 1, lumber: 1 }) && roads.length) {
+    return { type: 'road', target: roads[0] };
+  }
+
+  const bankTrade = chooseBotBankTrade(game, player);
+  if (bankTrade) return bankTrade;
+
+  if (hasBotResources(player, { ore: 1, grain: 1, wool: 1 }) && (game.devCardDeck || []).length > 0) {
+    return { type: 'devCard' };
+  }
+
+  return null;
+}
+
+function chooseBotBankTrade(game, player) {
+  const targets = [
+    { resource: 'ore', wanted: 3 },
+    { resource: 'grain', wanted: 2 },
+    { resource: 'brick', wanted: 1 },
+    { resource: 'lumber', wanted: 1 },
+    { resource: 'wool', wanted: 1 },
+  ];
+  const need = targets.find(target => (player.resources?.[target.resource] || 0) < target.wanted)?.resource;
+  if (!need) return null;
+
+  for (const resource of RESOURCE_TYPES) {
+    if (resource === need) continue;
+    const amount = player.resources?.[resource] || 0;
+    if (amount >= 4) {
+      return {
+        type: 'bankTrade',
+        giveResource: resource,
+        giveAmount: 4,
+        getResource: need,
+      };
+    }
+  }
+  return null;
+}
+
+function chooseBotDiscard(player, cardsToDiscard) {
+  const discard = Object.fromEntries(RESOURCE_TYPES.map(resource => [resource, 0]));
+  let remaining = cardsToDiscard;
+  const resourcesByCount = RESOURCE_TYPES
+    .map(resource => ({ resource, count: player.resources?.[resource] || 0 }))
+    .sort((a, b) => b.count - a.count);
+
+  while (remaining > 0) {
+    const candidate = resourcesByCount.find(item => (player.resources[item.resource] - discard[item.resource]) > 0);
+    if (!candidate) break;
+    discard[candidate.resource]++;
+    remaining--;
+    resourcesByCount.sort((a, b) => (player.resources[b.resource] - discard[b.resource]) - (player.resources[a.resource] - discard[a.resource]));
+  }
+  return discard;
+}
+
+function chooseBotRobberMove(game) {
+  const currentIndex = game.currentPlayerIndex;
+  const candidates = Object.keys(game.hexes || {})
+    .filter(hexKey => hexKey !== game.robber)
+    .map(hexKey => {
+      const victimIndexes = GameLogic.getPlayersOnHex(game, hexKey, currentIndex)
+        .filter(index => !isHeuristicBot(game.players?.[currentIndex]) || index !== currentIndex);
+      const score = victimIndexes.reduce((sum, index) => {
+        const player = game.players[index];
+        return sum + (player?.victoryPoints || 0) + totalCards(player) * 0.1;
+      }, 0);
+      return { hexKey, victimIndexes, score };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  const pick = candidates[0] || { hexKey: Object.keys(game.hexes || {}).find(hexKey => hexKey !== game.robber), victimIndexes: [] };
+  const victimIndex = pick.victimIndexes
+    ?.sort((a, b) => (game.players[b]?.victoryPoints || 0) - (game.players[a]?.victoryPoints || 0))[0];
+
+  return {
+    hexKey: pick.hexKey,
+    stealFromPlayerId: Number.isInteger(victimIndex) ? game.players[victimIndex]?.id : null,
+  };
+}
+
+function rankBotSettlementVertices(game, playerId, isSetup) {
+  return Object.keys(game.vertices || {})
+    .filter(vertexKey => GameLogic.canPlaceSettlement(game, playerId, vertexKey, isSetup).valid)
+    .map(vertexKey => ({ vertexKey, score: scoreBotVertex(game, vertexKey) }))
+    .sort((a, b) => b.score - a.score)
+    .map(item => item.vertexKey);
+}
+
+function rankBotRoadEdges(game, playerId, isSetup, lastSettlement = null) {
+  return Object.keys(game.edges || {})
+    .filter(edgeKey => GameLogic.canPlaceRoad(game, playerId, edgeKey, isSetup, lastSettlement).valid)
+    .map(edgeKey => ({ edgeKey, score: Math.random() }))
+    .sort((a, b) => b.score - a.score)
+    .map(item => item.edgeKey);
+}
+
+function scoreBotVertex(game, vertexKey) {
+  const adjacentHexes = GameLogic.getVertexAdjacentHexes(game, vertexKey);
+  const resources = new Set();
+  let score = 0;
+
+  adjacentHexes.forEach(hex => {
+    if (!hex?.resource) return;
+    resources.add(hex.resource);
+    score += dicePipValue(hex.number);
+  });
+
+  return score + resources.size * 0.8;
+}
+
+function dicePipValue(number) {
+  if (!number || number === 7) return 0;
+  return 6 - Math.abs(7 - number);
+}
+
+function hasBotResources(player, costs) {
+  return Object.entries(costs).every(([resource, amount]) => (player.resources?.[resource] || 0) >= amount);
+}
+
+function totalCards(player) {
+  return Object.values(player?.resources || {}).reduce((sum, amount) => sum + amount, 0);
+}
+
 // ============================================================================
 // SOCKET.IO EVENT HANDLERS
 // ============================================================================
@@ -1628,7 +2369,7 @@ io.on('connection', (socket) => {
   // --------------------------------------------------------------------
   
   /** Create a new game room as the host */
-  socket.on('createGame', async ({ playerName, isExtended = false, enableSpecialBuild = true, benchmark = null }, callback) => {
+  socket.on('createGame', async ({ playerName, isExtended = false, enableSpecialBuild = true }, callback) => {
     // Check game limit
     if (games.size >= MAX_CONCURRENT_GAMES) {
       callback({ 
@@ -1646,33 +2387,7 @@ io.on('connection', (socket) => {
       name: playerName
     }, isExtended, enableSpecialBuild);
 
-    if (benchmark?.enabled) {
-      const benchmarkPlayer = {
-        playerId,
-        playerKey: benchmark.player?.playerKey || `${benchmark.runId || gameCode}:${playerId}`,
-        agentId: benchmark.player?.agentId || playerName,
-        agentVersion: benchmark.player?.agentVersion || 'unknown',
-        playerName,
-        baseline: Boolean(benchmark.player?.baseline) || benchmark.baselineAgentId === (benchmark.player?.agentId || playerName),
-        startingSeat: benchmark.player?.startingSeat ?? 0,
-        runId: benchmark.runId || null,
-      };
-      game.benchmark = {
-        enabled: true,
-        runId: benchmark.runId || uuidv4(),
-        benchmarkId: benchmark.benchmarkId || 'default-benchmark',
-        taskId: benchmark.taskId || null,
-        gameType: benchmark.gameType || 'full-game',
-        mapLayoutId: benchmark.mapLayoutId || null,
-        opponentPolicySet: benchmark.opponentPolicySet || 'default-opponent',
-        scenarioTags: Array.isArray(benchmark.scenarioTags) ? benchmark.scenarioTags : [],
-        baselineAgentId: benchmark.baselineAgentId || null,
-        metadata: benchmark.metadata || {},
-        players: [benchmarkPlayer],
-      };
-      game.players[0] = mergeBenchmarkPlayer(game.players[0], benchmarkPlayer, 0);
-      await registerBenchmarkGameIfNeeded(game);
-    }
+    await ensureBenchmarkEnabled(game, playerId, playerName, 0);
     
     // Add timestamp for cleanup
     game.createdAt = Date.now();
@@ -1692,7 +2407,7 @@ io.on('connection', (socket) => {
   });
   
   /** Join an existing game room using a game code */
-  socket.on('joinGame', async ({ gameCode, playerName, benchmark = null }, callback) => {
+  socket.on('joinGame', async ({ gameCode, playerName }, callback) => {
     const game = games.get(gameCode.toUpperCase());
     
     if (!game) {
@@ -1711,25 +2426,7 @@ io.on('connection', (socket) => {
     playerSockets.set(socket.id, { gameId: gameCode.toUpperCase(), playerId });
     socket.join(gameCode.toUpperCase());
 
-    if (game.benchmark?.enabled) {
-      const benchmarkPlayer = {
-        playerId,
-        playerKey: benchmark?.player?.playerKey || `${game.benchmark.runId || gameCode.toUpperCase()}:${playerId}`,
-        agentId: benchmark?.player?.agentId || playerName,
-        agentVersion: benchmark?.player?.agentVersion || 'unknown',
-        playerName,
-        baseline: Boolean(benchmark?.player?.baseline) || game.benchmark.baselineAgentId === (benchmark?.player?.agentId || playerName),
-        startingSeat: benchmark?.player?.startingSeat ?? (game.players.length - 1),
-        runId: game.benchmark.runId,
-      };
-      game.benchmark.players.push(benchmarkPlayer);
-      game.players[game.players.length - 1] = mergeBenchmarkPlayer(
-        game.players[game.players.length - 1],
-        benchmarkPlayer,
-        game.players.length - 1
-      );
-      await registerBenchmarkGameIfNeeded(game);
-    }
+    await ensureBenchmarkEnabled(game, playerId, playerName, game.players.length - 1);
     
     console.log(`${playerName} joined game ${gameCode}`);
     
@@ -1743,6 +2440,70 @@ io.on('connection', (socket) => {
     // Notify all players
     broadcastToGame(gameCode.toUpperCase(), 'playerJoined', { playerName });
     broadcastGameState(gameCode.toUpperCase());
+  });
+
+  /** Add one or more server-controlled heuristic agents while waiting for players */
+  socket.on('addHeuristicAgents', async ({ count = 1 } = {}, callback) => {
+    const playerInfo = playerSockets.get(socket.id);
+    if (!playerInfo) {
+      callback({ success: false, error: 'Not in a game' });
+      return;
+    }
+
+    const game = games.get(playerInfo.gameId);
+    if (!game) {
+      callback({ success: false, error: 'Game not found' });
+      return;
+    }
+
+    if (game.players[0]?.id !== playerInfo.playerId) {
+      callback({ success: false, error: 'Only host can add heuristic agents' });
+      return;
+    }
+
+    if (game.phase !== 'waiting') {
+      callback({ success: false, error: 'Can only add heuristic agents before the game starts' });
+      return;
+    }
+
+    const seatsAvailable = game.maxPlayers - game.players.length;
+    if (seatsAvailable <= 0) {
+      callback({ success: false, error: 'Game is full' });
+      return;
+    }
+    const requestedCount = Math.max(1, Math.min(Number(count) || 1, seatsAvailable));
+
+    const addedAgents = [];
+    for (let i = 0; i < requestedCount; i++) {
+      const botNumber = game.players.filter(player => isHeuristicBot(player)).length + 1;
+      const playerId = uuidv4();
+      const playerName = `Heuristic Agent ${botNumber}`;
+      const result = GameLogic.addPlayer(game, { id: playerId, name: playerName });
+      if (!result.success) {
+        break;
+      }
+
+      const botPlayer = game.players[game.players.length - 1];
+      botPlayer.isBot = true;
+      botPlayer.botType = 'heuristic';
+      botPlayer.disconnected = false;
+      addedAgents.push({ id: playerId, name: playerName });
+
+      await ensureBenchmarkEnabled(game, playerId, playerName, game.players.length - 1, {
+        agentId: 'heuristic-agent',
+        agentVersion: 'server-js',
+      });
+    }
+
+    if (!addedAgents.length) {
+      callback({ success: false, error: 'No heuristic agents could be added' });
+      return;
+    }
+
+    console.log(`Added ${addedAgents.length} heuristic agent(s) to game ${playerInfo.gameId}`);
+    addedAgents.forEach(agent => broadcastToGame(playerInfo.gameId, 'playerJoined', { playerName: agent.name }));
+    broadcastGameState(playerInfo.gameId);
+    callback({ success: true, addedAgents, gameState: GameLogic.getPlayerView(game, playerInfo.playerId) });
   });
   
   // --------------------------------------------------------------------
@@ -1824,6 +2585,37 @@ io.on('connection', (socket) => {
     }
     
     callback(result);
+  });
+
+  /** Delete a game from memory (host only). Useful for automated self-play runs. */
+  socket.on('deleteGame', (callback) => {
+    const playerInfo = playerSockets.get(socket.id);
+    if (!playerInfo) {
+      callback({ success: false, error: 'Not in a game' });
+      return;
+    }
+
+    const game = games.get(playerInfo.gameId);
+    if (!game) {
+      callback({ success: false, error: 'Game not found' });
+      return;
+    }
+
+    if (game.players[0]?.id !== playerInfo.playerId) {
+      callback({ success: false, error: 'Only host can delete the game' });
+      return;
+    }
+
+    const gameId = playerInfo.gameId;
+    games.delete(gameId);
+    for (const [socketId, info] of playerSockets.entries()) {
+      if (info.gameId === gameId) {
+        playerSockets.delete(socketId);
+      }
+    }
+    io.to(gameId).emit('gameDeleted', { gameCode: gameId });
+    io.in(gameId).socketsLeave(gameId);
+    callback({ success: true, gameCode: gameId, activeGames: games.size });
   });
   
   // --------------------------------------------------------------------
@@ -1997,7 +2789,7 @@ io.on('connection', (socket) => {
           ? {
             taskId: 'initial-settlement-location-selection',
             selectedOptionId: vertexKey,
-            evaluationContext: buildSettlementEvaluationContext(game, playerInfo.playerId),
+            evaluationContext: buildSettlementEvaluationContext(game, playerInfo.playerId, true),
           }
           : [
             buildBuildVsSaveTaskPayload(game, playerInfo.playerId, 'settlement'),
@@ -2005,7 +2797,7 @@ io.on('connection', (socket) => {
             {
               taskId: 'settlement-location-selection',
               selectedOptionId: vertexKey,
-              evaluationContext: buildSettlementEvaluationContext(game, playerInfo.playerId),
+              evaluationContext: buildSettlementEvaluationContext(game, playerInfo.playerId, false),
             },
           ].filter(Boolean)
       )
@@ -2572,6 +3364,124 @@ io.on('connection', (socket) => {
     
     callback({ success: true, players });
   });
+
+  socket.on('getBenchmarkBuildAdvice', (payload, callback) => {
+    const playerInfo = playerSockets.get(socket.id);
+    if (!playerInfo) {
+      callback({ success: false, error: 'Not in a game' });
+      return;
+    }
+
+    const game = games.get(playerInfo.gameId);
+    if (!game) {
+      callback({ success: false, error: 'Game not found' });
+      return;
+    }
+
+    const advice = buildBenchmarkBuildAdvice(game, playerInfo.playerId);
+    callback({
+      success: true,
+      ...(advice || {
+        options: [{ id: 'save', score: 0.35, missingCount: 0, affordable: true }],
+        planDecisionData: [],
+        saveScore: 0.35,
+        settlementTargets: [],
+        cityTargets: [],
+        roadTargets: [],
+      }),
+    });
+  });
+
+  socket.on('getBenchmarkBankTradeAdvice', (payload, callback) => {
+    const playerInfo = playerSockets.get(socket.id);
+    if (!playerInfo) {
+      callback({ success: false, error: 'Not in a game' });
+      return;
+    }
+
+    const game = games.get(playerInfo.gameId);
+    if (!game) {
+      callback({ success: false, error: 'Game not found' });
+      return;
+    }
+
+    const advice = buildBenchmarkBankTradeAdvice(game, playerInfo.playerId);
+    callback({
+      success: true,
+      ...(advice || {
+        options: [{ id: 'no-trade', giveResource: null, giveAmount: 0, getResource: null, score: 0.45 }],
+      }),
+    });
+  });
+
+  socket.on('getBenchmarkDevCardAdvice', (payload, callback) => {
+    const playerInfo = playerSockets.get(socket.id);
+    if (!playerInfo) {
+      callback({ success: false, error: 'Not in a game' });
+      return;
+    }
+
+    const game = games.get(playerInfo.gameId);
+    if (!game) {
+      callback({ success: false, error: 'Game not found' });
+      return;
+    }
+
+    const advice = buildBenchmarkDevCardAdvice(game, playerInfo.playerId);
+    callback({
+      success: true,
+      ...(advice || {
+        knightOptions: [],
+        yearOfPlentyOptions: [],
+      }),
+    });
+  });
+
+  socket.on('getBenchmarkRobberAdvice', (payload, callback) => {
+    const playerInfo = playerSockets.get(socket.id);
+    if (!playerInfo) {
+      callback({ success: false, error: 'Not in a game' });
+      return;
+    }
+
+    const game = games.get(playerInfo.gameId);
+    if (!game) {
+      callback({ success: false, error: 'Game not found' });
+      return;
+    }
+
+    const hexKeyValue = payload && typeof payload.hexKey === 'string' ? payload.hexKey : null;
+    const advice = buildBenchmarkRobberAdvice(game, playerInfo.playerId, hexKeyValue);
+    callback({
+      success: true,
+      ...(advice || {
+        hexOptions: [],
+        victimOptions: [],
+      }),
+    });
+  });
+
+  socket.on('getBenchmarkDiscardAdvice', (payload, callback) => {
+    const playerInfo = playerSockets.get(socket.id);
+    if (!playerInfo) {
+      callback({ success: false, error: 'Not in a game' });
+      return;
+    }
+
+    const game = games.get(playerInfo.gameId);
+    if (!game) {
+      callback({ success: false, error: 'Game not found' });
+      return;
+    }
+
+    const advice = buildBenchmarkDiscardAdvice(game, playerInfo.playerId);
+    callback({
+      success: true,
+      ...(advice || {
+        discardOptions: [],
+      }),
+    });
+  });
   
   // --------------------------------------------------------------------
   // CHAT
@@ -2666,4 +3576,3 @@ const PORT = process.env.PORT || 3001;
 httpServer.listen(PORT, () => {
   console.log(`Catan server running on port ${PORT}`);
 });
-

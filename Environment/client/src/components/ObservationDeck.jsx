@@ -2,19 +2,19 @@ import { useEffect, useMemo, useState } from 'react';
 import './ObservationDeck.css';
 
 function formatPercent(value) {
-  if (value === null || value === undefined) return 'N/A';
-  return `${(value * 100).toFixed(1)}%`;
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return 'N/A';
+  return `${(Number(value) * 100).toFixed(1)}%`;
+}
+
+function formatNumber(value, digits = 2) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return 'N/A';
+  return Number(value).toFixed(digits);
 }
 
 function formatMetric(metric, value) {
-  if (value === null || value === undefined) return 'N/A';
-  if (metric.includes('Rate') || metric === 'winRate' || metric === 'taskSuccessRate') {
-    return formatPercent(value);
-  }
-  if (metric.includes('Latency')) {
-    return `${Math.round(value)} ms`;
-  }
-  return Number(value).toFixed(2);
+  if (metric.includes('Rate') || metric === 'taskSuccessRate') return formatPercent(value);
+  if (metric.includes('Latency')) return value === null || value === undefined ? 'N/A' : `${Math.round(value)} ms`;
+  return formatNumber(value, 2);
 }
 
 function metricLabel(metric) {
@@ -23,126 +23,270 @@ function metricLabel(metric) {
     .replace(/^./, char => char.toUpperCase());
 }
 
-function statusLabel(status) {
-  switch (status) {
-    case 'excellent':
-      return 'Excellent';
-    case 'strong':
-      return 'Strong';
-    case 'fair':
-      return 'Fair';
-    case 'weak':
-      return 'Needs work';
-    case 'high-penalty':
-      return 'High penalty';
-    case 'low-score':
-      return 'Low score';
-    default:
-      return 'No data';
-  }
-}
-
 function buildQuery(filters) {
   const params = new URLSearchParams();
   Object.entries(filters).forEach(([key, value]) => {
-    if (value) {
-      params.set(key, value);
-    }
+    if (value) params.set(key, value);
   });
   return params.toString();
 }
 
-function SummaryCard({ label, value, hint }) {
+function scoreClass(value) {
+  if (value === null || value === undefined) return 'muted';
+  if (value >= 0.85) return 'good';
+  if (value >= 0.65) return 'ok';
+  return 'bad';
+}
+
+function eventLabel(entry) {
+  if (entry.eventType === 'game') return entry.success ? 'Win' : 'Loss';
+  if (entry.eventType === 'task') return entry.success ? 'Passed' : 'Failed';
+  if (entry.benchmarkTaskId) return entry.details?.benchmarkPassed ? 'Passed' : 'Failed';
+  return entry.status || 'Recorded';
+}
+
+function eventClass(entry) {
+  if (entry.eventType === 'game') return entry.success ? 'good' : 'muted';
+  if (entry.eventType === 'task' || entry.benchmarkTaskId) return entry.success || entry.details?.benchmarkPassed ? 'good' : 'bad';
+  if (entry.status === 'rejected' || entry.illegal) return 'bad';
+  return 'ok';
+}
+
+function eventTitle(entry) {
+  const name = entry.benchmarkTaskName || entry.task || entry.actionName || entry.eventType || 'Event';
+  return `Turn ${entry.turnNumber ?? 'N/A'} - ${name}`;
+}
+
+function eventSubtitle(entry) {
+  const game = entry.gameCode || 'No game';
+  const player = entry.playerName || entry.agentId || 'Unknown';
+  return `${game} / ${player}`;
+}
+
+function eventExplanation(entry) {
+  if (entry.eventType === 'task') return entry.details?.explanation || 'No evaluator details recorded.';
+  if (entry.benchmarkTaskId) return entry.details?.benchmarkExplanation || 'No evaluator details recorded.';
+  if (entry.eventType === 'game') {
+    const points = entry.details?.finalVictoryPoints;
+    const rounds = entry.details?.roundsPlayed;
+    return `Final VP: ${points ?? 'N/A'}${rounds ? ` / Rounds: ${rounds}` : ''}`;
+  }
+  return 'Action telemetry only; no benchmark task was linked to this event.';
+}
+
+function eventScore(entry) {
+  if (entry.eventType === 'task') return entry.details?.score;
+  return entry.details?.benchmarkScore;
+}
+
+function taskScoreLine(entry) {
+  const details = entry.eventType === 'task'
+    ? entry.details?.evaluationDetails
+    : entry.details?.benchmarkEvaluationDetails;
+  if (!details) return null;
+  const parts = [];
+  if (details.selectedScore !== undefined && details.selectedScore !== null) parts.push(`selected ${formatNumber(details.selectedScore, 3)}`);
+  if (details.bestScore !== undefined && details.bestScore !== null) parts.push(`best ${formatNumber(details.bestScore, 3)}`);
+  if (details.threshold !== undefined && details.threshold !== null) parts.push(`threshold ${formatNumber(details.threshold, 3)}`);
+  if (details.candidateScore !== undefined && details.candidateScore !== null) parts.push(`candidate ${formatNumber(details.candidateScore, 3)}`);
+  return parts.length ? parts.join(' / ') : null;
+}
+
+function compactDate(value) {
+  if (!value) return 'No timestamp';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function LeaderboardRow({ entry, selected, onSelect }) {
+  const taskRate = entry.rawMetrics?.taskSuccessRate;
+  const winRate = entry.rawMetrics?.winRate;
+  const vp = entry.rawMetrics?.averageFinalVictoryPoints;
   return (
-    <div className="deck-summary-card">
-      <span className="deck-summary-label">{label}</span>
-      <strong>{value}</strong>
-      {hint ? <span className="deck-summary-hint">{hint}</span> : null}
+    <button className={`benchmark-row ${selected ? 'benchmark-row--selected' : ''}`} onClick={() => onSelect(entry)}>
+      <span className="rank-cell">#{entry.rank}</span>
+      <span className="name-cell">
+        <strong>{entry.displayName}</strong>
+        <small>{entry.agentVersion || entry.entityKey}</small>
+      </span>
+      <span className={`score-pill ${scoreClass(entry.overallScore)}`}>{formatNumber(entry.overallScore, 3)}</span>
+      <span>{formatPercent(winRate)}</span>
+      <span>{formatPercent(taskRate)}</span>
+      <span>{formatNumber(vp, 1)}</span>
+      <span>{entry.rawMetrics?.averageLatencyPerTurn ? `${Math.round(entry.rawMetrics.averageLatencyPerTurn)} ms` : 'N/A'}</span>
+    </button>
+  );
+}
+
+function MetricBar({ label, value, display }) {
+  const width = Math.max(0, Math.min(100, Number(value || 0) * 100));
+  return (
+    <div className="metric-bar">
+      <div className="metric-bar__label">
+        <span>{label}</span>
+        <strong>{display || formatPercent(value)}</strong>
+      </div>
+      <div className="metric-bar__track">
+        <div className={`metric-bar__fill ${scoreClass(value)}`} style={{ width: `${width}%` }} />
+      </div>
     </div>
   );
 }
 
-function formatEventStatus(entry) {
-  if (entry.eventType === 'task') {
-    const score = entry.details?.score;
-    const scoreText = score === null || score === undefined ? '' : ` (${(score * 100).toFixed(1)}%)`;
-    return `Task success: ${entry.status || 'evaluated'}${scoreText}`;
+function BreakdownPanel({ detail, loading }) {
+  if (loading) {
+    return <div className="empty-panel">Loading breakdown...</div>;
   }
-  if (entry.eventType === 'action') {
-    if (entry.benchmarkTaskId) {
-      const score = entry.details?.benchmarkScore;
-      const scoreText = score === null || score === undefined ? '' : ` (${(score * 100).toFixed(1)}%)`;
-      return `Task success: ${entry.details?.benchmarkPassed ? 'passed' : 'failed'}${scoreText}`;
-    }
-    return `Action status: ${entry.status || 'recorded'}`;
+  if (!detail) {
+    return <div className="empty-panel">Select a leaderboard row to inspect the score breakdown.</div>;
   }
-  return entry.status || 'recorded';
+
+  const weakestTasks = [...(detail.taskBreakdown || [])]
+    .filter(task => task.attempts > 0)
+    .sort((left, right) => (left.successRate ?? -1) - (right.successRate ?? -1))
+    .slice(0, 5);
+  const recentTasks = [...(detail.taskResults || [])].slice(0, 8);
+  const recentGames = [...(detail.games || [])].slice(0, 5);
+
+  return (
+    <div className="breakdown-panel">
+      <div className="breakdown-heading">
+        <div>
+          <span className="section-kicker">{detail.entityType}</span>
+          <h2>{detail.displayName}</h2>
+        </div>
+        <span className={`score-pill ${scoreClass(detail.overallScore)}`}>{formatNumber(detail.overallScore, 3)}</span>
+      </div>
+
+      <div className="breakdown-stats">
+        <MetricBar label="Gameplay" value={detail.categoryScores?.gameplay} />
+        <MetricBar label="Reasoning" value={detail.categoryScores?.reasoning} />
+        <MetricBar label="Operations" value={detail.categoryScores?.operations} />
+      </div>
+
+      <div className="metric-grid">
+        {Object.entries(detail.rawMetrics || {}).map(([metric, value]) => (
+          <div key={metric} className="metric-tile">
+            <span>{metricLabel(metric)}</span>
+            <strong>{formatMetric(metric, value)}</strong>
+            <small>{formatPercent(detail.normalizedMetrics?.[metric])} normalized</small>
+          </div>
+        ))}
+      </div>
+
+      <section className="breakdown-section">
+        <div className="section-title">
+          <h3>Needs Attention</h3>
+          <span>{weakestTasks.length} task groups</span>
+        </div>
+        <div className="task-list">
+          {weakestTasks.length ? weakestTasks.map(task => (
+            <div key={task.taskId} className="task-row">
+              <div>
+                <strong>{task.taskName}</strong>
+                <small>{task.taskId}</small>
+              </div>
+              <span>{task.attempts} tries</span>
+              <span className={`score-pill ${scoreClass(task.successRate)}`}>{formatPercent(task.successRate)}</span>
+            </div>
+          )) : <div className="empty-inline">No completed task attempts yet.</div>}
+        </div>
+      </section>
+
+      <section className="breakdown-section">
+        <div className="section-title">
+          <h3>Recent Task Results</h3>
+          <span>{recentTasks.length} latest</span>
+        </div>
+        <div className="task-list">
+          {recentTasks.length ? recentTasks.map(task => (
+            <div key={task.id} className="task-row">
+              <div>
+                <strong>{task.taskName || task.taskId}</strong>
+                <small>{compactDate(task.createdAt)}</small>
+              </div>
+              <span>{formatNumber(task.score, 3)}</span>
+              <span className={`score-pill ${task.success ? 'good' : 'bad'}`}>{task.success ? 'pass' : 'fail'}</span>
+            </div>
+          )) : <div className="empty-inline">No task history for this filter.</div>}
+        </div>
+      </section>
+
+      <section className="breakdown-section">
+        <div className="section-title">
+          <h3>Games</h3>
+          <span>{recentGames.length} recent</span>
+        </div>
+        <div className="game-strip">
+          {recentGames.length ? recentGames.map(game => (
+            <div key={game.gameId} className="game-chip">
+              <strong>{game.won ? 'Win' : 'Loss'}</strong>
+              <span>{game.finalVictoryPoints ?? 'N/A'} VP</span>
+              <small>{game.gameId}</small>
+            </div>
+          )) : <div className="empty-inline">No completed games yet.</div>}
+        </div>
+      </section>
+    </div>
+  );
 }
 
-function formatMoveTimeSeconds(value) {
-  if (value === null || value === undefined) return 'No move timing';
-  return `Move time ${(value / 1000).toFixed(1)}s`;
-}
+function LogRow({ entry }) {
+  const score = eventScore(entry);
+  const scoreText = score === null || score === undefined ? null : formatPercent(score);
+  const line = taskScoreLine(entry);
 
-function formatScoreValue(value) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return null;
-  return Number(value).toFixed(3);
-}
-
-function formatShortTermScoreDetails(entry) {
-  const details = entry.eventType === 'task'
-    ? entry.details?.evaluationDetails
-    : entry.details?.benchmarkEvaluationDetails;
-  const category = entry.eventType === 'task'
-    ? entry.details?.taskCategory
-    : entry.details?.benchmarkTaskCategory;
-
-  if (category !== 'shortTerm' || !details) return null;
-
-  const selected = formatScoreValue(details.selectedScore);
-  const best = formatScoreValue(details.bestScore);
-  const threshold = formatScoreValue(details.threshold);
-  const parts = [];
-
-  if (selected !== null) parts.push(`selected ${selected}`);
-  if (best !== null) parts.push(`best ${best}`);
-  if (threshold !== null) parts.push(`threshold ${threshold}`);
-
-  if (!parts.length) return null;
-  return `Short-term score details: ${parts.join(' | ')}`;
-}
-
-function formatLogContext(entry) {
-  if (entry.eventType === 'task') {
-    return `Turn ${entry.turnNumber ?? 'N/A'} - ${entry.task || 'Benchmark task'}`;
-  }
-  if (entry.eventType === 'action') {
-    return `Turn ${entry.turnNumber ?? 'N/A'} - ${entry.benchmarkTaskName || entry.actionName || 'Action'}`;
-  }
-  return `Turn ${entry.turnNumber ?? 'N/A'} - ${entry.task || entry.actionName || entry.eventType}`;
+  return (
+    <details className="log-row">
+      <summary>
+        <span className={`event-dot ${eventClass(entry)}`} />
+        <span className="log-main">
+          <strong>{eventTitle(entry)}</strong>
+          <small>{eventSubtitle(entry)}</small>
+        </span>
+        <span className={`score-pill ${eventClass(entry)}`}>{eventLabel(entry)}</span>
+        <span>{scoreText || '-'}</span>
+        <span>{entry.moveTimeMs ? `${(entry.moveTimeMs / 1000).toFixed(1)}s` : '-'}</span>
+      </summary>
+      <div className="log-detail">
+        <p>{eventExplanation(entry)}</p>
+        {line ? <p>{line}</p> : null}
+        <dl>
+          <div><dt>Time</dt><dd>{compactDate(entry.timestamp)}</dd></div>
+          <div><dt>Run</dt><dd>{entry.runId || 'N/A'}</dd></div>
+          <div><dt>Benchmark</dt><dd>{entry.benchmarkId || 'N/A'}</dd></div>
+          <div><dt>Action</dt><dd>{entry.actionName || 'N/A'}</dd></div>
+        </dl>
+      </div>
+    </details>
+  );
 }
 
 function ObservationDeck({ serverUrl, onBack }) {
   const [overview, setOverview] = useState(null);
   const [leaderboard, setLeaderboard] = useState(null);
   const [detail, setDetail] = useState(null);
-  const [runDetail, setRunDetail] = useState(null);
-  const [slices, setSlices] = useState([]);
   const [liveLog, setLiveLog] = useState([]);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [entityType, setEntityType] = useState('agent');
+  const [logFilter, setLogFilter] = useState('all');
   const [filters, setFilters] = useState({
     benchmarkId: '',
     taskCategory: '',
-    mapLayoutId: '',
-    opponentPolicySet: '',
     runId: '',
     search: '',
   });
-  const [entityType, setEntityType] = useState('agent');
 
   const filterQuery = useMemo(() => buildQuery(filters), [filters]);
+  const selectedKey = detail?.entityKey || null;
 
   useEffect(() => {
     let cancelled = false;
@@ -150,35 +294,21 @@ function ObservationDeck({ serverUrl, onBack }) {
     async function loadDeck() {
       try {
         setLoading(true);
-        const [overviewRes, leaderboardRes, slicesRes] = await Promise.all([
+        const [overviewRes, leaderboardRes] = await Promise.all([
           fetch(`${serverUrl}/api/benchmark/overview`),
           fetch(`${serverUrl}/api/benchmark/leaderboard?entityType=${entityType}${filterQuery ? `&${filterQuery}` : ''}`),
-          fetch(`${serverUrl}/api/benchmark/slices${filterQuery ? `?${filterQuery}` : ''}`),
         ]);
-        if (!overviewRes.ok || !leaderboardRes.ok || !slicesRes.ok) {
-          throw new Error('Failed to load benchmark observation data');
-        }
-
-        const [overviewData, leaderboardData, slicesData] = await Promise.all([
-          overviewRes.json(),
-          leaderboardRes.json(),
-          slicesRes.json(),
-        ]);
-
+        if (!overviewRes.ok || !leaderboardRes.ok) throw new Error('Failed to load benchmark deck');
+        const [overviewData, leaderboardData] = await Promise.all([overviewRes.json(), leaderboardRes.json()]);
         if (!cancelled) {
           setOverview(overviewData);
           setLeaderboard(leaderboardData);
-          setSlices(slicesData.slices || []);
           setError(null);
         }
       } catch (fetchError) {
-        if (!cancelled) {
-          setError(fetchError.message);
-        }
+        if (!cancelled) setError(fetchError.message);
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        if (!cancelled) setLoading(false);
       }
     }
 
@@ -193,18 +323,12 @@ function ObservationDeck({ serverUrl, onBack }) {
 
     async function loadLiveLog() {
       try {
-        const response = await fetch(`${serverUrl}/api/benchmark/live-log?limit=30${filterQuery ? `&${filterQuery}` : ''}`);
-        if (!response.ok) {
-          throw new Error('Failed to load live benchmark log');
-        }
+        const response = await fetch(`${serverUrl}/api/benchmark/live-log?limit=80${filterQuery ? `&${filterQuery}` : ''}`);
+        if (!response.ok) throw new Error('Failed to load benchmark log');
         const payload = await response.json();
-        if (!cancelled) {
-          setLiveLog(payload.entries || []);
-        }
+        if (!cancelled) setLiveLog(payload.entries || []);
       } catch (fetchError) {
-        if (!cancelled) {
-          setError(current => current || fetchError.message);
-        }
+        if (!cancelled) setError(current => current || fetchError.message);
       }
     }
 
@@ -216,23 +340,24 @@ function ObservationDeck({ serverUrl, onBack }) {
     };
   }, [serverUrl, filterQuery]);
 
+  const filtersMeta = overview?.filters || {
+    benchmarkIds: [],
+    runIds: [],
+    taskCategories: [],
+  };
+
   const handleFilterChange = event => {
     const { name, value } = event.target;
-    setFilters(current => ({
-      ...current,
-      [name]: value,
-    }));
+    setFilters(current => ({ ...current, [name]: value }));
   };
 
   const loadDetail = async entry => {
     setDetailLoading(true);
-    setRunDetail(null);
     try {
       const query = filterQuery ? `?${filterQuery}` : '';
-      const response = await fetch(`${serverUrl}/api/benchmark/${entry.entityType === 'player' ? 'players' : 'agents'}/${encodeURIComponent(entry.entityKey)}${query}`);
-      if (!response.ok) {
-        throw new Error('Failed to load detail view');
-      }
+      const endpoint = entry.entityType === 'player' ? 'players' : 'agents';
+      const response = await fetch(`${serverUrl}/api/benchmark/${endpoint}/${encodeURIComponent(entry.entityKey)}${query}`);
+      if (!response.ok) throw new Error('Failed to load leaderboard breakdown');
       setDetail(await response.json());
     } catch (fetchError) {
       setError(fetchError.message);
@@ -241,311 +366,128 @@ function ObservationDeck({ serverUrl, onBack }) {
     }
   };
 
-  const loadRunDetail = async runId => {
-    setDetail(null);
-    setDetailLoading(true);
-    try {
-      const response = await fetch(`${serverUrl}/api/benchmark/runs/${encodeURIComponent(runId)}`);
-      if (!response.ok) {
-        throw new Error('Failed to load run detail');
-      }
-      setRunDetail(await response.json());
-    } catch (fetchError) {
-      setError(fetchError.message);
-    } finally {
-      setDetailLoading(false);
-    }
-  };
+  const filteredLog = useMemo(() => liveLog.filter(entry => {
+    if (logFilter === 'all') return true;
+    if (logFilter === 'failures') return entry.eventType === 'task' ? !entry.success : entry.benchmarkTaskId && !entry.details?.benchmarkPassed;
+    if (logFilter === 'tasks') return entry.eventType === 'task' || Boolean(entry.benchmarkTaskId);
+    return true;
+  }), [liveLog, logFilter]);
 
-  const filtersMeta = overview?.filters || {
-    benchmarkIds: [],
-    mapLayoutIds: [],
-    opponentPolicySets: [],
-    runIds: [],
-    taskCategories: [],
-  };
+  const leaderboardEntries = leaderboard?.entries || [];
 
   return (
     <div className="observation-deck">
-      <div className="observation-deck__hero">
+      <header className="deck-topbar">
         <div>
-          <p className="observation-deck__eyebrow">Benchmark Deck</p>
-          <h1>Benchmark analytics for every Catan player and agent</h1>
-          <p className="observation-deck__subhead">
-            Compare benchmark runs, drill into task families, inspect turn telemetry, and rank agents with absolute benchmark scoring.
-          </p>
+          <span className="section-kicker">Benchmark Deck</span>
+          <h1>Leaderboard</h1>
         </div>
-        <div className="observation-deck__hero-actions">
-          <button className="deck-secondary-button" onClick={onBack}>Back To Lobby</button>
-        </div>
-      </div>
+        <button className="deck-button" onClick={onBack}>Back To Lobby</button>
+      </header>
 
       {error ? <div className="deck-error">{error}</div> : null}
 
+      <section className="deck-controls" aria-label="Benchmark filters">
+        <div className="segmented-control">
+          <button className={entityType === 'agent' ? 'active' : ''} onClick={() => setEntityType('agent')}>Agents</button>
+          <button className={entityType === 'player' ? 'active' : ''} onClick={() => setEntityType('player')}>Players</button>
+        </div>
+        <label>
+          Benchmark
+          <select name="benchmarkId" value={filters.benchmarkId} onChange={handleFilterChange}>
+            <option value="">All</option>
+            {(filtersMeta.benchmarkIds || []).map(value => <option key={value} value={value}>{value}</option>)}
+          </select>
+        </label>
+        <label>
+          Task Family
+          <select name="taskCategory" value={filters.taskCategory} onChange={handleFilterChange}>
+            <option value="">All</option>
+            {(filtersMeta.taskCategories || []).map(category => (
+              <option key={category.value} value={category.value}>{category.label}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Run
+          <select name="runId" value={filters.runId} onChange={handleFilterChange}>
+            <option value="">All</option>
+            {(filtersMeta.runIds || []).map(run => <option key={run.runId} value={run.runId}>{run.label}</option>)}
+          </select>
+        </label>
+        <label>
+          Search
+          <input name="search" value={filters.search} onChange={handleFilterChange} placeholder="Name, task, run" />
+        </label>
+      </section>
+
       {loading ? (
-        <div className="deck-loading">Loading benchmark deck...</div>
+        <div className="empty-panel">Loading leaderboard...</div>
       ) : (
-        <>
-          <div className="deck-summary-grid">
-            <SummaryCard label="Tracked Runs" value={overview?.totals?.runs ?? 0} hint="Benchmark manifests persisted to JSON" />
-            <SummaryCard label="Tracked Games" value={overview?.totals?.games ?? 0} hint="Full-game benchmark results" />
-            <SummaryCard label="Reasoning Tasks" value={overview?.totals?.tasks ?? 0} hint="Task-level evaluations captured" />
-            <SummaryCard label="Telemetry Records" value={overview?.totals?.telemetryRecords ?? 0} hint="Per-turn action attempts and latencies" />
-          </div>
-
-          <div className="deck-toolbar">
-            <div className="deck-toolbar__row">
-              <label>
-                Entity
-                <select value={entityType} onChange={event => setEntityType(event.target.value)}>
-                  <option value="agent">Agents</option>
-                  <option value="player">Players</option>
-                </select>
-              </label>
-              <label>
-                Benchmark
-                <select name="benchmarkId" value={filters.benchmarkId} onChange={handleFilterChange}>
-                  <option value="">All</option>
-                  {filtersMeta.benchmarkIds.map(value => <option key={value} value={value}>{value}</option>)}
-                </select>
-              </label>
-              <label>
-                Task Family
-                <select name="taskCategory" value={filters.taskCategory} onChange={handleFilterChange}>
-                  <option value="">All</option>
-                  {filtersMeta.taskCategories.map(category => (
-                    <option key={category.value} value={category.value}>{category.label}</option>
-                  ))}
-                </select>
-              </label>
+        <main className="deck-main">
+          <section className="leaderboard-panel">
+            <div className="panel-heading">
+              <div>
+                <span className="section-kicker">{leaderboardEntries.length} ranked</span>
+                <h2>{entityType === 'agent' ? 'Agent Standings' : 'Player Standings'}</h2>
+              </div>
+              <div className="totals-line">
+                <span>{overview?.totals?.games ?? 0} games</span>
+                <span>{overview?.totals?.tasks ?? 0} tasks</span>
+                <span>{overview?.totals?.telemetryRecords ?? 0} logs</span>
+              </div>
             </div>
-            <div className="deck-toolbar__row">
-              <label>
-                Map
-                <select name="mapLayoutId" value={filters.mapLayoutId} onChange={handleFilterChange}>
-                  <option value="">All</option>
-                  {filtersMeta.mapLayoutIds.map(value => <option key={value} value={value}>{value}</option>)}
-                </select>
-              </label>
-              <label>
-                Opponent Policy
-                <select name="opponentPolicySet" value={filters.opponentPolicySet} onChange={handleFilterChange}>
-                  <option value="">All</option>
-                  {filtersMeta.opponentPolicySets.map(value => <option key={value} value={value}>{value}</option>)}
-                </select>
-              </label>
-              <label>
-                Run
-                <select name="runId" value={filters.runId} onChange={handleFilterChange}>
-                  <option value="">All</option>
-                  {filtersMeta.runIds.map(run => <option key={run.runId} value={run.runId}>{run.label}</option>)}
-                </select>
-              </label>
-              <label className="deck-toolbar__search">
-                Search
-                <input
-                  name="search"
-                  value={filters.search}
-                  onChange={handleFilterChange}
-                  placeholder="Agent, player, or task"
+            <div className="benchmark-table">
+              <div className="benchmark-table__head">
+                <span>Rank</span>
+                <span>Name</span>
+                <span>Score</span>
+                <span>Win</span>
+                <span>Tasks</span>
+                <span>VP</span>
+                <span>Latency</span>
+              </div>
+              {leaderboardEntries.length ? leaderboardEntries.map(entry => (
+                <LeaderboardRow
+                  key={entry.entityKey}
+                  entry={entry}
+                  selected={selectedKey === entry.entityKey}
+                  onSelect={loadDetail}
                 />
-              </label>
+              )) : <div className="empty-inline">No leaderboard entries match these filters.</div>}
             </div>
-          </div>
+          </section>
 
-          <div className="deck-layout">
-            <section className="deck-panel">
-              <div className="deck-panel__header">
-                <h2>Live Benchmark Log</h2>
-                <span>{liveLog.length} recent events</span>
-              </div>
-              <div className="deck-list">
-                {liveLog.map(entry => (
-                  <div key={entry.id} className="deck-list__item">
-                    <strong>{`${entry.gameCode || 'No game'} - ${entry.playerName || 'Unknown player'}`}</strong>
-                    <span>{formatLogContext(entry)}</span>
-                    <span>{`${entry.eventType}: ${formatEventStatus(entry)}`}</span>
-                    <span>{formatMoveTimeSeconds(entry.moveTimeMs)}</span>
-                    {formatShortTermScoreDetails(entry) ? (
-                      <span>{formatShortTermScoreDetails(entry)}</span>
-                    ) : null}
-                    <span>
-                      {entry.eventType === 'task'
-                        ? (entry.details?.explanation || 'No evaluator notes')
-                        : (entry.details?.benchmarkExplanation || 'No evaluator notes')}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </section>
-
-            <section className="deck-panel deck-panel--leaderboard">
-              <div className="deck-panel__header">
-                <h2>{entityType === 'agent' ? 'Agent Leaderboard' : 'Player Leaderboard'}</h2>
-                <span>{leaderboard?.entries?.length ?? 0} ranked entries</span>
-              </div>
-              <div className="deck-table">
-                <div className="deck-table__header">
-                  <span>Rank</span>
-                  <span>Name</span>
-                  <span>Benchmark Score</span>
-                  <span>Win Rate</span>
-                  <span>Task Success</span>
-                </div>
-                {(leaderboard?.entries || []).map(entry => (
-                  <button key={entry.entityKey} className="deck-table__row" onClick={() => loadDetail(entry)}>
-                    <span>#{entry.rank}</span>
-                    <span>{entry.displayName}</span>
-                    <span>{entry.overallScore?.toFixed(3) ?? 'N/A'}</span>
-                    <span>{formatPercent(entry.rawMetrics.winRate)}</span>
-                    <span>{formatPercent(entry.rawMetrics.taskSuccessRate)}</span>
-                  </button>
-                ))}
-              </div>
-            </section>
-
-            <section className="deck-panel deck-panel--detail">
-              <div className="deck-panel__header">
-                <h2>Detail View</h2>
-                <span>{detailLoading ? 'Loading...' : 'Select an entry or run'}</span>
-              </div>
-              {detail ? (
-                <div className="deck-detail">
-                  <div className="deck-detail__summary">
-                    <h3>{detail.displayName}</h3>
-                    <p>{detail.entityType === 'agent' ? detail.entityKey : detail.playerKey}</p>
-                    <div className="deck-detail__scorecards">
-                      <SummaryCard label="Overall Score" value={detail.overallScore?.toFixed(3) ?? 'N/A'} />
-                      <SummaryCard label="Gameplay Score" value={detail.categoryScores.gameplay?.toFixed(3) ?? 'N/A'} />
-                      <SummaryCard label="Reasoning Score" value={detail.categoryScores.reasoning?.toFixed(3) ?? 'N/A'} />
-                      <SummaryCard label="Operations Score" value={detail.categoryScores.operations?.toFixed(3) ?? 'N/A'} />
-                    </div>
-                  </div>
-
-                  <div className="deck-metrics-grid">
-                    {Object.entries(detail.rawMetrics).map(([metric, value]) => (
-                      <div key={metric} className="deck-metric-card">
-                        <span>{metricLabel(metric)}</span>
-                        <strong>{formatMetric(metric, value)}</strong>
-                        {detail.normalizedMetrics?.[metric] !== undefined ? (
-                          <small>{`Absolute score ${(detail.normalizedMetrics[metric] * 100).toFixed(1)}%`}</small>
-                        ) : null}
-                        <small>{statusLabel(detail.metricStatuses?.[metric])}</small>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="deck-subsection">
-                    <h4>Task Matrix</h4>
-                    <div className="deck-list">
-                      {detail.taskBreakdown.map(task => (
-                        <div key={task.taskId} className="deck-list__item">
-                          <strong>{task.taskName}</strong>
-                          <span>{`${task.taskCategory} | ${task.difficulty}`}</span>
-                          <span>{task.attempts} attempts</span>
-                          <span>{task.attempts > 0 ? `${formatPercent(task.successRate)} success` : 'No evaluations yet'}</span>
-                          <span>{task.averageScore?.toFixed(2) ?? 'N/A'} avg rubric score</span>
-                          <span>{task.scoring || task.description || 'No rubric description'}</span>
-                          <span>{task.commonFailureReasons?.[0]?.reason || 'No common failure reason'}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="deck-subsection">
-                    <h4>Slice Comparisons</h4>
-                    <div className="deck-list">
-                      {detail.slices.slice(0, 10).map(slice => (
-                        <div key={slice.sliceKey} className="deck-list__item">
-                          <strong>{slice.taskId || slice.gameType || 'Gameplay Slice'}</strong>
-                          <span>{slice.mapLayoutId}</span>
-                          <span>{slice.sliceScore?.toFixed(3) ?? 'N/A'} primary score</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              ) : runDetail ? (
-                <div className="deck-detail">
-                  <div className="deck-detail__summary">
-                    <h3>{runDetail.run.runLabel || runDetail.run.runId}</h3>
-                    <p>{runDetail.run.runId}</p>
-                  </div>
-                  <div className="deck-list">
-                    <div className="deck-list__item">
-                      <strong>Games</strong>
-                      <span>{runDetail.games.length}</span>
-                    </div>
-                    <div className="deck-list__item">
-                      <strong>Tasks</strong>
-                      <span>{runDetail.tasks.length}</span>
-                    </div>
-                    <div className="deck-list__item">
-                      <strong>Telemetry</strong>
-                      <span>{runDetail.telemetry.length}</span>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="deck-empty-state">
-                  Select a leaderboard row or recent run to inspect metrics, tasks, and slice-by-slice comparisons.
-                </div>
-              )}
-            </section>
-          </div>
-
-          <div className="deck-layout">
-            <section className="deck-panel">
-              <div className="deck-panel__header">
-                <h2>Benchmark Explorer</h2>
-                <span>{overview?.tasks?.length ?? 0} benchmark task definitions</span>
-              </div>
-              <div className="deck-list">
-                {(overview?.tasks || []).map(task => (
-                  <div key={task.id} className="deck-list__item">
-                    <strong>{task.name}</strong>
-                    <span>{task.id}</span>
-                    <span>{`${task.category} | ${task.difficulty}`}</span>
-                    <span>{task.scoring}</span>
-                  </div>
-                ))}
-              </div>
-            </section>
-
-            <section className="deck-panel">
-              <div className="deck-panel__header">
-                <h2>Recent Runs</h2>
-                <span>Click for run detail</span>
-              </div>
-              <div className="deck-list">
-                {(overview?.recentRuns || []).map(run => (
-                  <button key={run.runId} className="deck-list__item deck-list__item--button" onClick={() => loadRunDetail(run.runId)}>
-                    <strong>{run.runLabel || run.runId}</strong>
-                    <span>{run.benchmarkId}</span>
-                    <span>{run.players?.length || 0} participants</span>
-                  </button>
-                ))}
-              </div>
-            </section>
-
-            <section className="deck-panel">
-              <div className="deck-panel__header">
-                <h2>Slice Drilldown</h2>
-                <span>Absolute comparisons by map, seat, task, and opponent</span>
-              </div>
-              <div className="deck-list">
-                {slices.slice(0, 12).map(slice => (
-                  <div key={slice.sliceKey} className="deck-list__item">
-                    <strong>{slice.taskId || slice.gameType || 'Gameplay'}</strong>
-                    <span>{slice.mapLayoutId}</span>
-                    <span>{slice.entries.length} entries</span>
-                  </div>
-                ))}
-              </div>
-            </section>
-          </div>
-        </>
+          <aside className="breakdown-shell">
+            <BreakdownPanel detail={detail} loading={detailLoading} />
+          </aside>
+        </main>
       )}
+
+      <section className="log-panel">
+        <div className="panel-heading">
+          <div>
+            <span className="section-kicker">{filteredLog.length} visible</span>
+            <h2>Benchmark Log</h2>
+          </div>
+          <div className="segmented-control segmented-control--compact">
+            <button className={logFilter === 'all' ? 'active' : ''} onClick={() => setLogFilter('all')}>All</button>
+            <button className={logFilter === 'failures' ? 'active' : ''} onClick={() => setLogFilter('failures')}>Failures</button>
+            <button className={logFilter === 'tasks' ? 'active' : ''} onClick={() => setLogFilter('tasks')}>Tasks</button>
+          </div>
+        </div>
+        <div className="log-table">
+          <div className="log-head">
+            <span>Event</span>
+            <span>Status</span>
+            <span>Score</span>
+            <span>Time</span>
+          </div>
+          {filteredLog.length ? filteredLog.map(entry => (
+            <LogRow key={entry.id} entry={entry} />
+          )) : <div className="empty-inline">No log entries match this view.</div>}
+        </div>
+      </section>
     </div>
   );
 }
