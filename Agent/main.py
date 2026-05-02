@@ -12,7 +12,7 @@ Usage:
     # Local server (default)
     python -m Agent.main --game-code ABCDEF --name ReactBot
     python -m Agent.main --mode multi --game-code ABCDEF --name StrategyBot
-    python -m Agent.main --mode benchmark --game-code ABCDEF --name BenchmarkBot
+    python -m Agent.main --mode multi --strategy-model gpt-5 --game-code ABCDEF
 
     # Hosted server on Render (https://catanagent.onrender.com)
     python -m Agent.main --prod --game-code ABCDEF --name ReactBot
@@ -41,6 +41,18 @@ try:
     load_dotenv(os.path.join(current_dir, ".env"))
 except ImportError:
     pass
+
+
+def _configure_console_output() -> None:
+    """Avoid Windows cp1252 crashes when agent logs include arrows or symbols."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+_configure_console_output()
 
 
 LOCAL_SERVER_URL = "http://localhost:3001"
@@ -82,7 +94,8 @@ def main() -> None:
     )
     parser.add_argument("--game-code", default=None, help="Game code to join (omit to create)")
     parser.add_argument("--name", default="ReactBot", help="Player name")
-    parser.add_argument("--model", default="gpt-4o", help="OpenAI model")
+    parser.add_argument("--model", default="gpt-4o", help="OpenAI model for non-Strategy agents and react mode")
+    parser.add_argument("--strategy-model", default="gpt-5", help="OpenAI model for Strategy Agent in multi-agent mode")
     parser.add_argument("--ollama-model", default="qwen3:8b", help="Ollama model for summarization")
     parser.add_argument(
         "--mode", choices=["react", "multi", "benchmark", "harness"], default="react",
@@ -189,12 +202,13 @@ def _run_multi(args) -> None:
 
     # ── LLM clients ───────────────────────────────────────────────
     openai = OpenAIClient(model=args.model)
+    strategy_openai = OpenAIClient(model=args.strategy_model)
     ollama = OllamaChat(OllamaConfig(model=args.ollama_model))
 
     # ── Create agents ─────────────────────────────────────────────
     risk = RiskAgent(scratchpad, openai=openai)
     strategy = StrategyAgent(
-        scratchpad, openai, client, processor, registry, stats,
+        scratchpad, strategy_openai, client, processor, registry, stats,
         game_code=args.game_code,
         player_name=args.name,
     )
@@ -215,6 +229,7 @@ def _run_multi(args) -> None:
     trading.register_peer(strategy)
 
     print(f"🔗 Multi-agent system wired:")
+    print(f"   Models    → strategy={strategy_openai.model}, others={openai.model}")
     print(f"   Strategy  → peers: {list(strategy._peers.keys())}")
     print(f"   Development → peers: {list(development._peers.keys())}")
     print(f"   Risk      → peers: {list(risk._peers.keys())}")

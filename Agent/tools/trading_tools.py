@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from SocketClient import CatanSocketClient
+from Agent.utils.socket_client import CatanSocketClient
 
 
 RESOURCES = ["brick", "lumber", "wool", "grain", "ore"]
