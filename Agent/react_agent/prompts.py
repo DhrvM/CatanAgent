@@ -1,6 +1,10 @@
 """
 System prompt and prompt templates for the ReAct Catan Agent.
 """
+from __future__ import annotations
+
+import json
+from typing import Any, Dict
 
 SYSTEM_PROMPT = """\
 You are a strategic Settlers of Catan AI agent.
@@ -46,10 +50,17 @@ largest army, or a balanced approach?
 MAX_STEPS_PER_TURN = 10
 
 
-def build_turn_message(state_text: str, summary: str, turn_phase: str) -> str:
+def build_turn_message(
+    state_text: str,
+    summary: str,
+    turn_phase: str,
+    state_json: Dict[str, Any] | None = None,
+) -> str:
     """Format the user message sent to GPT-4o at the start of a turn."""
+    structured = json.dumps(state_json or {}, indent=2, default=str)
     return (
         f"## Current Game State\n{state_text}\n\n"
+        f"## Structured State JSON\n{structured}\n\n"
         f"## Recent History & Strategy\n{summary}\n\n"
         f"## Turn Phase: {turn_phase}\n"
         "Decide what to do. You may call multiple tools."

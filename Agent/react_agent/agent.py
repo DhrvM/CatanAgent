@@ -10,6 +10,7 @@ import json
 import time
 from typing import Any, Dict, List, Optional
 
+from Agent.shared.scratchpad import Scratchpad
 from Agent.utils.socket_client import CatanSocketClient
 from Agent.utils.game_state_processor import GameStateProcessor
 from Agent.utils.openai_client import OpenAIClient
@@ -90,6 +91,9 @@ class ReactCatanAgent:
 
         # tool registry (built after connect)
         self._registry: Optional[ToolRegistry] = None
+
+        # Reuse shared structured JSON format for prompts (includes board block)
+        self._prompt_state = Scratchpad()
 
         # statistics tracker
         self.stats = AgentStatsTracker(agent_name=player_name)
@@ -190,6 +194,8 @@ class ReactCatanAgent:
         # 1. Observe
         processed = self.processor.process(initial_state)
         state_text = self.processor.format_for_llm(processed)
+        self._prompt_state.update_game_state(initial_state, self.processor)
+        state_json = self._prompt_state.to_state_json()
 
         # 2. Summarize (qwen3:8b)
         self._sync_events()
@@ -201,7 +207,15 @@ class ReactCatanAgent:
 
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_turn_message(state_text, summary, turn_phase)},
+            {
+                "role": "user",
+                "content": build_turn_message(
+                    state_text,
+                    summary,
+                    turn_phase,
+                    state_json=state_json,
+                ),
+            },
         ]
 
         turn_ended = False
@@ -937,8 +951,11 @@ class ReactCatanAgent:
         try:
             processed = self.processor.process(state)
             state_text = self.processor.format_for_llm(processed)
+            self._prompt_state.update_game_state(state, self.processor)
+            state_json = self._prompt_state.to_state_json()
         except Exception:
             state_text = json.dumps(state, default=str)
+            state_json = {}
 
         # Restrict to trade-response actions while off-turn.
         all_tools = self._registry.get_openai_schemas(phase_filter="main")
@@ -965,6 +982,8 @@ class ReactCatanAgent:
             "not extreme.\n"
             "Current state:\n"
             f"{state_text}\n\n"
+            "Structured state JSON (includes board.hexes/buildings/roads):\n"
+            f"{json.dumps(state_json, indent=2, default=str)}\n\n"
             "Incoming offer JSON:\n"
             f"{json.dumps(offer, default=str)}"
         )
