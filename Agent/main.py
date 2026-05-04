@@ -100,7 +100,14 @@ def main() -> None:
         help="Optional player ID to reclaim via socket reconnect (used by benchmark automation).",
     )
     parser.add_argument("--name", default="ReactBot", help="Player name")
+    parser.add_argument(
+        "--react-provider",
+        choices=["openai", "anthropic"],
+        default="openai",
+        help="LLM backend for --mode react tool-calling decisions.",
+    )
     parser.add_argument("--model", default="gpt-4o", help="OpenAI model for non-Strategy agents and react mode")
+    parser.add_argument("--anthropic-model", default="claude-3-5-sonnet-latest", help="Anthropic model for react mode when --react-provider anthropic")
     parser.add_argument("--strategy-model", default="gpt-5", help="OpenAI model for Strategy Agent in multi-agent mode")
     parser.add_argument("--ollama-model", default="qwen3:8b", help="Ollama model for summarization")
     parser.add_argument(
@@ -176,7 +183,9 @@ def _run_react(args) -> None:
         server_url=args.server,
         game_code=args.game_code,
         player_name=args.name,
+        llm_provider=args.react_provider,
         openai_model=args.model,
+        anthropic_model=args.anthropic_model,
         ollama_model=args.ollama_model,
     )
     agent.run()
@@ -273,6 +282,10 @@ def _run_benchmark_suite(args) -> None:
         args.server,
         "--model",
         args.model,
+        "--react-provider",
+        args.react_provider,
+        "--anthropic-model",
+        args.anthropic_model,
         "--strategy-model",
         args.strategy_model,
     ]

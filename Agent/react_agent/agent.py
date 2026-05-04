@@ -14,6 +14,7 @@ from Agent.shared.scratchpad import Scratchpad
 from Agent.utils.socket_client import CatanSocketClient
 from Agent.utils.game_state_processor import GameStateProcessor
 from Agent.utils.openai_client import OpenAIClient
+from Agent.utils.anthropic_client import AnthropicClient
 from Agent.utils.ollama_client import OllamaChat, OllamaConfig
 from Agent.utils.stats_tracker import AgentStatsTracker
 from Agent.tools.registry import ToolRegistry, build_tool_registry
@@ -74,7 +75,9 @@ class ReactCatanAgent:
         server_url: str = "http://localhost:3001",
         game_code: Optional[str] = None,
         player_name: str = "ReactBot",
+        llm_provider: str = "openai",
         openai_model: str = "gpt-4o",
+        anthropic_model: str = "claude-3-5-sonnet-latest",
         ollama_model: str = "qwen3:8b",
     ) -> None:
         # socket
@@ -87,7 +90,12 @@ class ReactCatanAgent:
         self.summarizer = MoveSummarizer(
             OllamaChat(OllamaConfig(model=ollama_model, timeout_s=15, num_ctx=3072))
         )
-        self.openai = OpenAIClient(model=openai_model)
+        if llm_provider == "anthropic":
+            self.openai = AnthropicClient(model=anthropic_model)
+            self._llm_label = f"anthropic:{anthropic_model}"
+        else:
+            self.openai = OpenAIClient(model=openai_model)
+            self._llm_label = f"openai:{openai_model}"
 
         # tool registry (built after connect)
         self._registry: Optional[ToolRegistry] = None
@@ -131,6 +139,7 @@ class ReactCatanAgent:
 
         self._registry = build_tool_registry(self.client, self.processor)
         print(f"✅ {self.player_name} agent running (game {self.game_code})")
+        print(f"[react] LLM backend: {self._llm_label}")
 
         try:
             while True:
@@ -245,7 +254,7 @@ class ReactCatanAgent:
                     model=self.openai.model,
                 )
             except Exception as e:
-                print(f"  [react] GPT-4o error: {e}")
+                print(f"  [react] LLM error: {e}")
                 self._fallback_action(state)
                 break
 
@@ -273,19 +282,19 @@ class ReactCatanAgent:
 
             # Build the assistant message for the conversation
             assistant_msg: Dict[str, Any] = {"role": "assistant", "content": assistant_text or None}
-            # Attach raw tool_calls from the response
-            raw_msg = response.choices[0].message
-            if raw_msg.tool_calls:
+            # Attach normalized tool_calls so this works across LLM providers
+            # (OpenAI responses include choices[], Anthropic messages do not).
+            if tool_calls:
                 assistant_msg["tool_calls"] = [
                     {
-                        "id": tc.id,
+                        "id": tc["id"],
                         "type": "function",
                         "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
+                            "name": tc["name"],
+                            "arguments": json.dumps(tc["arguments"], default=str),
                         },
                     }
-                    for tc in raw_msg.tool_calls
+                    for tc in tool_calls
                 ]
             messages.append(assistant_msg)
 

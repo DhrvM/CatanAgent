@@ -11,10 +11,11 @@ The hosted game server is:
 
 ### 1. Configure Environment
 
-Create or update `Agent/.env` with your OpenAI key:
+Create or update `Agent/.env` with your provider key(s):
 
 ```env
 OPENAI_API_KEY=your_openai_api_key_here
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
 CATAN_SERVER_URL=https://catanagent.onrender.com
 ```
 
@@ -57,6 +58,10 @@ Flags:
 - `--strategy-model`: model used only by the Strategy Agent. Default: `gpt-5`.
 - `--model`: model used by Risk, Development, and Trading in multi-agent mode.
   It is also used by the legacy ReAct agent. Default: `gpt-4o`.
+- `--react-provider`: provider for ReAct decision/tool calls (`openai` or `anthropic`).
+  Default: `openai`.
+- `--anthropic-model`: Anthropic model for ReAct when using `--react-provider anthropic`.
+  Default: `claude-3-5-sonnet-latest`.
 - `--ollama-model`: local Ollama model for legacy summarization support.
   Default: `qwen3:8b`.
 
@@ -66,6 +71,12 @@ The legacy single-agent mode is still available:
 
 ```powershell
 python -m Agent.main --mode react --prod --game-code ABCDEF --name ReactBot
+```
+
+Run ReAct with Claude:
+
+```powershell
+python -m Agent.main --mode react --react-provider anthropic --anthropic-model claude-3-5-sonnet-latest --game-code ABCDEF --name ReactBot
 ```
 
 ### 5. Run Against a Local Server
@@ -106,6 +117,12 @@ Run automated benchmark matchup series against heuristic bots:
 
 ```powershell
 python -m Agent.benchmark_agent.run_matchups --server http://localhost:3001 --games 3 --agents both
+```
+
+Run React matchups using Claude:
+
+```powershell
+python -m Agent.benchmark_agent.run_matchups --server http://localhost:3001 --games 3 --agents react --react-provider anthropic --anthropic-model claude-3-5-sonnet-latest
 ```
 
 This runner executes:

@@ -64,6 +64,8 @@ def _spawn_agent_process(
     game_code: str,
     name: str,
     model: str,
+    react_provider: str,
+    anthropic_model: str,
     strategy_model: str,
     reconnect_player_id: str | None = None,
 ) -> subprocess.Popen:
@@ -83,7 +85,11 @@ def _spawn_agent_process(
     if reconnect_player_id:
         cmd.extend(["--reconnect-player-id", reconnect_player_id])
     if mode == "react":
-        cmd.extend(["--model", model])
+        cmd.extend(["--react-provider", react_provider])
+        if react_provider == "anthropic":
+            cmd.extend(["--anthropic-model", anthropic_model])
+        else:
+            cmd.extend(["--model", model])
     if mode == "multi":
         cmd.extend(["--model", model, "--strategy-model", strategy_model])
     return subprocess.Popen(cmd)
@@ -138,6 +144,8 @@ def _run_series(args: argparse.Namespace, mode: str, run_id: str) -> None:
                     seat="tested",
                 ),
                 model=args.model,
+                react_provider=args.react_provider,
+                anthropic_model=args.anthropic_model,
                 strategy_model=args.strategy_model,
             )
             procs.append(tested_proc)
@@ -161,6 +169,8 @@ def _run_series(args: argparse.Namespace, mode: str, run_id: str) -> None:
                     seat="baseline",
                 ),
                 model=args.model,
+                react_provider=args.react_provider,
+                anthropic_model=args.anthropic_model,
                 strategy_model=args.strategy_model,
                 reconnect_player_id=host_player_id,
             )
@@ -205,6 +215,17 @@ def main() -> None:
     parser.add_argument("--run-prefix", default=f"agent-matchup-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}")
     parser.add_argument("--python-exe", default=sys.executable)
     parser.add_argument("--model", default="gpt-4o")
+    parser.add_argument(
+        "--react-provider",
+        choices=["openai", "anthropic"],
+        default="openai",
+        help="LLM backend for tested React agent.",
+    )
+    parser.add_argument(
+        "--anthropic-model",
+        default="claude-3-5-sonnet-latest",
+        help="Anthropic model for React when --react-provider anthropic.",
+    )
     parser.add_argument("--strategy-model", default="gpt-5")
     parser.add_argument("--game-timeout-s", type=float, default=3600.0)
     args = parser.parse_args()
