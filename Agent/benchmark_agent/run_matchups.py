@@ -2,6 +2,7 @@
 Run repeatable benchmark matchups:
   - React agent vs Python benchmark heuristic agent
   - Strategy (multi) agent vs Python benchmark heuristic agent
+  - React agent vs Strategy (multi) agent
 
 Each game is created with benchmark metadata so Environment benchmark dashboards
 aggregate results per run.
@@ -198,6 +199,107 @@ def _run_series(args: argparse.Namespace, mode: str, run_id: str) -> None:
                 pass
 
 
+def _run_react_vs_strategy(args: argparse.Namespace, run_id: str) -> None:
+    """Run 1v1 head-to-head games: React (Claude/OpenAI) vs Strategy."""
+    print(f"\n=== Running react-vs-strategy series (runId={run_id}) ===")
+
+    for game_i in range(1, args.games + 1):
+        host = CatanSocketClient(args.server)
+        procs: List[subprocess.Popen] = []
+        try:
+            host.connect()
+            host_name = _pseudo_name(
+                kind="strategy",
+                run_id=run_id,
+                game_i=game_i,
+                seat="host",
+            )
+            created = host.create_game(
+                player_name=host_name,
+                is_extended=args.extended,
+                enable_special_build=not args.disable_special_build,
+                benchmark_config={
+                    "runId": run_id,
+                    "benchmarkId": args.benchmark_id,
+                    "baselineAgentId": "strategy-agent-gpt-5.1",
+                    "opponentPolicySet": "react-vs-strategy",
+                    "scenarioTags": ["agent-matchup", "react-vs-strategy"],
+                    "agentId": "strategy-agent-gpt-5.1",
+                    "agentVersion": str(args.strategy_model),
+                    "baseline": False,
+                },
+            )
+            game_code = str(host.game_code or "")
+            host_player_id = str(created.get("playerId") or host.player_id or "")
+            if not host_player_id:
+                raise RuntimeError("create_game did not return host playerId")
+            print(f"[react-vs-strategy game {game_i}] created {game_code}")
+
+            # React joins as the second player.
+            react_proc = _spawn_agent_process(
+                python_exe=args.python_exe,
+                mode="react",
+                server_url=args.server,
+                game_code=game_code,
+                name=_pseudo_name(
+                    kind="react",
+                    run_id=run_id,
+                    game_i=game_i,
+                    seat="react",
+                ),
+                model=args.model,
+                react_provider=args.react_provider,
+                anthropic_model=args.anthropic_model,
+                strategy_model=args.strategy_model,
+            )
+            procs.append(react_proc)
+
+            _wait_for_players(host, expected_min_players=args.total_players)
+            started = host.call("startGame", {})
+            if not isinstance(started, dict) or not started.get("success"):
+                raise RuntimeError(f"startGame failed: {started}")
+
+            # Hand host seat to Strategy after start.
+            strategy_proc = _spawn_agent_process(
+                python_exe=args.python_exe,
+                mode="multi",
+                server_url=args.server,
+                game_code=game_code,
+                name=_pseudo_name(
+                    kind="strategy",
+                    run_id=run_id,
+                    game_i=game_i,
+                    seat="strategy",
+                ),
+                model=args.model,
+                react_provider=args.react_provider,
+                anthropic_model=args.anthropic_model,
+                strategy_model=args.strategy_model,
+                reconnect_player_id=host_player_id,
+            )
+            procs.append(strategy_proc)
+
+            final_state = _wait_for_game_finish(host, timeout_s=args.game_timeout_s)
+            winner_id = final_state.get("winner")
+            winner_name = next(
+                (p.get("name") for p in (final_state.get("players") or []) if isinstance(p, dict) and p.get("id") == winner_id),
+                winner_id,
+            )
+            print(f"[react-vs-strategy game {game_i}] finished winner={winner_name}")
+        finally:
+            for proc in procs:
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+            try:
+                host.close()
+            except Exception:
+                pass
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run React/Strategy vs heuristic benchmark matchups")
     parser.add_argument("--server", default="http://localhost:3001")
@@ -210,7 +312,7 @@ def main() -> None:
     )
     parser.add_argument("--extended", action="store_true")
     parser.add_argument("--disable-special-build", action="store_true")
-    parser.add_argument("--agents", choices=["react", "multi", "both"], default="both")
+    parser.add_argument("--agents", choices=["react", "multi", "both", "react-vs-strategy"], default="both")
     parser.add_argument("--benchmark-id", default="catan-benchmark-v1")
     parser.add_argument("--run-prefix", default=f"agent-matchup-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}")
     parser.add_argument("--python-exe", default=sys.executable)
@@ -226,17 +328,25 @@ def main() -> None:
         default="claude-3-5-sonnet-latest",
         help="Anthropic model for React when --react-provider anthropic.",
     )
-    parser.add_argument("--strategy-model", default="gpt-5")
+    parser.add_argument("--strategy-model", default="gpt-5.1")
     parser.add_argument("--game-timeout-s", type=float, default=3600.0)
     args = parser.parse_args()
     if args.total_players != 2:
         raise SystemExit("--total-players must be exactly 2 when using Python benchmark baseline")
 
-    modes = ["react", "multi"] if args.agents == "both" else [args.agents]
+    if args.agents == "both":
+        modes = ["react", "multi"]
+    elif args.agents == "react-vs-strategy":
+        modes = ["react-vs-strategy"]
+    else:
+        modes = [args.agents]
     run_ids = {mode: f"{args.run_prefix}-{mode}" for mode in modes}
 
     for mode in modes:
-        _run_series(args, mode=mode, run_id=run_ids[mode])
+        if mode == "react-vs-strategy":
+            _run_react_vs_strategy(args, run_id=run_ids[mode])
+        else:
+            _run_series(args, mode=mode, run_id=run_ids[mode])
 
     print("\n=== Benchmark run summaries ===")
     for mode in modes:

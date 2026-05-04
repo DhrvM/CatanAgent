@@ -50,12 +50,12 @@ python -m Agent.main --mode multi --prod --name StrategyBot
 By default, the Strategy Agent uses GPT-5 and the other agents use GPT-4o:
 
 ```powershell
-python -m Agent.main --mode multi --prod --game-code ABCDEF --name StrategyBot --strategy-model gpt-5 --model gpt-4o
+python -m Agent.main --mode multi --prod --game-code ABCDEF --name StrategyBot --strategy-model gpt-5.1 --model gpt-4o
 ```
 
 Flags:
 
-- `--strategy-model`: model used only by the Strategy Agent. Default: `gpt-5`.
+- `--strategy-model`: model used only by the Strategy Agent. Default: `gpt-5.1`.
 - `--model`: model used by Risk, Development, and Trading in multi-agent mode.
   It is also used by the legacy ReAct agent. Default: `gpt-4o`.
 - `--react-provider`: provider for ReAct decision/tool calls (`openai` or `anthropic`).
@@ -129,6 +129,13 @@ This runner executes:
 
 - React agent vs heuristic bots
 - Strategy (multi-agent) vs heuristic bots
+- React vs Strategy head-to-head (`--agents react-vs-strategy`)
+
+Example: React (Claude Sonnet) vs Strategy (gpt-5.1)
+
+```powershell
+python -m Agent.benchmark_agent.run_matchups --server http://localhost:3001 --games 3 --agents react-vs-strategy --react-provider anthropic --anthropic-model claude-3-5-sonnet-latest --strategy-model gpt-5.1
+```
 
 Each series gets a dedicated benchmark `runId`, and results are recorded by the
 Environment benchmark store so you can compare win rate, VP, tasks, and latency
