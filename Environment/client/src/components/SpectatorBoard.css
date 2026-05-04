@@ -1,0 +1,33 @@
+.spectator-game-board .spectator-badge {
+  background: linear-gradient(135deg, #334155, #1e293b);
+  border: 1px solid rgba(148, 163, 184, 0.5);
+}
+
+.spectator-feed-sidebar {
+  width: 300px;
+  padding-left: 0.25rem;
+}
+
+.spectator-feed-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+}
+
+.spectator-feed-item {
+  font-size: 0.82rem;
+  line-height: 1.35;
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 8px;
+  padding: 0.55rem 0.6rem;
+  color: var(--text-secondary);
+}
+
+.spectator-empty {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  padding: 0.75rem;
+}

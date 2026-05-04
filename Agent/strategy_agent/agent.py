@@ -41,7 +41,7 @@ from Agent.utils.socket_client import CatanSocketClient
 from Agent.utils.game_state_processor import GameStateProcessor
 from Agent.utils.openai_client import OpenAIClient
 from Agent.utils.stats_tracker import AgentStatsTracker
-from Agent.Tools.registry import ToolRegistry
+from Agent.tools.registry import ToolRegistry
 from Agent.trading_agent.agent import TradingAgent
 
 from Agent.strategy_agent.prompts import (
@@ -55,7 +55,7 @@ from Agent.strategy_agent.prompts import (
 )
 
 # Heuristic helpers reused for setup fallback + discard/robber fallback
-from Agent.Tools.game_tools import (
+from Agent.tools.game_tools import (
     _ranked_setup_settlements,
     _ranked_setup_roads,
     _build_discard_action,
@@ -170,9 +170,9 @@ STRATEGY_META_TOOL_SCHEMAS: List[Dict[str, Any]] = [
     ),
     _fn_schema(
         "delegate_trade",
-        "Have the Trading Agent execute a full proactive trade round under "
-        "the current trade_policy.  Blocks until any trade completes, is "
-        "declined, or times out (~60s max).",
+        "Have the Trading Agent make one proactive trade decision under the "
+        "current trade_policy. Returns immediately after a bank trade completes, "
+        "a player proposal is posted as pending, or no viable trade is found.",
     ),
 ]
 
@@ -227,6 +227,7 @@ class StrategyAgent(BaseAgent):
 
         # Counter used to dedupe completed-trade detection for round_summary
         self._trade_highwater: float = 0.0
+        self._last_trade_result: Optional[Dict[str, Any]] = None
 
     # ──────────────────────────────────────────────────────────────
     # Main game loop
@@ -304,6 +305,7 @@ class StrategyAgent(BaseAgent):
         if self._turn_phase_state == "ended":
             return
 
+        self._check_pending_trade_offer()
         turn_phase = state.get("turnPhase", "main")
 
         # ── New-turn bookkeeping ──────────────────────────────────
@@ -753,6 +755,122 @@ class StrategyAgent(BaseAgent):
         answer = self.call_agent("development", "consult", question=question)
         return {"success": True, "answer": answer}
 
+    @staticmethod
+    def _normalize_build_action_name(item: Dict[str, Any]) -> str:
+        raw = item.get("action") or item.get("tool") or item.get("type")
+        if raw is None:
+            return ""
+        key = str(raw).strip().lower().replace("-", "_")
+        aliases = {
+            "placesettlement": "place_settlement",
+            "place_road": "place_road",
+            "placeroad": "place_road",
+            "upgrade_to_city": "upgrade_to_city",
+            "upgradetocity": "upgrade_to_city",
+            "buy_dev_card": "buy_dev_card",
+            "buydevcard": "buy_dev_card",
+            "play_dev_card": "play_dev_card",
+            "playdevcard": "play_dev_card",
+        }
+        return aliases.get(key, key)
+
+    @staticmethod
+    def _build_target_from_item(item: Dict[str, Any], *keys: str) -> Optional[str]:
+        target = item.get("target")
+        if target:
+            return str(target)
+        extra = item.get("args") if isinstance(item.get("args"), dict) else {}
+        for key in keys:
+            if extra.get(key):
+                return str(extra[key])
+        return None
+
+    def _validate_build_queue(
+        self, queue: List[Dict[str, Any]],
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Drop queue entries with targets that are certainly invalid.
+
+        This intentionally checks only facts visible in the current board
+        snapshot. The server remains the authority for distance-rule and
+        connectivity legality.
+        """
+        state = self.client.latest_state() or self.scratchpad.game_state or {}
+        vertices = state.get("vertices") if isinstance(state.get("vertices"), dict) else {}
+        edges = state.get("edges") if isinstance(state.get("edges"), dict) else {}
+        myi = state.get("myIndex")
+
+        valid: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+
+        def reject(item: Dict[str, Any], action: str, target: Optional[str], reason: str) -> None:
+            errors.append({
+                "action": action or str(item.get("action") or item.get("tool") or item.get("type") or ""),
+                "target": target,
+                "reason": reason,
+                "item": item,
+            })
+
+        for item in queue:
+            if not isinstance(item, dict):
+                reject({"raw": item}, "", None, "queue item is not an object")
+                continue
+
+            action = self._normalize_build_action_name(item)
+
+            if action in {"buy_dev_card", "play_dev_card"}:
+                valid.append(item)
+                continue
+
+            if action == "place_settlement":
+                target = self._build_target_from_item(item, "vertex_key")
+                if not target:
+                    reject(item, action, None, "missing settlement vertex target")
+                    continue
+                vertex = vertices.get(target)
+                if not isinstance(vertex, dict):
+                    reject(item, action, target, "vertex not on board")
+                    continue
+                if vertex.get("owner") is not None or vertex.get("building"):
+                    reject(item, action, target, "vertex already occupied")
+                    continue
+                valid.append(item)
+                continue
+
+            if action == "upgrade_to_city":
+                target = self._build_target_from_item(item, "vertex_key")
+                if not target:
+                    reject(item, action, None, "missing city vertex target")
+                    continue
+                vertex = vertices.get(target)
+                if not isinstance(vertex, dict):
+                    reject(item, action, target, "vertex not on board")
+                    continue
+                if vertex.get("owner") != myi or vertex.get("building") != "settlement":
+                    reject(item, action, target, "target is not our settlement")
+                    continue
+                valid.append(item)
+                continue
+
+            if action == "place_road":
+                target = self._build_target_from_item(item, "edge_key")
+                if not target:
+                    reject(item, action, None, "missing road edge target")
+                    continue
+                edge = edges.get(target)
+                if not isinstance(edge, dict):
+                    reject(item, action, target, "edge not on board")
+                    continue
+                if edge.get("owner") is not None:
+                    reject(item, action, target, "edge already occupied")
+                    continue
+                valid.append(item)
+                continue
+
+            reject(item, action, self._build_target_from_item(item, "vertex_key", "edge_key"), "unknown build action")
+
+        return valid, errors
+
     def _meta_delegate_build(self, args: Dict[str, Any]) -> Dict[str, Any]:
         queue = args.get("queue")
         action = args.get("action")
@@ -767,12 +885,26 @@ class StrategyAgent(BaseAgent):
         else:
             temp_queue = list(original_queue)
 
+        temp_queue, validation_errors = self._validate_build_queue(temp_queue)
+        if validation_errors and not temp_queue:
+            return {
+                "success": False,
+                "error": "all build queue targets invalid",
+                "results": [],
+                "validation_errors": validation_errors,
+            }
+
         plan.build_queue = temp_queue
         try:
             results = self.call_agent("development", "execute_build_queue")
         except Exception as e:
             plan.build_queue = original_queue
-            return {"success": False, "error": str(e), "results": []}
+            return {
+                "success": False,
+                "error": str(e),
+                "results": [],
+                "validation_errors": validation_errors,
+            }
         plan.build_queue = original_queue
 
         serialized = []
@@ -791,21 +923,48 @@ class StrategyAgent(BaseAgent):
             "success": all_ok and bool(serialized),
             "count": len(serialized),
             "results": serialized,
+            "validation_errors": validation_errors,
         }
 
     def _meta_delegate_trade(self, _args: Dict[str, Any]) -> Dict[str, Any]:
-        """Blocking call — TradingAgent polls offer state internally (<= 60s)."""
+        """Non-blocking call — Trading returns after one bank trade/proposal/no-op."""
         pre_trades = len(self.scratchpad.trade_state.recent_trades or [])
+        self._last_trade_result = None
         try:
             self.call_agent("trading", "proactive_trade")
         except Exception as e:
             return {"success": False, "error": str(e)}
         post_trades = len(self.scratchpad.trade_state.recent_trades or [])
         completed = post_trades - pre_trades
+        trade_result = dict(self._last_trade_result or {})
+        pending = self.scratchpad.trade_state.pending_offer
         return {
-            "success": completed > 0,
+            "success": completed > 0 or bool(pending) or self._trade_result_indicates_action(trade_result),
             "trades_completed_this_delegation": max(0, completed),
+            "pending_offer": pending,
+            "trade_result": trade_result,
         }
+
+    @staticmethod
+    def _trade_result_indicates_action(result: Dict[str, Any]) -> bool:
+        executed = result.get("executed")
+        if isinstance(executed, list):
+            for step in executed:
+                if not isinstance(step, dict):
+                    continue
+                if step.get("status") == "pending_player_response":
+                    return True
+                if step.get("type") in {"bank_trade", "player_trade"}:
+                    tool_result = step.get("result") if isinstance(step.get("result"), dict) else {}
+                    if bool(tool_result.get("success", False)):
+                        return True
+                    continue
+                if step.get("name") not in {"bank_trade", "propose_trade"}:
+                    continue
+                tool_result = step.get("result") if isinstance(step.get("result"), dict) else {}
+                if bool(tool_result.get("success", False)):
+                    return True
+        return result.get("status") in {"pending_player_response", "resolved_outcome_unknown"}
 
     # ──────────────────────────────────────────────────────────────
     # Surprise detection
@@ -822,6 +981,18 @@ class StrategyAgent(BaseAgent):
 
         if call_name == "delegate_build":
             if isinstance(call_result, dict):
+                validation_errors = [
+                    e for e in (call_result.get("validation_errors") or [])
+                    if isinstance(e, dict)
+                ]
+                if validation_errors:
+                    examples = ", ".join(
+                        f"{e.get('target')} ({e.get('action')}: {e.get('reason')})"
+                        for e in validation_errors[:3]
+                    )
+                    surprises.append(
+                        f"delegate_build rejected invalid targets: {examples}"
+                    )
                 failed = [
                     r for r in (call_result.get("results") or [])
                     if isinstance(r, dict) and not r.get("success")
@@ -1021,12 +1192,25 @@ class StrategyAgent(BaseAgent):
     def _check_reactive_trades(self, state: Dict[str, Any]) -> None:
         if not state:
             return
+        self._check_pending_trade_offer()
         if self._has_trade_offer(state):
             self.scratchpad.update_game_state(state, self.processor)
             try:
                 self.call_agent("trading", "respond_to_offer")
             except Exception as e:
                 print(f"  [strategy] Reactive trade failed: {e}")
+
+    def _check_pending_trade_offer(self) -> None:
+        pending = self.scratchpad.trade_state.pending_offer
+        if not pending:
+            return
+        try:
+            result = self.call_agent("trading", "check_pending_offer")
+        except Exception as e:
+            print(f"  [strategy] Pending trade check failed: {e}")
+            return
+        if isinstance(result, dict) and result.get("status") != "pending_player_response":
+            print(f"  [strategy] Pending trade status: {result}")
 
     # ──────────────────────────────────────────────────────────────
     # Methods callable by peer agents
@@ -1042,6 +1226,7 @@ class StrategyAgent(BaseAgent):
         print(f"  [strategy] Build results: {successes} succeeded, {failures} failed")
 
     def report_trade_results(self, results: Dict[str, Any]) -> None:
+        self._last_trade_result = dict(results or {})
         print(f"  [strategy] Trade results: {results}")
 
     # ──────────────────────────────────────────────────────────────

@@ -12,12 +12,13 @@
  * - Keep-alive pings (for Render free tier)
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { io } from 'socket.io-client';
 import Lobby from './components/Lobby';
 import GameBoard from './components/GameBoard';
 import ObservationDeck from './components/ObservationDeck';
+import SpectatorBoard from './components/SpectatorBoard';
 import './App.css';
 
 // Server URL resolution order:
@@ -57,11 +58,18 @@ function App() {
   const [chatMessages, setChatMessages] = useState([]);  // Chat message history
   const [notifications, setNotifications] = useState([]); // Toast notifications
   const [serverFull, setServerFull] = useState(false);   // Server capacity flag
-  const [viewMode, setViewMode] = useState(window.location.hash === '#observation-deck' ? 'deck' : 'game');
+  const [spectatorEvents, setSpectatorEvents] = useState([]);
+  const prevSpectatorStateRef = useRef(null);
+  const resolveViewMode = () => {
+    if (window.location.hash === '#observation-deck') return 'deck';
+    if (window.location.hash === '#spectate') return 'spectate';
+    return 'game';
+  };
+  const [viewMode, setViewMode] = useState(resolveViewMode());
 
   useEffect(() => {
     const syncViewMode = () => {
-      setViewMode(window.location.hash === '#observation-deck' ? 'deck' : 'game');
+      setViewMode(resolveViewMode());
     };
 
     window.addEventListener('hashchange', syncViewMode);
@@ -79,6 +87,32 @@ function App() {
     }
 
     const newSocket = io(SERVER_URL);
+    const appendSpectatorEvent = (event) => {
+      setSpectatorEvents(prev => {
+        const next = [{ id: `${Date.now()}-${Math.random()}`, timestamp: Date.now(), ...event }, ...prev];
+        return next.slice(0, 120);
+      });
+    };
+    const appendLeadershipEvents = (state) => {
+      const prev = prevSpectatorStateRef.current;
+      prevSpectatorStateRef.current = state;
+      if (!prev || !state) return;
+
+      if (prev.longestRoadPlayer !== state.longestRoadPlayer) {
+        appendSpectatorEvent({
+          type: 'longestRoadChanged',
+          from: prev.longestRoadPlayer,
+          to: state.longestRoadPlayer,
+        });
+      }
+      if (prev.largestArmyPlayer !== state.largestArmyPlayer) {
+        appendSpectatorEvent({
+          type: 'largestArmyChanged',
+          from: prev.largestArmyPlayer,
+          to: state.largestArmyPlayer,
+        });
+      }
+    };
 
     newSocket.on('connect', () => {
       console.log('Connected to server');
@@ -113,6 +147,11 @@ function App() {
     });
 
     newSocket.on('gameState', (state) => {
+      appendLeadershipEvents(state);
+      setGameState(state);
+    });
+    newSocket.on('observerGameState', (state) => {
+      appendLeadershipEvents(state);
       setGameState(state);
     });
 
@@ -134,6 +173,7 @@ function App() {
 
     newSocket.on('diceRolled', ({ roll, playerId: rollerId }) => {
       // Notification handled in GameBoard
+      appendSpectatorEvent({ type: 'diceRolled', roll, playerId: rollerId });
     });
 
     newSocket.on('chatMessage', (msg) => {
@@ -141,15 +181,74 @@ function App() {
     });
 
     newSocket.on('tradeProposed', ({ from, offer, request }) => {
-      // Handled in GameBoard
+      appendSpectatorEvent({ type: 'tradeProposed', from, offer, request });
     });
 
     newSocket.on('tradeAccepted', ({ by }) => {
       addNotification('Trade completed!');
+      appendSpectatorEvent({ type: 'tradeAccepted', by });
+    });
+
+    newSocket.on('tradeDeclined', ({ by }) => {
+      appendSpectatorEvent({ type: 'tradeDeclined', by });
     });
 
     newSocket.on('tradeCancelled', () => {
       addNotification('Trade cancelled');
+      appendSpectatorEvent({ type: 'tradeCancelled' });
+    });
+
+    newSocket.on('resourcesDistributed', ({ fromRoll, allGains }) => {
+      appendSpectatorEvent({ type: 'resourcesDistributed', fromRoll, allGains });
+    });
+
+    newSocket.on('robberMoved', ({ hexKey, by, stealFromPlayerId }) => {
+      appendSpectatorEvent({ type: 'robberMoved', hexKey, by, stealFromPlayerId });
+    });
+
+    newSocket.on('robberResolved', ({ thief, thiefName, victim, victimName, stolen, resource }) => {
+      appendSpectatorEvent({
+        type: 'robberResolved',
+        thief,
+        thiefName,
+        victim,
+        victimName,
+        stolen,
+        resource,
+      });
+    });
+
+    newSocket.on('stealResult', (payload) => {
+      appendSpectatorEvent({
+        type: 'stealResult',
+        resultType: payload?.type,
+        resource: payload?.resource,
+        otherPlayer: payload?.otherPlayer,
+      });
+    });
+
+    newSocket.on('settlementPlaced', ({ playerId: by, vertexKey }) => {
+      appendSpectatorEvent({ type: 'settlementPlaced', by, vertexKey });
+    });
+
+    newSocket.on('roadPlaced', ({ playerId: by, edgeKey }) => {
+      appendSpectatorEvent({ type: 'roadPlaced', by, edgeKey });
+    });
+
+    newSocket.on('cityBuilt', ({ playerId: by, vertexKey }) => {
+      appendSpectatorEvent({ type: 'cityBuilt', by, vertexKey });
+    });
+
+    newSocket.on('turnEnded', ({ playerId: by }) => {
+      appendSpectatorEvent({ type: 'turnEnded', by });
+    });
+
+    newSocket.on('devCardBought', ({ playerId: by }) => {
+      appendSpectatorEvent({ type: 'devCardBought', by });
+    });
+
+    newSocket.on('devCardPlayed', ({ playerId: by, cardType }) => {
+      appendSpectatorEvent({ type: 'devCardPlayed', by, cardType });
     });
 
     newSocket.on('gameDeleted', ({ message }) => {
@@ -273,6 +372,8 @@ function App() {
     setGameCode(null);
     setPlayerId(null);
     setChatMessages([]);
+    setSpectatorEvents([]);
+    prevSpectatorStateRef.current = null;
     localStorage.removeItem('catanGame');
   }, []);
 
@@ -280,9 +381,28 @@ function App() {
     window.location.hash = 'observation-deck';
   }, []);
 
+  const openSpectatorMode = useCallback(() => {
+    window.location.hash = 'spectate';
+  }, []);
+
   const closeObservationDeck = useCallback(() => {
     window.location.hash = '';
   }, []);
+
+  const handleObserveGame = useCallback((code) => {
+    if (!socket) return;
+    socket.emit('observeGame', { gameCode: code }, (response) => {
+      if (response.success) {
+        setSpectatorEvents([]);
+        prevSpectatorStateRef.current = null;
+        setGameCode(response.gameCode);
+        setPlayerId(null);
+        setGameState(response.gameState);
+      } else {
+        setError(response.error || 'Failed to observe game');
+      }
+    });
+  }, [socket]);
 
   /** Delete the current game (host only) */
   const handleDeleteGame = useCallback(() => {
@@ -310,6 +430,19 @@ function App() {
     return (
       <div className="app">
         <ObservationDeck serverUrl={SERVER_URL} onBack={closeObservationDeck} />
+      </div>
+    );
+  }
+
+  if (viewMode === 'spectate' && gameState) {
+    return (
+      <div className="app">
+        <SpectatorBoard
+          gameState={gameState}
+          gameCode={gameCode}
+          spectatorEvents={spectatorEvents}
+          onLeave={handleLeaveGame}
+        />
       </div>
     );
   }
@@ -354,9 +487,11 @@ function App() {
       <Lobby
         onCreateGame={handleCreateGame}
         onJoinGame={handleJoinGame}
+        onObserveGame={handleObserveGame}
         error={error}
         setError={setError}
         onOpenObservationDeck={openObservationDeck}
+        onOpenSpectatorMode={openSpectatorMode}
       />
     );
   }

@@ -13,7 +13,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from Agent.benchmark_agent.decision import BenchmarkDecisionEngine
-from Agent.Tools.game_tools import (
+from Agent.tools.game_tools import (
     RESOURCES,
     _adjacent_hexes_for_vertex,
     _adjacent_vertices,
@@ -27,7 +27,7 @@ from Agent.Tools.game_tools import (
     is_my_turn,
     ranked_main_road_edges,
 )
-from Agent.Tools.registry import ToolRegistry, build_tool_registry
+from Agent.tools.registry import ToolRegistry, build_tool_registry
 from Agent.risk_agent.probabilities import (
     expected_resource_income,
     opponent_threat_assessment,
@@ -60,10 +60,12 @@ class BenchmarkCalibrationAgent:
         server_url: str = "http://localhost:3001",
         game_code: Optional[str] = None,
         player_name: str = "BenchmarkBot",
+        reconnect_player_id: Optional[str] = None,
     ) -> None:
         self.client = CatanSocketClient(server_url)
         self.game_code = game_code
         self.player_name = player_name
+        self.reconnect_player_id = reconnect_player_id
         self.processor = GameStateProcessor()
         self.registry: Optional[ToolRegistry] = None
         self.stats = AgentStatsTracker(agent_name=player_name)
@@ -79,7 +81,9 @@ class BenchmarkCalibrationAgent:
 
     def run(self) -> None:
         self.client.connect()
-        if self.game_code:
+        if self.game_code and self.reconnect_player_id:
+            self.client.reconnect_game(self.game_code, self.reconnect_player_id)
+        elif self.game_code:
             self.client.join_game(self.game_code, self.player_name)
         else:
             ack = self.client.create_game(self.player_name)
@@ -2150,7 +2154,7 @@ class BenchmarkCalibrationAgent:
         result = self.registry.execute(name, args)
         success = self._ok(result)
         self.stats.record_tool_call(name, success=success)
-        print(f"  [benchmark] {name}({json.dumps(args, default=str)}) -> {json.dumps(result, default=str)[:160]}")
+        print(f"  [benchmark] {name}({json.dumps(args, default=str)}) -> {json.dumps(result, default=str)}")
         return result
 
     def _start_turn(self, phase: str) -> None:

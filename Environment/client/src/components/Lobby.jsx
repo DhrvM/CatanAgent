@@ -2,8 +2,8 @@ import { useState } from 'react';
 import RulesModal from './RulesModal';
 import './Lobby.css';
 
-function Lobby({ onCreateGame, onJoinGame, error, setError, onOpenObservationDeck }) {
-  const [mode, setMode] = useState(null); // null, 'create', 'join'
+function Lobby({ onCreateGame, onJoinGame, onObserveGame, error, setError, onOpenObservationDeck, onOpenSpectatorMode }) {
+  const [mode, setMode] = useState(null); // null, 'create', 'join', 'observe'
   const [playerName, setPlayerName] = useState('');
   const [gameCode, setGameCode] = useState('');
   const [showRules, setShowRules] = useState(false);
@@ -13,7 +13,7 @@ function Lobby({ onCreateGame, onJoinGame, error, setError, onOpenObservationDec
   const handleSubmit = (e) => {
     e.preventDefault();
     
-    if (!playerName.trim()) {
+    if (mode !== 'observe' && !playerName.trim()) {
       setError('Please enter your name');
       return;
     }
@@ -26,6 +26,12 @@ function Lobby({ onCreateGame, onJoinGame, error, setError, onOpenObservationDec
         return;
       }
       onJoinGame(gameCode.trim().toUpperCase(), playerName.trim());
+    } else if (mode === 'observe') {
+      if (!gameCode.trim()) {
+        setError('Please enter a game code');
+        return;
+      }
+      onObserveGame(gameCode.trim().toUpperCase());
     }
   };
 
@@ -73,6 +79,18 @@ function Lobby({ onCreateGame, onJoinGame, error, setError, onOpenObservationDec
               <span className="btn-icon">Deck</span>
               Benchmark Deck
             </button>
+
+            <button
+              type="button"
+              className="menu-btn join-btn"
+              onClick={() => {
+                onOpenSpectatorMode();
+                setMode('observe');
+              }}
+            >
+              <span className="btn-icon">👀</span>
+              Spectate Game
+            </button>
           </div>
         ) : (
           <form className="lobby-form fade-in" onSubmit={handleSubmit}>
@@ -84,20 +102,22 @@ function Lobby({ onCreateGame, onJoinGame, error, setError, onOpenObservationDec
               ← Back
             </button>
             
-            <h2>{mode === 'create' ? 'Create New Game' : 'Join Game'}</h2>
+            <h2>{mode === 'create' ? 'Create New Game' : mode === 'join' ? 'Join Game' : 'Spectate Game'}</h2>
             
-            <div className="form-group">
-              <label htmlFor="playerName">Your Name</label>
-              <input
-                id="playerName"
-                type="text"
-                value={playerName}
-                onChange={(e) => setPlayerName(e.target.value)}
-                placeholder="Enter your name"
-                maxLength={20}
-                autoFocus
-              />
-            </div>
+            {mode !== 'observe' && (
+              <div className="form-group">
+                <label htmlFor="playerName">Your Name</label>
+                <input
+                  id="playerName"
+                  type="text"
+                  value={playerName}
+                  onChange={(e) => setPlayerName(e.target.value)}
+                  placeholder="Enter your name"
+                  maxLength={20}
+                  autoFocus
+                />
+              </div>
+            )}
 
             {mode === 'create' && (
               <>
@@ -144,7 +164,7 @@ function Lobby({ onCreateGame, onJoinGame, error, setError, onOpenObservationDec
               </>
             )}
             
-            {mode === 'join' && (
+            {(mode === 'join' || mode === 'observe') && (
               <div className="form-group">
                 <label htmlFor="gameCode">Game Code</label>
                 <input
@@ -162,7 +182,7 @@ function Lobby({ onCreateGame, onJoinGame, error, setError, onOpenObservationDec
             {error && <div className="error-message">{error}</div>}
             
             <button type="submit" className="submit-btn">
-              {mode === 'create' ? 'Create Game' : 'Join Game'}
+              {mode === 'create' ? 'Create Game' : mode === 'join' ? 'Join Game' : 'Start Spectating'}
             </button>
           </form>
         )}

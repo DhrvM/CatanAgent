@@ -66,7 +66,7 @@ graph TD
 
     S <-->|"analyze(), consult(), assess_plan()"| R
     S <-->|"consult(), execute_build_queue(), handle_discard(), handle_robber()"| D
-    S <-->|"proactive_trade(), respond_to_offer()"| T
+    S <-->|"proactive_trade(), respond_to_offer(), check_pending_offer()"| T
     D <-->|"get_robber_targets(), get_best_building_spots_ev()"| R
 ```
 
@@ -81,7 +81,7 @@ The communication topology is enforced by the `ALLOWED_CHANNELS` constant in `Ba
 | Risk | Strategy, Development |
 | Trading | Strategy **only** |
 
-Key constraint: **Trading cannot talk to Risk or Development.** This is a deliberate architectural decision — all strategic context for trading decisions must flow through Strategy's `TradePolicy`, preventing the Trading agent from independently gathering data that might conflict with the central strategy.
+Key constraint: **Trading cannot talk to Risk or Development.** This is a deliberate architectural decision — all strategic intent for trading decisions flows through Strategy's `TradePolicy`. Trading may still read shared scratchpad context, including compact cached `RiskAnalysis`, but it cannot independently consult Risk or Development.
 
 ### Communication Mechanisms
 
@@ -105,7 +105,7 @@ The `Scratchpad` class (`Agent/shared/scratchpad.py`) is the central in-memory s
 | `game_state` | Strategy | All | Raw dict from `getPlayerView` socket event |
 | `processed_state` | Strategy | All | Structured extraction via `GameStateProcessor` |
 | `state_json` | Strategy | All | Token-efficient JSON for LLM prompts |
-| `risk_analysis` | Risk | Strategy, Development | `RiskAnalysis` dataclass (income, threats, robber targets, etc.) |
+| `risk_analysis` | Risk | Strategy, Development, Trading | `RiskAnalysis` dataclass (income, threats, robber targets, etc.). Trading receives a compact threat/win-probability summary for trade safety. |
 | `strategy_plan` | Strategy | Development, Trading | `StrategyPlan` dataclass (goals, build queue, trade policy) |
 | `trade_state` | Trading | Strategy | `TradeState` dataclass (reputation, pending offers, history) |
 | `build_log` | Development | Strategy | Per-turn build action records |
@@ -151,7 +151,7 @@ min_accept_score            : float      # minimum heuristic score to accept inc
 **`TradeState`** — Trading Agent's persistent state across turns.
 ```
 recent_trades          : List[Dict]           # last 20 trade outcomes
-pending_offer          : Optional[Dict]       # current outgoing offer
+pending_offer          : Optional[Dict]       # current outgoing offer with kind/status metadata
 player_trade_history   : Dict[str, List]      # per-opponent trade log
 player_reputation      : Dict[str, float]     # per-opponent reputation [-1.0, 1.0]
 ```
@@ -211,7 +211,7 @@ The `ToolRegistry` (`Agent/tools/registry.py`) provides a unified interface for 
 | `respond_to_trade` | main | trading | Accept or decline a trade offer |
 | `counter_trade` | main | trading | Counter an existing trade offer |
 | `cancel_trade` | main | trading | Cancel your own pending trade |
-| `get_trade_options` | main | trading | List available bank trade ratios |
+| `get_trade_options` | main | strategy, trading | List available bank trade ratios |
 | `get_trade_offer_status` | main | trading | Check status of your pending offer |
 | `get_building_spots` | main, setup | strategy, development | Get candidate vertices/edges for building |
 | `get_expected_income` | all | strategy, development | Expected resources/turn from buildings |
@@ -228,7 +228,7 @@ The `ToolRegistry` (`Agent/tools/registry.py`) provides a unified interface for 
 
 **Role**: Orchestrator and "brain" of the system.  
 **LLM**: GPT-4o for plan generation.  
-**File**: `Agent/strategy_agent/agent.py` (494 lines)  
+**File**: `Agent/strategy_agent/agent.py`  
 **Peers**: Development, Trading, Risk.
 
 #### Responsibilities
@@ -245,9 +245,10 @@ The `ToolRegistry` (`Agent/tools/registry.py`) provides a unified interface for 
    - **Roll phase**: Executes `roll_dice` directly (trivial, no LLM needed).
    - **Discard phase**: Delegates to `development.handle_discard()`.
    - **Robber phase**: Delegates to `development.handle_robber()`.
-   - **Main phase**: The plan's `should_trade_first` flag determines whether trading or building happens first. Then ends the turn.
-7. **Off-turn monitoring**: Even when it's not our turn, Strategy monitors for incoming trade offers and wakes the Trading agent via `trading.respond_to_offer()`.
-8. **Setup phase**: Handled entirely by heuristics (no LLM) — iterates over ranked settlement vertices and road edges, brute-forcing placements until the server accepts one.
+   - **Main phase**: The plan's `should_trade_first` flag determines whether trading or building happens first. `delegate_trade()` is non-blocking: Trading either completes a bank trade, posts a pending player proposal, or reports no viable trade, then returns control to Strategy. Strategy remains responsible for calling `end_turn`.
+7. **Trade follow-up ownership**: Strategy polls pending player offers via `trading.check_pending_offer()` on later ticks. If an incoming offer or counter appears, Strategy wakes the Trading agent via `trading.respond_to_offer()`.
+8. **Off-turn monitoring**: Even when it's not our turn, Strategy monitors for incoming trade offers and wakes the Trading agent via `trading.respond_to_offer()`.
+9. **Setup phase**: Handled entirely by heuristics (no LLM) — iterates over ranked settlement vertices and road edges, brute-forcing placements until the server accepts one.
 
 #### GPT-4o System Prompt (Condensed)
 
@@ -259,7 +260,7 @@ Key rules enforced in the prompt:
 - Use the Risk consultation to understand competitive threats.
 - Use the Development consultation to inform the build queue.
 - Build queue must use exact vertex/edge keys.
-- Trade policy must balance urgency with opponent benefit.
+- Trade policy expresses resource intent only: what resources Trading may give, what resources we need, the maximum acceptable bank ratio, whether proactive trading is allowed, and the minimum accept score. Trading owns the bank-vs-player decision.
 - Set `should_trade_first` to true if resources are needed before building, false if building can proceed immediately.
 
 #### Turn Sequence Diagram
@@ -296,7 +297,7 @@ sequenceDiagram
     end
     alt Main Phase (should_trade_first = true)
         S->>T: proactive_trade()
-        T-->>S: trade results
+        T-->>S: bank result OR pending player proposal OR no trade
         S->>D: execute_build_queue()
         D-->>S: build results
         S->>Srv: end_turn
@@ -305,7 +306,7 @@ sequenceDiagram
         S->>D: execute_build_queue()
         D-->>S: build results
         S->>T: proactive_trade()
-        T-->>S: trade results
+        T-->>S: bank result OR pending player proposal OR no trade
         S->>Srv: end_turn
     end
     alt Discard Phase
@@ -313,6 +314,10 @@ sequenceDiagram
     end
     alt Robber Phase
         S->>D: handle_robber()
+    end
+    opt Pending player trade exists
+        S->>T: check_pending_offer()
+        T-->>S: pending OR resolved_outcome_unknown
     end
 ```
 
@@ -464,8 +469,19 @@ Steal target selection: For any chosen hex, scans vertices touching that hex for
 
 **Role**: Proactive and reactive trade execution.  
 **LLM**: GPT-4o for trade evaluation and proposal.  
-**File**: `Agent/trading_agent/agent.py` (943 lines)  
+**File**: `Agent/trading_agent/agent.py`  
 **Peers**: Strategy **only**.
+
+#### Trading Rules and Contract
+
+Strategy does not decide whether to use the bank or another player. Strategy only provides a `TradePolicy` containing resource intent (`willing_to_give`, `desperately_need`), a maximum acceptable bank ratio, whether proactive trading is allowed, and the minimum score for incoming offers. Trading then autonomously chooses one of three outcomes per proactive invocation: execute a bank/port trade, post a player proposal, or decline to trade.
+
+Bank ratios are dynamic. The default bank trade is 4:1, a generic port enables 3:1, and a specific-resource port enables 2:1 for that resource. The current server state (`tradeRatios`) and `get_trade_options` tool are the authority for what bank/port trades are legal.
+
+Player trade semantics differ by direction:
+- Outgoing `propose_trade`: `offer` is what we give, `request` is what we want.
+- Incoming offer state: `offer` is what the proposer gives us, `request` is what they want from us.
+- Counter offers use our outgoing semantics: `offer` is what we give, `request` is what we want.
 
 #### Trade Modes
 
@@ -474,15 +490,25 @@ The Trading Agent operates in two distinct modes:
 **Proactive Mode** (our turn, main phase):
 1. Queries Strategy for the current `TradePolicy` via `call_agent("strategy", "get_trade_policy")`.
 2. If `should_propose_trades` is false, exits immediately.
-3. Attempts a ReAct-style LLM loop (up to 6 steps) where GPT-4o chooses among proactive tools: `bank_trade`, `propose_trade`, `get_trade_options`, `get_game_summary`, `cancel_trade`, `get_trade_offer_status`.
-4. If the LLM completes a successful trade (bank or player), returns.
-5. Otherwise, falls through to deterministic heuristics: first attempts a bank trade for a desperately-needed resource at an acceptable ratio, then proposes a 1-for-1 player trade if possible.
+3. Builds an LLM prompt from Strategy policy, plan hints, current state, trade memory, and compact Risk context (`top_opponent_threats`, `win_probabilities`, `threat_narrative`).
+4. Attempts a ReAct-style LLM loop (up to 6 steps) where GPT-4o chooses among proactive tools: `bank_trade`, `propose_trade`, `get_trade_options`, `get_game_summary`, `cancel_trade`, `get_trade_offer_status`.
+5. Makes at most one proactive trade decision per invocation: one bank trade, one player proposal, or no trade. It does not chain bank and player trades in the same pass.
+6. Bank trades complete synchronously. Player proposals are recorded in `trade_state.pending_offer` with `status="pending_player_response"` and return control to Strategy immediately.
+7. Otherwise, falls through to deterministic heuristics: first attempts a bank trade for a desperately-needed resource at an acceptable ratio, then proposes a 1-for-1 player trade if possible.
 
 **Reactive Mode** (off-turn, incoming offer):
 1. Detects incoming trade offers via `extract_incoming_offer_for_me(state)`, which checks for targeted, broadcast, and `canRespond` flags.
 2. Deduplicates offers using a signature hash to avoid responding to the same offer twice during polling.
-3. Attempts LLM evaluation first (up to 2 rounds): GPT-4o decides whether to accept, decline, or counter using `respond_to_trade` or `counter_trade` tools only.
-4. Falls through to deterministic scoring: `_score_trade()` returns a value in [0, 1] based on whether the offer gives us desperately-needed resources and only takes resources we're willing to give. Opponent VP ≥ 8 applies a -0.35 penalty.
+3. Builds an LLM prompt from the current state, trade policy, trade memory, compact Risk context, and normalized incoming offer.
+4. Attempts LLM evaluation first (up to 2 rounds): GPT-4o decides whether to accept, decline, or counter using `respond_to_trade` or `counter_trade` tools only.
+5. Falls through to deterministic scoring: `_score_trade()` returns a value in [0, 1] based on whether the offer gives us desperately-needed resources and only takes resources we're willing to give. Opponent VP ≥ 8 applies a -0.35 penalty.
+6. Accepted and declined offers are recorded immediately. Successful counters become pending offers and return control to Strategy.
+
+**Pending Offer Follow-Up**:
+1. Strategy calls `trading.check_pending_offer()` when `trade_state.pending_offer` exists.
+2. Trading queries `get_trade_offer_status` once and returns immediately.
+3. If our outgoing offer is still active, the status remains `pending_player_response`.
+4. If the outgoing offer has disappeared, Trading clears `pending_offer` and reports `resolved_outcome_unknown`. The current server status exposes whether the offer still exists, but not whether it was accepted or declined.
 
 #### Trade Scoring Heuristic
 
@@ -502,7 +528,7 @@ Clamped to [0.0, 1.0]
 
 #### Counter-Offer Logic
 
-When the score falls in the "near-threshold" window (`min_accept_score - 0.2` to `min_accept_score`), Development attempts to build a counter-offer:
+When the score falls in the "near-threshold" window (`min_accept_score - 0.2` to `min_accept_score`), Trading attempts to build a counter-offer:
 - Keeps the same structure but asks for +1 of a needed resource.
 - If we'd give away a desperately-needed resource, tries to reduce that by 1.
 
@@ -516,10 +542,7 @@ Reputation influences target selection: when proposing trades, the agent prefers
 
 #### Offer Lifecycle Management
 
-After proposing a trade (either via LLM or heuristic), the Trading Agent enters a polling loop:
-- Checks `get_trade_offer_status` every 2 seconds.
-- If the offer is resolved (accepted/declined) before 60 seconds, processes the outcome.
-- On timeout, cancels the offer and attempts a bank trade as fallback.
+After proposing a trade or counter-offer (either via LLM or heuristic), Trading does **not** block. It writes `trade_state.pending_offer`, reports `status="pending_player_response"`, and returns control to Strategy. Strategy owns follow-up checks by calling `check_pending_offer()` on later polling ticks.
 
 ---
 
@@ -577,6 +600,7 @@ flowchart TB
 
     SA -->|"call_agent('trading', ...)"| TA
     TA -->|"read"| PLAN
+    TA -->|"read compact risk context"| RISK
     TA -->|"trade prompt"| GPT
     GPT -->|"tool calls"| TA
     TA -->|"write_trade_state()"| TRADE
@@ -606,15 +630,16 @@ flowchart TB
 | 3c. Consult Dev | Development | `consult(dev_question)` → GPT-4o building advice | — |
 | 4. Plan | Strategy | GPT-4o (informed by both consultations) → `StrategyPlan` | `strategy_plan` |
 | 5. Roll | Strategy | `registry.execute("roll_dice")` | `action_log` |
-| 6–7. Trade/Build | Trading, Dev | Order determined by `should_trade_first` flag in the plan | `trade_state`, `build_log`, `action_log` |
+| 6–7. Trade/Build | Trading, Dev | Order determined by `should_trade_first` flag in the plan. Trading returns after one bank trade, one pending player proposal, or no trade. | `trade_state`, `build_log`, `action_log` |
 | 8. End | Strategy | `registry.execute("end_turn")` | `action_log` |
 
 ### Off-Turn Behavior
 
 Even when it is not our turn, the Strategy Agent continuously polls at 250ms intervals and:
-1. Checks for incoming trade offers.
-2. If an offer is detected, updates the Scratchpad and calls `trading.respond_to_offer()`.
-3. The Trading Agent evaluates the offer (LLM or heuristic) and responds.
+1. Checks any existing `trade_state.pending_offer` via `trading.check_pending_offer()`.
+2. Checks for incoming trade offers.
+3. If an offer is detected, updates the Scratchpad and calls `trading.respond_to_offer()`.
+4. The Trading Agent evaluates the offer (LLM or heuristic) and responds or posts a pending counter.
 
 ---
 
@@ -649,7 +674,7 @@ Both Development and Trading agents use a multi-step ReAct-style loop when inter
 3. **Tool execution**: Each tool call is executed via `registry.execute()`.
 4. **Result feedback**: Tool results are appended as `"tool"` role messages.
 5. **Repair loop**: If the tool call fails or GPT-4o doesn't produce a tool call, a corrective user message is appended and the loop continues.
-6. **Bounded iterations**: Each loop has a maximum step count (2 for discard/robber, 6 for proactive trading, 2 for reactive trading).
+6. **Bounded iterations**: Each loop has a maximum step count (2 for discard/robber, 6 for proactive trading, 2 for reactive trading). Proactive trading may inspect state/options for several steps, but should execute at most one bank trade or player proposal before returning to Strategy.
 
 ---
 
@@ -815,8 +840,8 @@ Agent/
 │   └── base_agent.py               # Abstract base with topology enforcement (115 lines)
 │
 ├── strategy_agent/
-│   ├── agent.py                     # Orchestrator + game loop (494 lines)
-│   └── prompts.py                   # GPT-4o system prompt + context builder (97 lines)
+│   ├── agent.py                     # Orchestrator + game loop, non-blocking trade follow-up
+│   └── prompts.py                   # GPT-4o system prompt + context builder
 │
 ├── risk_agent/
 │   ├── agent.py                     # GPT-4o consultant agent (240 lines)
@@ -829,8 +854,8 @@ Agent/
 │   └── prompts.py                   # GPT-4o system prompt + message builders (74 lines)
 │
 ├── trading_agent/
-│   ├── agent.py                     # Proactive + reactive trading (943 lines)
-│   └── prompts.py                   # GPT-4o system prompt + message builders (121 lines)
+│   ├── agent.py                     # Proactive + reactive trading, pending-offer tracking
+│   └── prompts.py                   # GPT-4o system prompt + message builders
 │
 ├── tools/
 │   ├── registry.py                  # ToolRegistry + 17 game tools (648 lines)
