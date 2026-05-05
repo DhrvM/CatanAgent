@@ -10,11 +10,17 @@
 
 \usepackage{amsmath}
 \usepackage{float}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{seqsplit}
 \usepackage{url}
 \usepackage[breaklinks=true,hidelinks]{hyperref}
 \def\UrlBreaks{\do\/\do-\do\_\do\.\do\?\do\=\do\&}
 \Urlmuskip=0mu plus 2mu
 \newcommand{\biblink}[2]{\href{#1}{\nolinkurl{#2}}}
+\newcommand{\taskid}[1]{\texttt{\seqsplit{#1}}}
 \providecommand{\citep}[1]{\cite{#1}}
 \providecommand{\citet}[1]{\cite{#1}}
 
@@ -33,120 +39,107 @@ University of Illinois Urbana Champaign \\
 \maketitle
 
 \begin{abstract}
-We present CatanBench, a benchmark for evaluating strategic decision making in the board game Settlers of Catan. Unlike benchmarks that primarily score agents by final game outcome, CatanBench evaluates individual decisions at the moment they are made. The benchmark covers short-term tactical moves, medium-term resource and build prioritization, and long-term strategic commitments such as pursuing Longest Road or Largest Army. Each decision is compared against the best legal alternative available in the current game state using heuristics. CatanBench is implemented inside a complete Node.js/React Catan environment with a Socket.IO multiplayer backend and a Python tool API for agents. During live gameplay, agent actions automatically trigger task evaluators, persist task scores, and support both real-time telemetry and offline aggregate analysis.
+    We present CatanBench, a benchmark for evaluating strategic decision making in the board game Settlers of Catan. Unlike benchmarks that primarily score agents by final game outcome, CatanBench evaluates individual decisions at the moment they are made. The benchmark covers short-term tactical moves, medium-term resource and build prioritization, and long-term strategic commitments such as pursuing Longest Road or Largest Army. Each decision is compared against the best legal alternative available in the current game state using heuristics. During live gameplay, agent actions automatically trigger task evaluators, persist task scores, and support both real-time telemetry and offline aggregate analysis.
 \end{abstract}
 
 \section{Introduction}
 \label{sec:introduction}
 
-Many game benchmarks evaluate whether an agent wins, but this is often too sparse to diagnose strategic reasoning. In Settlers of Catan, a final win or loss is shaped by hidden information, stochastic dice rolls, turn order, opponent negotiation, and long delayed consequences. An agent can make a strong settlement placement and still lose to unlucky dice; it can also win after repeatedly making fragile trades because opponents failed to punish them. This makes outcome-only evaluation a poor fit for studying whether an agent understands the quality of the choices available at each decision point.
+Many game benchmarks evaluate agents using final outcomes, but win/loss signals are too sparse to capture strategic reasoning. In Settlers of Catan, outcomes depend on hidden information, stochastic dice rolls, negotiation, and long-term dependencies, meaning strong decisions can still lose and weak ones may go unpunished. Existing benchmarks such as GameBench and Kaggle Game Arena rely on match outcomes or final outputs, and often assume simplified or perfect information, missing Catan’s mixed-information, multi-agent dynamics.
 
-CatanBench addresses this problem by evaluating decisions during live gameplay. The benchmark covers reasoning across short-, medium-, and long-term strategic moves. Short-term tasks include tactical decisions such as where to place a road, which opponent to rob, and whether to accept a trade. Medium-term tasks evaluate turn-level prioritization, including whether to build now or save, whether to buy a development card, and how to discard after a seven. Long-term tasks evaluate strategic commitments such as opening settlement placement, pursuing Longest Road, and pursuing Largest Army. Each task scores the chosen action against the best legal alternative currently available, rather than against a fixed answer that ignores the board state.
+CatanBench addresses this gap by evaluating decisions during live gameplay. It defines 20 tasks spanning short-term (tactical moves like road placement or trades), medium-term (turn-level prioritization), and long-term (strategic commitments like opening placements or Longest Road) reasoning. Each action is scored against the best legal alternative at that moment, rather than a fixed answer.
 
-Existing benchmarks are insufficient for this setting. GameBench and Kaggle Game Arena treat match outcomes as proxies for strategy quality. CatanBench scores the quality of the decision directly in each legal action. Most benchmarks isolate the search for perfect information or single step planning and miss Catan's mixed information structure simultaneous management of board, private hands, stochastic rolls and open ended negotiation. Language agent benchmarks typically evaluate final textual answers rather than tool-mediated actions in a changing multiplayer environment.
-
-Our contribution is a 20-task benchmark for Catan decision making that runs during real games. The benchmark evaluates each decision against the legal alternatives available at that exact moment of gameplay using deterministic heuristic rubrics. It records both task-level quality and game-level performance, enabling analysis of whether agents win, how they win, and which decision families cause failure. CatanBench runs on a complete Node.js/React implementation of Settlers of Catan with a Socket.IO multiplayer backend, adapted from the open-source Catan Online project \citep{doshiCatanOnline}. Agents interact through a Python tool API. Each agent action automatically triggers the relevant evaluator, stores the score, and contributes to real-time telemetry and offline aggregate reports.
+Our contribution is a real-time 20 task benchmark that measures decision quality in context. Built on a full-stack Catan implementation with a Python agent API and deterministic rubrics, it records both per-decision and game-level metrics, enabling analysis of how agents play.
 
 \section{Related Work}
 \label{sec:related-work}
 
 CatanBench is related to recent game-based benchmarks for evaluating strategic reasoning in language-model agents. GameBench evaluates the strategic reasoning abilities of LLM agents in game environments and is closest to CatanBench in its emphasis on strategic rather than purely static reasoning \citep{costarelliGameBench}. CivBench evaluates AI agents in FreeCiv, a long-horizon adversarial environment designed to stress planning quality, adaptation under uncertainty and pressure, persistent strategy identity, execution efficiency, and stability across complete match trajectories rather than one-turn snapshots \citep{clashaiCivBench}. Kaggle Game Arena provides a broader framework around game environments, model harnesses, visualizers, and leaderboards, ranking models by outcome-oriented metrics such as Elo while using games as structured tests of strategic reasoning, long-term planning, and dynamic adaptation \citep{kaggleGameArena}.
-
 CatanBench differs from these benchmarks by scoring decision quality during a full game instead of relying primarily on match outcome, Elo, or trajectory-level summaries. The benchmark is not only a Catan environment; it is an instrumentation layer over gameplay that records whether an agent's selected legal action is close to the best legal alternative under a task-specific rubric. This fills a complementary gap: CatanBench evaluates situated strategic judgment under changing board state, stochastic dice outcomes, hidden opponent resources, and negotiation, while preserving dense per-decision feedback across short, medium, and long-term Catan tasks.
 
 \section{Benchmark Design}
 \label{sec:design}
 
+
 \subsection{Task Domain and Scope}
 \label{sec:domain-scope}
 
-CatanBench covers four categories of Catan decisions:
-
-\begin{enumerate}
-    \item Spatial placement tasks evaluate settlement and road locations. 
-    \item Resource management tasks evaluate trading, discarding, bank trades, and build-versus-save decisions.
-    \item  Opponent interaction tasks evaluate robber placement, victim selection, trade targeting, counteroffers, and leader blocking.
-    \item  Strategic commitment tasks evaluate whether an agent should pursue Longest Road or Largest Army over several moves.
-\end{enumerate}
-
+CatanBench covers four categories of Catan decisions: (1) spatial placement (settlements and roads), (2) resource management (trading, discarding, bank trades, build vs. save), (3) opponent interaction (robber placement, victim selection, trade targeting, counteroffers, leader blocking), and (4) strategic commitments (e.g., pursuing Longest Road or Largest Army).
 The benchmark is designed to test decision quality rather than only game outcome. This includes individual legal decisions made during real gameplay, their task-specific scores, pass/fail thresholds, and aggregate performance over games. Natural language explanation grading is out of scope for this benchmark. No existing benchmark framework was used to design CatanBench.
 
 \subsection{Task Suite}
 \label{sec:task-suite}
 
-Table~\ref{tab:difficulty-distribution} provides a brief overview of the 20 tasks by difficulty and reasoning horizon. We summarize 3 representative tasks below, while a full comprehensive description of all 20 tasks can be found in the Appendix. 
+Table~\ref{tab:difficulty-distribution} summarizes the 20 tasks by difficulty and reasoning horizon. It covers tasks over short, medium, and long-horizon reasoning during gameplay. Full task definitions are in the Appendix.
 
 \paragraph{Initial settlement location selection.}
-The input is a setup-phase game-state snapshot containing the board layout, legal settlement vertices, adjacent hex resources and dice numbers, port locations, occupied vertices, and legal outgoing road options. The output is a legal settlement vertex. Each candidate is scored as:
+The input is a setup-phase snapshot including board layout, legal settlement vertices, adjacent resources and dice numbers, ports, occupied vertices, and legal road expansions. The output is a legal settlement vertex.
+
+Each candidate is scored as:
 \begin{equation}
 \text{score} = 0.40 \cdot \texttt{production}
 + 0.25 \cdot \texttt{diversity}
 + 0.20 \cdot \texttt{expansionAccess}
 + 0.15 \cdot \texttt{portSynergy}.
 \end{equation}
-Production uses Catan dice probability weights; diversity measures distinct adjacent resource types; expansion access counts future legal outgoing road choices; and port synergy rewards 2:1 or 3:1 port access. The selected vertex is compared against the best legal vertex. The current pass threshold is 0.75 because opening placements are highly consequential but multiple strong starts can be defensible. This task is challenging because the first settlement shapes resource income, trade dependence, expansion paths, and the feasibility of future ports before the agent has observed any dice outcomes.
+
+Production uses dice probability weights; diversity measures resource variety; expansion access counts future road options; and port synergy captures trade efficiency. The selected vertex is compared to the best legal alternative with success threshold 0.75. Early placements determine long-term resource flow, expansion potential, and trade structure before any gameplay outcomes are observed.
 
 \paragraph{Discard strategy after seven.}
-The input is a player hand after a seven is rolled, the required discard count, the current board state, legal future build plans, and resource need/surplus estimates. The output is a legal discard bundle. The evaluator enumerates legal discard bundles and scores the retained hand:
+The input is a player hand after a seven roll, discard requirement and estimated build priorities. The output is a legal discard set. All valid discard choices are evaluated by scoring the retained hand:
 \begin{equation}
 \texttt{retainedHandValue} =
 0.55 \cdot \texttt{bestAffordable}
 + 0.30 \cdot \texttt{bestFuture}
 + 0.15 \cdot \texttt{diversity}.
 \end{equation}
-The final score is \(\texttt{RetainedHandValue}/\texttt{BestRetainedValue}\), and the pass threshold is 0.90. This task is challenging because the agent must reason about opportunity cost: the discarded cards matter less than whether the remaining hand preserves an immediate build, a near-term plan, and enough diversity to avoid bottlenecks.
+
+The final score is the ratio of the chosen retained hand value to the best possible retained hand value. The pass threshold is 0.60. Agents must reason about opportunity cost under uncertainty, balancing immediate builds, future plans, and resource flexibility.
+
+\paragraph{Delayed Longest Road pursuit.}
+The input is a live state where a Longest Road contest is relevant (e.g., active competition, threshold road lengths, or proximity to a rival). The output is decision: \texttt{pursue} or \texttt{defer}, evaluated over a multi-turn horizon. Scoring compares both options using road growth, threat level, probability of securing Longest Road, and expansion efficiency. The pass threshold is 0.30 due to high stochasticity over intervening turns. This task is challenging because it requires long-horizon commitment under uncertainty and opponent interference.
 
 \subsection{Task Design Principles}
 \label{sec:design-principles}
-
-The central design principle is comparison against the best legal alternative. Legal alternatives are filtered through the same runtime legality checks that accept or reject the action in the game server, including the distinction between setup-phase and main-phase settlement placement. This avoids grading an agent against impossible moves when it must try several ranked candidates before the server accepts one. It also avoids treating a reasonable but second-best move as fully wrong and makes scores robust to the current board state. We use component-weighted rubrics when the decision has interpretable factors. For example, settlement placement assigns 0.40 weight to production because early income determines the opening trajectory, and 0.20 to expansion access because path-dependent road investments are difficult to recover from if the settlement is geometrically constrained.
-
-Coverage was achieved by mapping the actions a player can take in a turn to spatial placement, card play, negotiation and trading, build prioritization, discarding, and strategic commitment. Difficulty was calibrated by horizon. Easy tasks are immediate tactical decisions with direct legal alternatives. Medium tasks require turn-level prioritization across resources and possible plans. Hard tasks require opening or multi-turn strategic reasoning, where immediate scoring can be misleading and delayed evaluation is needed.
+The task design is guided by comparison against the best legal alternative under the same runtime legality constraints as the game server. This ensures agents are not evaluated against illegal moves or overly penalized for valid second-best choices. For multi-factor decisions, we use component-weighted rubrics. Diversity and coverage are ensured by mapping all player actions to four categories: spatial placement, resource management and trading, opponent interaction, and strategic commitment. Difficulty is calibrated by reasoning horizon: easy tasks involve immediate tactical choices, medium tasks require turn-level planning across competing actions, and hard tasks require multi-turn or opening-phase reasoning where delayed effects dominate and local scoring can be misleading.
 
 \subsection{Difficulty distribution}
 \label{sec:difficulty-distribution}
 
-Difficulty was determined based on the decision horizon and the amount of strategic context required. Easy tasks are short-term decisions with immediate consequences and relatively direct legal alternatives, such as road placement, robber victim selection, or accepting a trade. Medium tasks require turn-level prioritization across competing plans, such as deciding whether to build now or save, whether to buy a development card, or which resources to discard after a seven. Hard tasks involve opening or multi-turn strategic commitments, such as initial settlement placement, pursuing Longest Road, or pursuing Largest Army, because their value depends on future board development, opponent behavior, resource availability, and delayed payoff rather than a single immediate action.
-Table~\ref{tab:difficulty-distribution} summarises the task difficulty levels, and distribution accross easy, medium and hard tasks.
+Difficulty was determined based on the decision horizon and the amount of strategic context required, as summarised in Table~\ref{tab:difficulty-distribution}. Easy tasks are short-term decisions with immediate consequences and relatively direct legal alternatives. Medium tasks require turn-level prioritization across competing plans. Difficult tasks involve opening or multi-turn strategic commitments. 
 
 \begin{table}[H]
 \centering
 \scriptsize
-\begin{tabular}{|p{0.15\textwidth}|p{0.25\textwidth}|p{0.25\textwidth}|p{0.25\textwidth}|}
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{|p{0.3\textwidth}|p{0.10\textwidth}|p{0.55\textwidth}|}
 \hline
-\textbf{Difficulty} & \textbf{Early game} & \textbf{Mid game} & \textbf{End game} \\
+\textbf{Category} & \textbf{Difficulty} & \textbf{Tasks} \\
 \hline
-\textbf{Easy} \newline Immediate tactical decisions
-& \raggedright road-placement-direction \newline robber-placement
-& \raggedright discard-strategy-after-seven 
-& \raggedright year-of-plenty-card-playing-decision \tabularnewline
+\textbf{Short-Term} \newline Immediate tactical choices
+& Easy
+& \raggedright settlement-location-selection; road-placement-direction; knight-card-playing-decision; year-of-plenty-card-playing-decision; monopoly-card-playing-decision; road-building-card-playing-decision; robber-victim-selection; robber-placement; accept-or-reject-trade-offers; generate-trade-offers; select-targeted-trade-partner; generate-counter-trade-offer
+ \tabularnewline
 \hline
-\textbf{Medium} \newline Turn-level prioritization
-& \raggedright bank-trade-decision \newline robber-victim-selection
-& \raggedright accept-or-reject-trade-offers \newline select-targeted-trade-partner \newline generate-trade-offers \newline settlement-location-selection \newline monopoly-card-playing-decision
- \newline city-vs-settlement-vs-road-prioritization \newline development-card-purchase-decision
-& \raggedright knight-card-playing-decision \newline road-building-card-playing-decision \tabularnewline
+\textbf{Medium-Term} \newline Turn-level prioritization
+& Medium
+& \raggedright build-vs-save-decision; city-vs-settlement-vs-road-prioritization; development-card-purchase-decision; discard-strategy-after-seven; bank-trade-decision
+\tabularnewline
 \hline
-\textbf{Hard} \newline Involves long-term strategy
-& \raggedright initial-settlement-location-selection
-& \raggedright build-vs-save-decision \newline generate-counter-trade-offer
-& \raggedright decide-pursue-longest-road \newline decide-pursue-largest-army \tabularnewline
+\textbf{Long-Term} \newline Opening and strategic race commitments
+& Difficult
+& \raggedright initial-settlement-location-selection; decide-pursue-longest-road; decide-pursue-largest-army
+\tabularnewline
 \hline
 \end{tabular}
-\caption{Difficulty distribution for the 20 CatanBench tasks, grouped by game horizon. Early tasks are most common in setup and opening play, mid-game tasks focus on turn-level resource and build prioritization, and end-game tasks emphasize longer-horizon strategic commitments.}
+\caption{Difficulty distribution for the 20 CatanBench tasks.}
 \label{tab:difficulty-distribution}
 \end{table}
 
-\pagebreak
 \section{Evaluation Protocol}
 \label{sec:evaluation}
-
-Agents are evaluated in benchmark-enabled Catan games. Each action is recorded with metadata including benchmark ID, agent ID, agent version, map layout, opponent policy set, scenario tags, selected option, task score, task threshold, latency, and legality. Task scores are computed and task succeeds when its score exceeds the task-specific threshold. The benchmark has the following metrics: win rate, overall score, game play score, reasoning score, operations score, task success rate, average final victory points, average rounds to win, average task score, and average latency per turn. We omit robustness, consistency, and generalization from the main score because they require reliable scenario-slice coverage across maps, seats, and opponent policies. Primary metrics aggregate across gameplay, reasoning, and operational performance.
-
-Before aggregation, each metric is normalized to the range $[0,1]$ so that higher is always better. Win rate and task success rate are already normalized. Average final victory points is divided by 10. Average rounds to win is normalized as $\texttt{clamp}((20-\texttt{rounds})/12)$, so faster wins receive higher scores. Average latency per turn receives score 1 below 2 seconds, score 0 above 15 seconds, and linearly decays between those values.
-
-The overall score is the weighted sum of the normalized metrics:
-\[
+Our evaluation metrics include win rate, average final victory points, average rounds to win, task success rate, average task score, and average latency per turn.  A task is counted as successful when the selected action is legal and its score is at least the task-specific threshold listed in Appendix~\ref{app:task-specifications}.
+Before aggregation, all metrics are normalized to $[0,1]$ with higher always better. Evaluation reports should include overall score, gameplay/reasoning/operations scores, win rate, average final victory points, average rounds to win, task success rate, average task score, per-task breakdowns, and average latency per turn. The overall score is: $
 \begin{aligned}
 \texttt{overallScore} =\;&
 0.30\,\texttt{winRate}
@@ -155,28 +148,81 @@ The overall score is the weighted sum of the normalized metrics:
 + 0.30\,\texttt{taskSuccessRate} \\
 &+ 0.10\,\texttt{averageLatencyPerTurn}.
 \end{aligned}
-\]
-The category scores are reported to make the overall score easier to interpret. The gameplay score is the average of normalized win rate, normalized final victory points, and normalized rounds to win:
-\[
-\texttt{gameplayScore} =
-\frac{\texttt{winRate}+\texttt{averageFinalVictoryPoints}+\texttt{averageRoundsToWin}}{3}.
-\]
-The \texttt{reasoningScore} is the normalized task success rate. The \texttt{operationsScore} is the normalized latency score.
-Reports should include overall score, task success rate, average task score, per-task breakdowns, win rate, average final victory points, average rounds to win, and latency per turn.
+$
 
 \section{Benchmark Validation}
 \label{sec:validation}
 
-We conducted testing by having humans play complete games while CatanBench logged tasks in real time. These games were used to check whether task logs occurred during the intended move and whether the heuristic rankings aligned with intuitive Catan play. For example, the settlement rubric ranked high-production, diverse, expandable locations highly, and the robber placement heuristic generally matched common denial strategies that target the leader while avoiding self-harm.
+We validated CatanBench using three forms of evidence: a human baseline (fig.\ref{fig:human-baseline}), agent baselines (fig \ref{fig:agent-baselines}), and task review (fig.\ref{fig:task-review-evidence}).
 
-Task quality is supported by deterministic task specifications. Each of the 20 tasks takes a deterministic input and a scoring function. Production weights, resource diversity, expansion access, port synergy, build-plan values, and resource need/surplus are reused consistently across tasks. We also maintain a deterministic calibration agent that uses the same scoring formulas as the benchmark for spatial placement, bank trades, generated offers, and discard decisions. Failures by this calibration agent are treated as benchmark-debugging signals because they usually indicate a mismatch between runtime legality, task construction, or the documented heuristic. For long-term tasks, we moved from immediate scoring to delayed four-to-six-turn simulation.
+\begin{figure}[H]
+\centering
+\begin{subfigure}[c]{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\detokenize{Result Images/WhatsApp Image 2026-05-05 at 17.05.59.jpeg}}
+\caption{Human baseline game state.}
+\label{fig:human-game-state}
+\end{subfigure}
+\hfill
+\begin{subfigure}[c]{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\detokenize{Result Images/WhatsApp Image 2026-05-05 at 17.07.35.jpeg}}
+\caption{Human baseline leaderboard.}
+\label{fig:human-leaderboard}
+\end{subfigure}
+\caption{Human baseline results from the Vayun-Sharayu benchmark-enabled game. Task success rates are similar across players (77.5\% vs. 75.6\%), but benchmark scores differ due to high variance in win rate. As the number of games increases, win rates are expected to stabilize (e.g., ~60-40 rather than 100-0), narrowing this gap.}
+\label{fig:human-baseline}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}[c]{0.55\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\detokenize{Result Images/WhatsApp Image 2026-05-05 at 16.21.45.jpeg}}
+\caption{Heuristic-bot baseline. The heuristic-bot, designed to be aligned with the benchmark, played 10, 3-player games with itself and scored a task success rate of 100\% in each game.}
+\label{fig:heuristic-baseline}
+\end{subfigure}
+\hfill
+\begin{subfigure}[c]{0.44\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\detokenize{Result Images/WhatsApp Image 2026-05-05 at 16.21.51.jpeg}}
+\caption{ReAct-agent comparison. the ReAct GPT-4o agent defeated the heuristic-bot. Despite having a lower task success rate than the heuristic-bot, the ReAct agent achieved a higher overall score due to its superior win rate and final victory points, demonstrating that task success rate is not the sole determinant of performance in CatanBench.}
+\label{fig:react-comparison}
+\end{subfigure}
+\caption{Agent baseline evidence.} 
+ \label{fig:agent-baselines}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}[c]{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\detokenize{Result Images/WhatsApp Image 2026-05-05 at 16.28.27.jpeg}}
+\caption{Constructed placement board.}
+\label{fig:task-review-board}
+\end{subfigure}
+\hfill
+\begin{subfigure}[c]{0.49\linewidth}
+\centering
+\includegraphics[width=\linewidth]{\detokenize{Result Images/WhatsApp Image 2026-05-05 at 16.29.04.jpeg}}
+\caption{Benchmark task-review log.}
+\label{fig:task-review-log}
+\end{subfigure}
+\caption{Task-review evidence for intentionally good and bad initial settlement placements. Strong initial placements (played by the red player) passed with scores such as 91.1\% and 95.5\%, while deliberately poor placements (played by the blue player) failed with scores such as 59.2\% and 18.4\%.}
+\label{fig:task-review-evidence}
+\end{figure}
 
 \section{Conclusion}
 \label{sec:conclusion}
-
 CatanBench is a real-time benchmark for strategic reasoning in Settlers of Catan. It evaluates 20 live gameplay tasks across tactical decisions, resource prioritization, negotiation, and long-horizon commitments. By scoring decisions against the best legal alternative at the moment of play, CatanBench provides denser and more diagnostic feedback than final win rate alone. We expect the benchmark to help researchers study agents that must reason under hidden information, stochastic outcomes, negotiation, and delayed strategic consequences. Future work includes larger human and agent baselines, stronger negotiation modeling, additional scenario suites, and calibration against expert Catan play.
 
 \begin{thebibliography}{9}
+
+\bibitem[Teuber(1995)]{teuberCatanRules}
+Klaus Teuber.
+\newblock Catan base game rules.
+\newblock Catan Studio, originally published 1995.
+\newblock \biblink{https://www.catan.com/sites/default/files/2021-06/catan_base_rules_2020_200707.pdf}{catan.com/sites/default/files/2021-06/catan\_base\_rules\_2020\_200707.pdf}.
 
 \bibitem[Doshi(2026)]{doshiCatanOnline}
 Viral Doshi.
@@ -219,8 +265,127 @@ The benchmark uses three families of tasks:
     \item \textbf{Long-term tasks}: strategic race commitments whose value unfolds over several turns.
 \end{itemize}
 
-The main design goal is to compare decisions with the best legal alternative available at that moment (based on a heuristic approach), while keeping a threshold value to determine success or failure on the invidiual task.  
+The main design goal is to compare decisions with the best legal alternative available at that moment (based on a heuristic approach), while keeping a threshold value to determine success or failure on the individual task.  
 This system rewards near-optimal play when several choices are reasonable, and avoids placing fail labels on decisions that were reasonable but not perfectly aligned with the benchmark heuristic. 
+
+\subsection{Task Specifications}
+\label{app:task-specifications}
+
+Each benchmark event is stored as a task record with a \texttt{taskId}, acting player, game snapshot, candidate-option context, selected action, scalar score, threshold, pass/fail label, and explanation. The expected output is always the agent's selected legal action or explicit non-action. A task succeeds when the selected output is legal and its score meets or exceeds the threshold below; for option-ratio tasks, the score is the selected option's value divided by the best legal option's value, sometimes with the margin-aware adjustment described in the task explanation.
+
+\scriptsize
+\setlength{\tabcolsep}{2pt}
+\begin{longtable}{>{\raggedright\arraybackslash}p{0.16\linewidth}
+                  >{\raggedright\arraybackslash}p{0.34\linewidth}
+                  >{\raggedright\arraybackslash}p{0.21\linewidth}
+                  >{\raggedright\arraybackslash}p{0.21\linewidth}}
+\textbf{Task} & \textbf{Inputs} & \textbf{Expected output} & \textbf{Success criterion} \\
+\hline
+\endfirsthead
+\textbf{Task} & \textbf{Inputs} & \textbf{Expected output} & \textbf{Success criterion} \\
+\hline
+\endhead
+\taskid{initial-settlement-location-selection} &
+Setup-phase board state, legal opening settlement vertices, adjacent hex resources/numbers, port metadata, expansion edges, acting player seat. &
+Chosen opening settlement vertex key. &
+Legal vertex and settlement-quality score $\ge 0.75$. \\
+
+\taskid{settlement-location-selection} &
+Main/setup board state after an agent commits to settlement building, legal settlement vertices, adjacent production, resource diversity, port and expansion metadata. &
+Chosen settlement vertex key. &
+Legal vertex and selected-to-best settlement score $\ge 0.90$. \\
+
+\taskid{road-placement-direction} &
+Current road network, legal candidate edges, endpoint occupancy, reachable settlement sites, opponent road/building pressure, Longest Road status. &
+Chosen road edge key. &
+Legal edge and road-placement score $\ge 0.80$. \\
+
+\taskid{knight-card-playing-decision} &
+Player development cards, robber location, blocked production, resource-need map, player/opponent Knight counts, current phase legality. &
+Binary choice: play Knight now or hold. &
+Legal timing choice and play/hold option score $\ge 0.80$. \\
+
+\taskid{year-of-plenty-card-playing-decision} &
+Player hand, all build-plan candidates, resource-need map, current affordable plans, legal Year of Plenty resource choices. &
+Two selected resources. &
+Legal resource pair and pair score $\ge 0.85$. \\
+
+\taskid{monopoly-card-playing-decision} &
+Player hand, opponent resource holdings available to the server evaluator, build-plan table, resource-need map, legal Monopoly resource calls. &
+Selected resource to monopolize. &
+Legal resource call and resource score $\ge 0.85$. \\
+
+\taskid{road-building-card-playing-decision} &
+Player road network, all legal road edges, road-placement scores, self/opponent road lengths, Longest Road status. &
+Binary choice: play Road Building now or hold. &
+Legal timing choice and play/hold option score $\ge 0.85$. \\
+
+\taskid{robber-victim-selection} &
+Robber destination hex, eligible victims on that hex, public VP/achievement data, visible resource counts, turn order. &
+Selected victim player ID or no victim when none is legal. &
+Legal victim choice and victim option score $\ge 0.75$. \\
+
+\taskid{robber-placement} &
+All legal robber hexes, current robber location, adjacent buildings, dice weights, public leader information, opponent hand sizes, self-harm flags. &
+Selected robber hex ID. &
+Legal hex and robber-placement score $\ge 0.75$. \\
+
+\taskid{accept-or-reject-trade-offers} &
+Incoming offer/request resources, responder hand, proposer identity, visible leader status, responder build plans, need/surplus maps. &
+Binary response: accept or reject. &
+Legal response and response option score $\ge 0.95$; accept is preferred only when trade quality is at least $0.70$. \\
+
+\taskid{generate-trade-offers} &
+Acting player's hand, candidate offer/request bundles, target opponents, visible leader status, build plans, need/surplus maps. &
+Generated offer: give resources, request resources, and optional target. &
+Legal offer and trade-offer score $\ge 0.70$. \\
+
+\taskid{select-targeted-trade-partner} &
+Candidate opponent list, requested resources, opponent availability estimate, visible leader status, trade self-gain context. &
+Selected target opponent ID. &
+Legal target and partner option score $\ge 0.90$. \\
+
+\taskid{generate-counter-trade-offer} &
+Incoming trade offer, responder hand, proposer identity, legal counteroffer bundles, responder build plans, need/surplus maps. &
+Counteroffer resources to give and request, or no counter when none is legal/useful. &
+Legal counteroffer and counter-trade score $\ge 0.70$. \\
+
+\taskid{build-vs-save-decision} &
+Player hand, affordable and unaffordable road/settlement/city/development-card plans, current best future plan, seven-discard risk. &
+Build-family action or explicit save/no-build decision. &
+Legal selected action and spend/save option score $\ge 0.85$. \\
+
+\taskid{city-vs-settlement-vs-road-prioritization} &
+Currently legal city upgrades, settlement vertices, normal road edges, build-family scores, current hand and board constraints. &
+Selected build family: city, settlement, road, or no legal build. &
+Legal build family and option score $\ge 0.90$. \\
+
+\taskid{development-card-purchase-decision} &
+Player hand, development deck availability, held unplayed development cards, army-race context, competing non-dev build plans. &
+Binary choice: buy development card or skip. &
+Legal purchase/skip choice and option score $\ge 0.85$. \\
+
+\taskid{discard-strategy-after-seven} &
+Player resource hand, required discard count, all legal discard bundles, retained-hand build-plan values. &
+Discard resource bundle. &
+Legal bundle with retained-hand value ratio $\ge 0.60$. \\
+
+\taskid{bank-trade-decision} &
+Player hand, bank/port trade ratios, candidate give/get conversions, need/surplus maps, build unlocks, discard risk, no-trade option. &
+Bank/port trade conversion or no-trade decision. &
+Legal conversion/no-trade and option score $\ge 0.75$. \\
+
+\taskid{decide-pursue-longest-road} &
+Snapshot of self and rival road lengths, Longest Road holder, visible VP, roads built so far, future road progress over the delayed horizon. &
+Strategic intent: pursue/contest Longest Road or defer. &
+Triggered only in real race states; delayed outcome score $\ge 0.30$. \\
+
+\taskid{decide-pursue-largest-army} &
+Snapshot of self and rival Knights, Largest Army holder, visible VP, hand size, development cards bought, future Knight/army progress over the delayed horizon. &
+Strategic intent: pursue/contest Largest Army or defer. &
+Triggered only in real army-race states; delayed outcome score $\ge 0.30$. \\
+\end{longtable}
+\normalsize
 
 \subsection{Shared Heuristic Building Blocks}
 \label{app:shared-heuristic-building-blocks}
@@ -337,8 +502,8 @@ The threshold for \texttt{initial-settlement-location-selection} is $0.75$ becau
 \subsubsection{\texttt{settlement-location-selection}}
 \label{app:task-settlement-location-selection}
 This task uses the same scoring system as the initial-settlement task in Section~\ref{app:task-initial-settlement-location-selection}.
-The core difference between initial and subsequent location selection is that the initial settlement location selection task has a much higher weightage in the overall benchmark.
-This reflects the fact that the first settlement sets the foundation for the entire game and is a critical decision point, while subsequent settlement placements, although still important, are often more constrained by the existing board state and may have less impact on the overall game trajectory.
+The core difference between initial and subsequent location selection is when the task is emitted and how it is interpreted. The initial settlement task is a long-term opening decision with a lower pass threshold, while subsequent settlement placement is a short-term task evaluated against a smaller set of legal options.
+This reflects the fact that the first settlement sets the foundation for the entire game and is a critical decision point, while subsequent settlement placements, although still important, are often more constrained by the existing board state.
 \\
 The threshold for \texttt{settlement-location-selection} is $0.90$ because later settlement choices are evaluated against a smaller legal option set and should closely match the best available site.
 
@@ -784,9 +949,12 @@ The threshold for \texttt{select-targeted-trade-partner} is $0.90$ because targe
 \end{aligned}
 \]
 The structural reasoning follows the generated-trade-offer task from Section~\ref{app:task-generate-trade-offers}, but now from the responder's perspective relative to an incoming offer.
-The payload reuses the trade-quality subscores from Section~\ref{app:task-generate-trade-offers}:
+The payload reuses the same plan-aware trade-quality subscores as Section~\ref{app:task-generate-trade-offers}:
 \[
-\texttt{selfGain} = \texttt{clamp}(\texttt{requestValue} - 0.5 \cdot \texttt{giveCost}),
+\texttt{selfGain} = \texttt{clamp}(0.45 \cdot \texttt{requestValue}
++ 0.35 \cdot \texttt{planGain}
++ 0.20 \cdot \texttt{settlementGain}
+- 0.35 \cdot \texttt{giveCost}),
 \]
 \[
 \texttt{fairnessPenalty}
