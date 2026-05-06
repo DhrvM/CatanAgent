@@ -20,14 +20,15 @@ DEFAULT_SERVER = "http://localhost:3001"
 def main() -> int:
     parser = argparse.ArgumentParser(description="Export Catan benchmark API JSON.")
     parser.add_argument("--server", default=DEFAULT_SERVER, help="Benchmark server URL.")
-    parser.add_argument("--out", default=None, help="Output directory. Defaults to evaluation/results/<timestamp>.")
+    parser.add_argument("--out", default=None, help="Output directory. Defaults to this script's results/<timestamp> directory.")
     parser.add_argument("--benchmark-id", default=None, help="Optional benchmarkId filter.")
     parser.add_argument("--live-log-limit", type=int, default=500, help="Number of live log entries to export.")
     args = parser.parse_args()
 
     server = args.server.rstrip("/")
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    output_dir = Path(args.out) if args.out else Path("evaluation") / "results" / timestamp
+    script_dir = Path(__file__).resolve().parent
+    output_dir = Path(args.out) if args.out else script_dir / "results" / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
 
     query = {}

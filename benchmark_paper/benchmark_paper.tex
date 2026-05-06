@@ -1275,7 +1275,7 @@ The threshold for \texttt{decide-pursue-largest-army} is $0.30$ because Largest 
 \section{Benchmark Usage and Evaluation Documentation}
 \label{app:benchmark-usage-documentation}
 
-This appendix documents how to use CatanBench outside the paper. The same runnable instructions are provided in \texttt{evaluation/README.md}; this appendix records the benchmark interface, required resources, evaluation scripts, and result interpretation in the paper itself.
+This appendix documents how to use CatanBench outside the paper. The same runnable instructions are provided in \texttt{benchmark\_paper/Submission/evaluation/README.md}; this appendix records the benchmark interface, required resources, evaluation scripts, and result interpretation in the paper itself.
 All code for the agent and benchmark is found in: https://github.com/DhrvM/CatanAgent
 
 \subsection{What the Benchmark Evaluates}
@@ -1291,7 +1291,7 @@ No external dataset is required. The benchmark is generated from live Catan game
     \item \texttt{Environment/server/benchmarkEvaluation.js}: task scoring and benchmark payload evaluation.
     \item \texttt{Environment/server/benchmarkStore.js}: benchmark data storage, leaderboards, slice comparisons, and logs.
     \item \texttt{Agent/training/run\_self\_play.py}: automated heuristic self-play baseline runner.
-    \item \texttt{evaluation/}: runnable evaluation scripts and result-export utilities.
+    \item \texttt{benchmark\_paper/Submission/evaluation/}: runnable evaluation scripts and result-export utilities.
     \item \texttt{benchmark\_paper/Result Images/}: validation evidence images used in this paper.
 \end{itemize}
 
@@ -1299,7 +1299,7 @@ Generated resources are written locally:
 \begin{itemize}
     \item \texttt{Agent/training/results/*.json}: self-play baseline outputs.
     \item \texttt{Environment/server/benchmark-data/}: benchmark records written by the local server.
-    \item \texttt{evaluation/results/<timestamp>/}: exported benchmark API snapshots.
+    \item \texttt{Submission/evaluation/results/<timestamp>/}: exported benchmark API snapshots.
 \end{itemize}
 
 OpenAI API access is optional. It is needed only for ReAct or multi-agent strategy evaluations that call GPT models. The heuristic baseline and server-side benchmark tests do not require an external API key.
@@ -1347,7 +1347,9 @@ npm run benchmark:clear
 The server includes benchmark unit and observation tests. From the repository root:
 
 \begin{verbatim}
-./evaluation/run_benchmark_tests.sh
+cd benchmark_paper/Submission/evaluation
+./run_benchmark_tests.sh
+cd ../../..
 \end{verbatim}
 
 This runs benchmark observation tests, benchmark evaluation tests, resource heuristic tests, and longest-road cycle tests.
@@ -1357,8 +1359,9 @@ This runs benchmark observation tests, benchmark evaluation tests, resource heur
 The paper uses ten games of heuristic bot instances as the simple agent baseline. With the server running:
 
 \begin{verbatim}
-./evaluation/run_heuristic_baseline.sh \
-  --games 10 --players 3 --parallel 1
+cd benchmark_paper/Submission/evaluation
+./run_heuristic_baseline.sh --games 10 --players 3 --parallel 1
+cd ../../..
 \end{verbatim}
 
 The output is written to:
@@ -1370,8 +1373,9 @@ Agent/training/results/heuristic_baseline_10_games.json
 For a shorter debugging run:
 
 \begin{verbatim}
-./evaluation/run_heuristic_baseline.sh \
-  --games 1 --players 3 --timeout-s 600
+cd benchmark_paper/Submission/evaluation
+./run_heuristic_baseline.sh --games 1 --players 3 --timeout-s 600
+cd ../../..
 \end{verbatim}
 
 \subsection{Running LLM Agent Evaluations}
@@ -1393,11 +1397,12 @@ The benchmark-enabled server records task telemetry when benchmark mode is activ
 With the server running, export benchmark API state from the repository root:
 
 \begin{verbatim}
-./evaluation/export_benchmark_results.py \
-  --server http://localhost:3001
+cd benchmark_paper/Submission/evaluation
+./export_benchmark_results.py --server http://localhost:3001
+cd ../../..
 \end{verbatim}
 
-This creates a timestamped directory under \texttt{evaluation/results/} with:
+This creates a timestamped directory under \texttt{Submission/evaluation/results/} with:
 \begin{itemize}
     \item \texttt{definitions.json}: task definitions, categories, metric directions, and metric weights.
     \item \texttt{overview.json}: aggregate benchmark overview and top entities.
@@ -1411,8 +1416,9 @@ This creates a timestamped directory under \texttt{evaluation/results/} with:
 To choose a specific output directory:
 
 \begin{verbatim}
-./evaluation/export_benchmark_results.py \
-  --out evaluation/results/my_run
+cd benchmark_paper/Submission/evaluation
+./export_benchmark_results.py --out results/my_run
+cd ../../..
 \end{verbatim}
 
 \subsection{Interpreting Results}

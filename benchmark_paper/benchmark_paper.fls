@@ -2,7 +2,7 @@ PWD /Users/vayungupta/Documents/SP26/CatanAgent/benchmark_paper
 INPUT /usr/local/texlive/2026/texmf.cnf
 INPUT /usr/local/texlive/2026/texmf-dist/web2c/texmf.cnf
 INPUT /usr/local/texlive/2026/texmf-var/web2c/pdftex/pdflatex.fmt
-INPUT /Users/vayungupta/Documents/SP26/CatanAgent/benchmark_paper/benchmark_paper.tex
+INPUT benchmark_paper.tex
 OUTPUT benchmark_paper.log
 INPUT /usr/local/texlive/2026/texmf-dist/tex/latex/base/article.cls
 INPUT /usr/local/texlive/2026/texmf-dist/tex/latex/base/article.cls

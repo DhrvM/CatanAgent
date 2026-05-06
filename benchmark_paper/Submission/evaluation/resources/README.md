@@ -22,5 +22,4 @@ Self-play baseline summaries are generated in:
 
 Exported benchmark API snapshots are generated in:
 
-- `evaluation/results/`
-
+- `benchmark_paper/Submission/evaluation/results/`

@@ -25,7 +25,7 @@ Generated resources:
 
 - `Agent/training/results/*.json`: self-play baseline outputs.
 - `Environment/server/benchmark-data/`: benchmark store data written by the local server.
-- `evaluation/results/<timestamp>/`: exported benchmark API snapshots.
+- `benchmark_paper/Submission/evaluation/results/<timestamp>/`: exported benchmark API snapshots.
 
 External resources:
 
@@ -89,7 +89,7 @@ npm run benchmark:clear
 Run the benchmark/unit evaluation checks:
 
 ```bash
-./evaluation/run_benchmark_tests.sh
+./benchmark_paper/Submission/evaluation/run_benchmark_tests.sh
 ```
 
 This runs the server-side benchmark observation, scoring, resource heuristic, and longest-road cycle tests.
@@ -99,7 +99,7 @@ This runs the server-side benchmark observation, scoring, resource heuristic, an
 The paper uses 10 games of heuristic bot instances as the simple agent baseline. With the server running:
 
 ```bash
-./evaluation/run_heuristic_baseline.sh --games 10 --players 3 --parallel 1
+./benchmark_paper/Submission/evaluation/run_heuristic_baseline.sh --games 10 --players 3 --parallel 1
 ```
 
 The script writes a JSON summary to:
@@ -111,7 +111,7 @@ Agent/training/results/heuristic_baseline_10_games.json
 You can shorten the run while debugging:
 
 ```bash
-./evaluation/run_heuristic_baseline.sh --games 1 --players 3 --timeout-s 600
+./benchmark_paper/Submission/evaluation/run_heuristic_baseline.sh --games 1 --players 3 --timeout-s 600
 ```
 
 ## Run LLM Agent Evaluations
@@ -130,10 +130,10 @@ The benchmark-enabled server records task telemetry automatically when benchmark
 With the server running, export the benchmark API state:
 
 ```bash
-./evaluation/export_benchmark_results.py --server http://localhost:3001
+./benchmark_paper/Submission/evaluation/export_benchmark_results.py --server http://localhost:3001
 ```
 
-This creates a timestamped directory under `evaluation/results/` containing:
+This creates a timestamped directory under `benchmark_paper/Submission/evaluation/results/` containing:
 
 - `definitions.json`: task descriptions, categories, metric directions, and metric weights.
 - `overview.json`: aggregate benchmark overview and top entities.
@@ -146,7 +146,7 @@ This creates a timestamped directory under `evaluation/results/` containing:
 You can change the output directory:
 
 ```bash
-./evaluation/export_benchmark_results.py --out evaluation/results/my_run
+./benchmark_paper/Submission/evaluation/export_benchmark_results.py --out benchmark_paper/Submission/evaluation/results/my_run
 ```
 
 ## Interpret Results
