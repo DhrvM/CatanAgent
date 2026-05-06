@@ -1,8 +1,11 @@
 # CatanAgent
 
-CatanAgent is a Settlers of Catan AI system with:
-- a cooperative multi-agent mode (Strategy + Risk + Development + Trading), and
-- a legacy single-agent ReAct mode.
+CatanAgent is a Settlers of Catan agent system that can run either as a legacy
+single ReAct agent or as a cooperative multi-agent system.
+
+The hosted game server is:
+
+- [https://catanagent.onrender.com](https://catanagent.onrender.com)
 
 This README focuses on running **benchmarks locally** with the local game server
 and web client.
@@ -92,34 +95,27 @@ python -m Agent.benchmark_agent.run_matchups --server http://localhost:3001 --ga
 ```
 
 Useful options:
-- `--agents react` or `--agents multi` to run one agent family only
+- `--agents react`, `--agents multi`, or `--agents react-vs-strategy`
 - `--total-players <N>` to run more than the default 1v1 setup
 - `--react-provider anthropic --anthropic-model claude-3-5-sonnet-latest` for Claude-based ReAct benchmarks
+- `--strategy-model gpt-5.1` to set the Strategy model (default is `gpt-5.1`)
 
 ### React vs Strategy (Head-to-Head)
 
-`run_matchups` is designed for **agent vs heuristic** series. For direct
-**React vs Strategy**, run a manual 1v1 game:
-
-1. In the local client (`http://localhost:5173`), create a 2-player game and copy
-   the game code.
-2. In one terminal (with venv active), run React:
+`run_matchups` also supports direct **React vs Strategy** runs:
 
 ```bash
-python -m Agent.main --mode react --server http://localhost:3001 --game-code ABCDEF --name ReactBot
+python -m Agent.benchmark_agent.run_matchups --server http://localhost:3001 --games 1 --agents react-vs-strategy
 ```
 
-3. In a second terminal (with venv active), run Strategy:
+Example with Claude for React and GPT-5.1 for Strategy:
 
 ```bash
-python -m Agent.main --mode multi --server http://localhost:3001 --game-code ABCDEF --name StrategyBot
+python -m Agent.benchmark_agent.run_matchups --server http://localhost:3001 --games 3 --agents react-vs-strategy --react-provider anthropic --anthropic-model claude-3-5-sonnet-latest --strategy-model gpt-5.1
 ```
 
-4. Start the game from the lobby, then use **Spectate Game** to watch.
-
-Note: this head-to-head mode is great for qualitative comparison, but it is not
-recorded as the heuristic benchmark `runId` series produced by
-`run_matchups`.
+For manual qualitative comparisons, you can still run two separate terminals
+(`Agent.main --mode react` and `Agent.main --mode multi`) in the same lobby.
 
 ## Run Agent Client Manually (Optional)
 

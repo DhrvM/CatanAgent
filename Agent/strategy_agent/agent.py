@@ -23,7 +23,9 @@ topology enforced in ``ALLOWED_CHANNELS`` is honored.
 """
 from __future__ import annotations
 
+import ast
 import json
+import re
 import time
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Tuple
@@ -199,6 +201,7 @@ class StrategyAgent(BaseAgent):
         registry: ToolRegistry,
         stats: AgentStatsTracker,
         game_code: Optional[str] = None,
+        reconnect_player_id: Optional[str] = None,
         player_name: str = "StrategyBot",
     ) -> None:
         super().__init__("strategy", scratchpad)
@@ -208,6 +211,7 @@ class StrategyAgent(BaseAgent):
         self.registry = registry
         self.stats = stats
         self.game_code = game_code
+        self.reconnect_player_id = reconnect_player_id
         self.player_name = player_name
 
         # Turn bookkeeping.
@@ -228,6 +232,7 @@ class StrategyAgent(BaseAgent):
         # Counter used to dedupe completed-trade detection for round_summary
         self._trade_highwater: float = 0.0
         self._last_trade_result: Optional[Dict[str, Any]] = None
+        self._last_discard_sig: Optional[str] = None
 
     # ──────────────────────────────────────────────────────────────
     # Main game loop
@@ -238,7 +243,10 @@ class StrategyAgent(BaseAgent):
         self.client.connect()
 
         if self.game_code:
-            self.client.join_game(self.game_code, self.player_name)
+            if self.reconnect_player_id:
+                self.client.reconnect_game(self.game_code, self.reconnect_player_id)
+            else:
+                self.client.join_game(self.game_code, self.player_name)
         else:
             ack = self.client.create_game(self.player_name)
             self.game_code = ack["gameCode"]
@@ -259,6 +267,7 @@ class StrategyAgent(BaseAgent):
                     # time it becomes our turn.
                     if self._turn_phase_state != "none":
                         self._turn_phase_state = "none"
+                    self._handle_offturn_discard_if_needed(state)
                     self._check_reactive_trades(state)
                     time.sleep(0.25)
                     continue
@@ -416,7 +425,10 @@ class StrategyAgent(BaseAgent):
                 {"role": "system", "content": STRATEGY_PLAN_SYSTEM_PROMPT},
                 {"role": "user", "content": context},
             ]
-            response = self.openai.chat_with_tools(messages, tools=None)
+            response = self.openai.chat_with_tools(
+                messages,
+                tools=[self._plan_submission_tool_schema()],
+            )
 
             usage = self.openai.extract_usage(response)
             self.stats.record_llm_call(
@@ -425,8 +437,14 @@ class StrategyAgent(BaseAgent):
                 model=self.openai.model,
             )
 
-            text = self.openai.extract_text(response)
+            text = self._extract_plan_text_from_response(response)
             plan = self._parse_plan(text)
+            if plan.reasoning.startswith("Plan parsing failed"):
+                print("  [strategy] Plan parse failed, requesting strict JSON retry...")
+                retry_text = self._retry_plan_json(context, text)
+                retry_plan = self._parse_plan(retry_text)
+                if not retry_plan.reasoning.startswith("Plan parsing failed"):
+                    plan = retry_plan
             self.scratchpad.write_strategy_plan(plan)
             print(
                 f"  [strategy] Plan: goal={plan.long_term_goal}, "
@@ -435,7 +453,7 @@ class StrategyAgent(BaseAgent):
                 f"trade_first={plan.should_trade_first}"
             )
             if plan.reasoning:
-                print(f"  [strategy] Reasoning: {plan.reasoning[:150]}...")
+                print(f"  [strategy] Reasoning: {plan.reasoning}")
 
         except Exception as e:
             print(f"  [strategy] Planning failed: {e}")
@@ -472,23 +490,13 @@ class StrategyAgent(BaseAgent):
         )
 
     def _parse_plan(self, text: str) -> StrategyPlan:
-        data: Optional[Dict[str, Any]] = None
-        try:
-            data = json.loads(text)
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-        if data is None and text:
-            start = text.find("{")
-            end = text.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                try:
-                    data = json.loads(text[start:end + 1])
-                except json.JSONDecodeError:
-                    pass
+        data = self._extract_first_json_dict(text)
 
         if not isinstance(data, dict):
             print("  [strategy] Could not parse plan, using defaults")
+            snippet = (text or "").strip().replace("\n", "\\n")
+            if snippet:
+                print(f"  [strategy] Raw plan output: {snippet}")
             return StrategyPlan(reasoning="Plan parsing failed — using defaults")
 
         tp_data = data.get("trade_policy") or {}
@@ -509,6 +517,205 @@ class StrategyAgent(BaseAgent):
             risk_tolerance=str(data.get("risk_tolerance", "moderate")),
             reasoning=str(data.get("reasoning", "")),
         )
+
+    @staticmethod
+    def _plan_submission_tool_schema() -> Dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": "submit_plan",
+                "description": "Return the finalized strategy plan in structured JSON.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "long_term_goal": {"type": "string"},
+                        "short_term_goals": {"type": "array", "items": {"type": "string"}},
+                        "priority_resources": {"type": "array", "items": {"type": "string"}},
+                        "build_queue": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "action": {"type": "string"},
+                                    "target": {"type": ["string", "null"]},
+                                    "priority": {"type": "integer"},
+                                },
+                                "required": ["action"],
+                            },
+                        },
+                        "trade_policy": {
+                            "type": "object",
+                            "properties": {
+                                "willing_to_give": {"type": "array", "items": {"type": "string"}},
+                                "desperately_need": {"type": "array", "items": {"type": "string"}},
+                                "max_bank_ratio_acceptable": {"type": "integer"},
+                                "should_propose_trades": {"type": "boolean"},
+                                "min_accept_score": {"type": "number"},
+                            },
+                        },
+                        "should_trade_first": {"type": "boolean"},
+                        "risk_tolerance": {"type": "string"},
+                        "reasoning": {"type": "string"},
+                    },
+                    "required": [
+                        "long_term_goal",
+                        "short_term_goals",
+                        "priority_resources",
+                        "build_queue",
+                        "trade_policy",
+                        "should_trade_first",
+                        "risk_tolerance",
+                        "reasoning",
+                    ],
+                },
+            },
+        }
+
+    def _extract_plan_text_from_response(self, response: Any) -> str:
+        """Prefer structured submit_plan tool args; fallback to plain text."""
+        try:
+            calls = self.openai.extract_tool_calls(response)
+            for call in calls:
+                if call.get("name") != "submit_plan":
+                    continue
+                args = call.get("arguments")
+                if isinstance(args, dict) and args:
+                    return json.dumps(args, default=str)
+        except Exception:
+            pass
+        return self.openai.extract_text(response)
+
+    def _retry_plan_json(self, context: str, previous_output: Any) -> str:
+        """
+        Ask the model for a strict JSON-only restatement of the plan.
+        This recovers from empty/prose/truncated first-pass outputs.
+        """
+        prev_text = previous_output if isinstance(previous_output, str) else json.dumps(previous_output, default=str)
+        retry_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Return the plan by calling submit_plan exactly once. "
+                    "Do not output prose."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Convert the previous output into a valid plan now.\n\n"
+                    f"Original context:\n{context}\n\n"
+                    f"Previous invalid output:\n{prev_text}"
+                ),
+            },
+        ]
+        try:
+            response = self.openai.chat_with_tools(
+                retry_messages,
+                tools=[self._plan_submission_tool_schema()],
+            )
+            usage = self.openai.extract_usage(response)
+            self.stats.record_llm_call(
+                prompt_tokens=usage["prompt_tokens"],
+                completion_tokens=usage["completion_tokens"],
+                model=self.openai.model,
+            )
+            text = self._extract_plan_text_from_response(response)
+            if text:
+                return text
+            print("  [strategy] Plan JSON retry produced empty output")
+        except Exception as e:
+            print(f"  [strategy] Plan JSON retry failed: {e}")
+        return ""
+
+    @staticmethod
+    def _extract_first_json_dict(text: str) -> Optional[Dict[str, Any]]:
+        """
+        Best-effort JSON object extraction from LLM output.
+        Handles:
+        - pure JSON
+        - fenced ```json ... ```
+        - leading/trailing prose with embedded JSON
+        """
+        if not isinstance(text, str):
+            return None
+        s = text.strip()
+        if not s:
+            return None
+
+        # Strip a top-level fenced code block if present.
+        fence_match = re.search(r"```(?:json)?\s*(.*?)\s*```", s, flags=re.IGNORECASE | re.DOTALL)
+        if fence_match:
+            s = fence_match.group(1).strip()
+
+        # Fast path: whole-string JSON.
+        try:
+            obj = json.loads(s)
+            if isinstance(obj, dict):
+                return obj
+            if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+                return obj[0]
+        except Exception:
+            pass
+
+        # Lenient path: Python-literal dicts/lists (single quotes, True/False/None).
+        try:
+            lit = ast.literal_eval(s)
+            if isinstance(lit, dict):
+                return lit
+            if isinstance(lit, list) and lit and isinstance(lit[0], dict):
+                return lit[0]
+        except Exception:
+            pass
+
+        # Robust path: scan for first decodable JSON object in the text.
+        decoder = json.JSONDecoder()
+        for i, ch in enumerate(s):
+            if ch != "{":
+                continue
+            try:
+                obj, _end = decoder.raw_decode(s[i:])
+            except Exception:
+                continue
+            if isinstance(obj, dict):
+                return obj
+            if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+                return obj[0]
+
+        # Fallback: brace-balanced substring + lenient literal eval.
+        depth = 0
+        start = -1
+        in_string = False
+        quote_char = ""
+        escape = False
+        for i, ch in enumerate(s):
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == quote_char:
+                    in_string = False
+                continue
+            if ch in {"'", '"'}:
+                in_string = True
+                quote_char = ch
+                continue
+            if ch == "{":
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == "}":
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0 and start >= 0:
+                        candidate = s[start:i + 1]
+                        try:
+                            lit = ast.literal_eval(candidate)
+                            if isinstance(lit, dict):
+                                return lit
+                        except Exception:
+                            continue
+        return None
 
     # ──────────────────────────────────────────────────────────────
     # ReAct execution loop (main phase)
@@ -570,7 +777,7 @@ class StrategyAgent(BaseAgent):
             # Echo any text reasoning
             text = self.openai.extract_text(response)
             if text:
-                print(f"  [thought] {text[:200]}")
+                print(f"  [thought] {text}")
 
             assistant_msg = response.choices[0].message
             messages.append(self._assistant_msg_to_dict(assistant_msg))
@@ -589,7 +796,7 @@ class StrategyAgent(BaseAgent):
                 args = call.get("arguments") or {}
                 call_id = call.get("id", "")
 
-                print(f"  [action] {name}({json.dumps(args, default=str)[:160]})")
+                print(f"  [action] {name}({json.dumps(args, default=str)})")
                 result = self._dispatch_tool_call(name, args)
 
                 # Record registry-backed actions in the action log
@@ -1186,8 +1393,86 @@ class StrategyAgent(BaseAgent):
         return " | ".join(parts) or "(no visible changes)"
 
     # ──────────────────────────────────────────────────────────────
-    # Off-turn reactive trades
+    # Off-turn reactive handling
     # ──────────────────────────────────────────────────────────────
+
+    def _handle_offturn_discard_if_needed(self, state: Dict[str, Any]) -> None:
+        """
+        During a 7 discard window, non-current players may still be required to act.
+        Wake up and discard immediately when our player appears in discardingPlayers.
+        """
+        requirement = self._get_discard_requirement(state)
+        if requirement is None:
+            self._last_discard_sig = None
+            return
+
+        players = state.get("players")
+        myi = state.get("myIndex")
+        me: Dict[str, Any] = {}
+        if isinstance(players, list) and isinstance(myi, int) and 0 <= myi < len(players):
+            maybe_me = players[myi]
+            if isinstance(maybe_me, dict):
+                me = maybe_me
+        hand = me.get("resources") if isinstance(me.get("resources"), dict) else {}
+        req_sig = json.dumps(
+            {"cards_to_discard": requirement, "hand": hand},
+            sort_keys=True,
+            default=str,
+        )
+        if req_sig == self._last_discard_sig:
+            return
+
+        actions = _build_discard_action(state)
+        if not actions:
+            print("  [strategy-awake] discard required but no valid discard payload computed")
+            self._last_discard_sig = req_sig
+            return
+        payload = actions[0].payload if isinstance(actions[0].payload, dict) else {}
+        resources = payload.get("resources") if isinstance(payload.get("resources"), dict) else {}
+        if not resources:
+            print("  [strategy-awake] discard required but discard payload is empty")
+            self._last_discard_sig = req_sig
+            return
+
+        print(f"  [strategy-awake] discard required ({requirement}) -> {resources}")
+        result = self._safe_call("discardCards", {"resources": resources})
+        success = bool(isinstance(result, dict) and result.get("success"))
+        self.stats.record_tool_call("discardCards", success=success)
+        self.scratchpad.append_action(ActionRecord(
+            agent="strategy",
+            action="discardCards",
+            args={"resources": resources},
+            result=result if isinstance(result, dict) else {"raw": result},
+            success=success,
+        ))
+        if success:
+            print("  [strategy-awake] discard=done")
+            self._last_discard_sig = None
+        else:
+            print(f"  [strategy-awake] discard=failed error={result}")
+            self._last_discard_sig = req_sig
+
+    @staticmethod
+    def _get_discard_requirement(state: Dict[str, Any]) -> Optional[int]:
+        if not isinstance(state, dict):
+            return None
+        if state.get("turnPhase") != "discard":
+            return None
+        discarding = state.get("discardingPlayers")
+        myi = state.get("myIndex")
+        if not isinstance(discarding, list) or not isinstance(myi, int):
+            return None
+        entry = next(
+            (d for d in discarding if isinstance(d, dict) and d.get("playerIndex") == myi),
+            None,
+        )
+        if not isinstance(entry, dict):
+            return None
+        try:
+            cards_to_discard = int(entry.get("cardsToDiscard", 0) or 0)
+        except Exception:
+            return None
+        return cards_to_discard if cards_to_discard > 0 else None
 
     def _check_reactive_trades(self, state: Dict[str, Any]) -> None:
         if not state:
@@ -1339,19 +1624,12 @@ class StrategyAgent(BaseAgent):
         )
 
         text = self.openai.extract_text(response)
-        data: Optional[Dict[str, Any]] = None
-        try:
-            data = json.loads(text)
-        except (json.JSONDecodeError, TypeError):
-            start = text.find("{")
-            end = text.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                try:
-                    data = json.loads(text[start:end + 1])
-                except json.JSONDecodeError:
-                    pass
+        data = self._extract_first_json_dict(text)
 
         if not isinstance(data, dict):
+            snippet = (text or "").strip().replace("\n", "\\n")
+            if snippet:
+                print(f"  [setup] Could not parse LLM setup JSON: {snippet}")
             return None
 
         vk = data.get("settlement_vertex")
