@@ -97,6 +97,17 @@ class ToolRegistry:
             return {"success": False, "error": f"Unknown tool: {name}"}
         if tool.handler is None:
             return {"success": False, "error": f"Tool {name} has no handler"}
+        if not isinstance(args, dict):
+            return {"success": False, "error": f"Invalid args for {name}: expected object"}
+        missing = [
+            p.name for p in tool.parameters
+            if p.required and p.name not in args
+        ]
+        if missing:
+            return {
+                "success": False,
+                "error": f"Missing required argument(s) for {name}: {', '.join(missing)}",
+            }
         try:
             return tool.handler(**args)
         except Exception as e:
@@ -316,17 +327,51 @@ def build_tool_registry(
     ))
 
     # ── 8. propose_trade ──────────────────────────────────────────
+    def _resolve_player_id(player_ref: Optional[str], state: Dict[str, Any]) -> Optional[str]:
+        """Accept player id or case-insensitive name match; server expects id."""
+        if player_ref is None or player_ref == "":
+            return None
+        players = state.get("players")
+        if not isinstance(players, list):
+            return player_ref
+        ref_l = str(player_ref).strip().lower()
+        for p in players:
+            if not isinstance(p, dict):
+                continue
+            pid = p.get("id")
+            name = p.get("name")
+            if pid is not None and str(pid) == str(player_ref):
+                return str(pid)
+            if isinstance(name, str) and name.strip().lower() == ref_l:
+                return str(pid) if pid is not None else None
+        return None
+
     def _propose_trade(
         offer: Dict[str, int],
         request: Dict[str, int],
         target_player_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        if not isinstance(offer, dict) or not isinstance(request, dict):
+            return {"success": False, "error": "offer and request must be objects"}
+        if not offer or not request:
+            return {"success": False, "error": "offer and request must both be non-empty"}
+
         payload: Dict[str, Any] = {
             "offer": offer,
             "request": request,
         }
         if target_player_id:
-            payload["targetPlayerId"] = target_player_id
+            state = client.latest_state() or {}
+            resolved_target = _resolve_player_id(target_player_id, state)
+            if resolved_target:
+                payload["targetPlayerId"] = resolved_target
+            else:
+                # Fallback to open offer instead of guaranteed server-side rejection
+                # when the model passes a display name from stale context.
+                result = _safe_call(client, "proposeTrade", payload)
+                if isinstance(result, dict):
+                    result.setdefault("warning", "target_player_id not found; sent as open offer")
+                return result
         return _safe_call(client, "proposeTrade", payload)
 
     reg.register(ToolDefinition(
@@ -458,25 +503,6 @@ def build_tool_registry(
     ))
 
     # ── 11. move_robber ───────────────────────────────────────────
-    def _resolve_player_id(player_ref: Optional[str], state: Dict[str, Any]) -> Optional[str]:
-        """Accept player id or case-insensitive name match; server expects id."""
-        if player_ref is None or player_ref == "":
-            return None
-        players = state.get("players")
-        if not isinstance(players, list):
-            return player_ref
-        ref_l = str(player_ref).strip().lower()
-        for p in players:
-            if not isinstance(p, dict):
-                continue
-            pid = p.get("id")
-            name = p.get("name")
-            if pid is not None and str(pid) == str(player_ref):
-                return str(pid)
-            if isinstance(name, str) and name.strip().lower() == ref_l:
-                return str(pid) if pid is not None else None
-        return player_ref
-
     def _move_robber(hex_key: str, steal_from_player_id: Optional[str] = None) -> Dict[str, Any]:
         state = client.latest_state() or {}
         resolved = _resolve_player_id(steal_from_player_id, state)

@@ -131,9 +131,31 @@ class OpenAIClient:
 
     @staticmethod
     def extract_text(response: Any) -> str:
-        """Return the plain-text content from a ChatCompletion (if any)."""
+        """Return plain-text content from a ChatCompletion, robustly."""
         msg = response.choices[0].message
-        return msg.content or ""
+        content = getattr(msg, "content", None)
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            chunks: List[str] = []
+            for part in content:
+                # Newer SDK variants may represent content as typed blocks.
+                if isinstance(part, str):
+                    if part:
+                        chunks.append(part)
+                    continue
+                if isinstance(part, dict):
+                    txt = part.get("text")
+                    if isinstance(txt, str) and txt:
+                        chunks.append(txt)
+                    elif part.get("type") == "output_text" and isinstance(part.get("content"), str):
+                        chunks.append(part["content"])
+            if chunks:
+                return "\n".join(chunks).strip()
+        refusal = getattr(msg, "refusal", None)
+        if isinstance(refusal, str) and refusal:
+            return refusal
+        return ""
 
     @staticmethod
     def extract_usage(response: Any) -> Dict[str, int]:

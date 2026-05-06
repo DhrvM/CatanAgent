@@ -74,6 +74,7 @@ class ReactCatanAgent:
         self,
         server_url: str = "http://localhost:3001",
         game_code: Optional[str] = None,
+        reconnect_player_id: Optional[str] = None,
         player_name: str = "ReactBot",
         llm_provider: str = "openai",
         openai_model: str = "gpt-4o",
@@ -83,6 +84,7 @@ class ReactCatanAgent:
         # socket
         self.client = CatanSocketClient(server_url)
         self.game_code = game_code
+        self.reconnect_player_id = reconnect_player_id
         self.player_name = player_name
 
         # processors
@@ -131,7 +133,10 @@ class ReactCatanAgent:
         self.client.connect()
 
         if self.game_code:
-            self.client.join_game(self.game_code, self.player_name)
+            if self.reconnect_player_id:
+                self.client.reconnect_game(self.game_code, self.reconnect_player_id)
+            else:
+                self.client.join_game(self.game_code, self.player_name)
         else:
             ack = self.client.create_game(self.player_name)
             self.game_code = ack["gameCode"]

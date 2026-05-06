@@ -13,7 +13,7 @@ Usage:
     # Local server (default)
     python -m Agent.main --game-code ABCDEF --name ReactBot
     python -m Agent.main --mode multi --game-code ABCDEF --name StrategyBot
-    python -m Agent.main --mode multi --strategy-model gpt-5 --game-code ABCDEF
+    python -m Agent.main --mode multi --strategy-model gpt-5.1 --game-code ABCDEF
 
     # Hosted server on Render (https://catanagent.onrender.com)
     python -m Agent.main --prod --game-code ABCDEF --name ReactBot
@@ -32,6 +32,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import atexit
+from datetime import datetime
 import sys
 import os
 
@@ -58,6 +60,77 @@ _configure_console_output()
 
 LOCAL_SERVER_URL = "http://localhost:3001"
 HOSTED_SERVER_URL = "https://catanagent.onrender.com"
+_LOG_FILES = []
+
+
+class _TeeStream:
+    """Mirror writes to both console stream and a log file."""
+
+    def __init__(self, primary, mirror) -> None:
+        self._primary = primary
+        self._mirror = mirror
+
+    def write(self, data):
+        self._primary.write(data)
+        self._mirror.write(data)
+        return len(data)
+
+    def flush(self):
+        self._primary.flush()
+        self._mirror.flush()
+
+    def isatty(self):
+        return bool(getattr(self._primary, "isatty", lambda: False)())
+
+    @property
+    def encoding(self):
+        return getattr(self._primary, "encoding", "utf-8")
+
+
+def _sanitize_filename_part(value: str) -> str:
+    safe = []
+    for ch in str(value or ""):
+        if ch.isalnum() or ch in {"-", "_", "."}:
+            safe.append(ch)
+        else:
+            safe.append("-")
+    out = "".join(safe).strip("-")
+    return out or "unknown"
+
+
+def _enable_process_log_file(mode: str, name: str, game_code: str | None) -> str:
+    """
+    Tee stdout/stderr into logs/agent-<mode>-<name>-<timestamp>-<pid>.log.
+    Keeps console output unchanged while persisting a live log file.
+    """
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    logs_dir = os.path.join(repo_root, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+    ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    pid = os.getpid()
+    mode_part = _sanitize_filename_part(mode)
+    name_part = _sanitize_filename_part(name)
+    game_part = _sanitize_filename_part(game_code or "new")
+    filename = f"agent-{mode_part}-{name_part}-{game_part}-{ts}-p{pid}.log"
+    path = os.path.join(logs_dir, filename)
+    fh = open(path, "a", encoding="utf-8", buffering=1)
+    _LOG_FILES.append(fh)
+
+    sys.stdout = _TeeStream(sys.stdout, fh)
+    sys.stderr = _TeeStream(sys.stderr, fh)
+    return path
+
+
+def _close_log_files() -> None:
+    for fh in _LOG_FILES:
+        try:
+            fh.flush()
+            fh.close()
+        except Exception:
+            pass
+
+
+atexit.register(_close_log_files)
 
 
 def _resolve_server_url(cli_value: str | None, prod_flag: bool) -> str:
@@ -108,7 +181,7 @@ def main() -> None:
     )
     parser.add_argument("--model", default="gpt-4o", help="OpenAI model for non-Strategy agents and react mode")
     parser.add_argument("--anthropic-model", default="claude-3-5-sonnet-latest", help="Anthropic model for react mode when --react-provider anthropic")
-    parser.add_argument("--strategy-model", default="gpt-5", help="OpenAI model for Strategy Agent in multi-agent mode")
+    parser.add_argument("--strategy-model", default="gpt-5.1", help="OpenAI model for Strategy Agent in multi-agent mode")
     parser.add_argument("--ollama-model", default="qwen3:8b", help="Ollama model for summarization")
     parser.add_argument(
         "--mode", choices=["react", "multi", "benchmark", "benchmark-suite", "harness"], default="react",
@@ -132,6 +205,8 @@ def main() -> None:
     args = parser.parse_args()
 
     args.server = _resolve_server_url(args.server, args.prod)
+    log_path = _enable_process_log_file(args.mode, args.name, args.game_code)
+    print(f"[main] Process log file: {log_path}")
     if args.mode != "harness":
         print(f"[main] Connecting to game server: {args.server}")
 
@@ -182,6 +257,7 @@ def _run_react(args) -> None:
     agent = ReactCatanAgent(
         server_url=args.server,
         game_code=args.game_code,
+        reconnect_player_id=args.reconnect_player_id,
         player_name=args.name,
         llm_provider=args.react_provider,
         openai_model=args.model,
@@ -228,6 +304,7 @@ def _run_multi(args) -> None:
     strategy = StrategyAgent(
         scratchpad, strategy_openai, client, processor, registry, stats,
         game_code=args.game_code,
+        reconnect_player_id=args.reconnect_player_id,
         player_name=args.name,
     )
     development = DevelopmentAgent(scratchpad, openai, registry)
