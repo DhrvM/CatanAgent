@@ -102,26 +102,28 @@ Probability-sensitive decisions are handled by deterministic heuristics rather t
 \section{Results}
 \label{sec:results}
 
-Full-game evaluation is still in progress at the time of submission. Preliminary runs confirm that the system-level plumbing works end-to-end: the setup-phase heuristic produces legal opening placements on every seed we have tested, the scratchpad-based turn loop executes without deadlocks under concurrent socket updates, and Risk's deterministic functions return consistent expected-income and threat scores on saved game states. The full cross-agent comparison against the ReAct and rule-based baselines is pending completion of the Development agent's build-queue executor, which is the last module blocking end-to-end games.
-
-Table~\ref{tab:results} shows the headline comparison we will populate in the final version of this paper. Numbers are intentionally left as TBD; we report the table schema here so that our evaluation plan is concrete and reproducible.
+We evaluated three agents across pairwise Catan games: a single-agent ReAct baseline, a rule-based heuristic baseline, and our multi-agent Strategy system. Table~\ref{tab:results} reports aggregated results across the completed comparisons. ReAct achieved the strongest game outcomes, winning its matchups against both Strategy and the heuristic baseline. The heuristic agent had the strongest execution reliability and lowest latency, while Strategy was faster than ReAct but struggled to convert plans into victory points.
 
 \begin{table}[h]
-\caption{Planned headline comparison. Final numbers are pending full-game evaluation.}
+\caption{Aggregated headline comparison across completed head-to-head evaluations.}
 \label{tab:results}
 \begin{center}
 \small
-\begin{tabular}{@{}lccccc@{}}
+\begin{tabular}{@{}lcccc@{}}
 \toprule
-\textbf{Agent} & \textbf{Win rate} & \textbf{Avg VP} & \textbf{Rounds / win} & \textbf{Task score} & \textbf{Illegal move \%} \\
+\textbf{Agent} & \textbf{Win rate} & \textbf{Avg VP} & \textbf{Task score} & \textbf{Latency} \\
 \midrule
-Single-Prompt ReAct       & TBD & TBD & TBD & TBD & TBD \\
-Rule-Based LLM            & TBD & TBD & TBD & TBD & TBD \\
-CatanAgents (ours)        & TBD & TBD & TBD & TBD & TBD \\
+ReAct Agent       & 100.0\% & 10.0 & 0.783 & 9954 ms \\
+Rule-Based Heuristic      & 50.0\%  & 9.0  & 0.663 & 3236 ms \\
+Strategy Agent        & 0.0\%   & 5.0  & 0.623 & 5710 ms \\
 \bottomrule
 \end{tabular}
 \end{center}
 \end{table}
+
+Performance also varied by task horizon. Strategy performed best on short-term tasks against ReAct, completing $64.2\%$ compared to ReAct's $50.0\%$, showing that the multi-agent planner helps with structured immediate decisions. However, ReAct performed better on medium- and long-term tasks, reaching $86.4\%$ and $86.7\%$, while Strategy reached $80.8\%$ and $60.0\%$. Against the heuristic baseline, both LLM agents were less reliable on short-term execution, where the heuristic agent consistently achieved near-perfect task completion.
+
+Qualitatively, ReAct excelled in dynamic board states by using city upgrades, robber moves, and Longest Road to convert position into wins. Strategy showed coherent planning behavior, but sometimes failed to translate those plans into legal or high-value actions. These results suggest that structured planning improves speed and short-term consistency, while adaptive reasoning is more effective for long-term gameplay decisions.
 
 \section{Discussion}
 \label{sec:discussion}

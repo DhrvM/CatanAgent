@@ -84,6 +84,49 @@ def state_main_my_turn_rich() -> Dict[str, Any]:
     }
 
 
+def state_for_board_block_and_validation() -> Dict[str, Any]:
+    """
+    Main phase fixture with enough board detail to test state_json.board and
+    Strategy-side build-queue validation.
+    """
+    players = players_four_player_rich()
+    players[1] = {**players[1], "victoryPoints": 9}
+    return {
+        "phase": "playing",
+        "turnPhase": "main",
+        "myIndex": 0,
+        "currentPlayerIndex": 0,
+        "isMyTurn": True,
+        "players": players,
+        "tradeRatios": _trade_ratios_default(),
+        "devCardDeck": 12,
+        "hexes": {
+            "0,-1": {"resource": "lumber", "number": 8},
+            "1,-1": {"resource": "ore", "number": 6},
+            "1,0": {"resource": "grain", "number": 5},
+            "0,0": {"resource": "brick", "number": 9},
+            "2,-1": {"resource": "wool", "number": 10},
+            "-1,0": {"resource": "desert", "number": None},
+        },
+        "vertices": {
+            "v_0_-1_0": {"owner": 0, "building": "settlement"},
+            "v_1_-1_3": {"owner": 0, "building": "settlement"},
+            "v_1_0_0": {"owner": 1, "building": "settlement"},
+            "v_0_-1_2": {"owner": None, "building": None},
+        },
+        "edges": {
+            "e_0_-1_1": {"owner": 0},
+            "e_1_0_2": {"owner": None},
+        },
+        "robber": "-1,0",
+        "longestRoadPlayer": 1,
+        "longestRoadLength": 8,
+        "largestArmyPlayer": None,
+        "largestArmySize": 0,
+        "diceRoll": {"total": 8, "die1": 5, "die2": 3},
+    }
+
+
 def state_incoming_trade_off_turn_rich() -> Dict[str, Any]:
     """
     Not our turn — Alice (close to winning) proposes brick for our grain.

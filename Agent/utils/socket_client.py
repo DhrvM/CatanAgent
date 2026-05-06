@@ -37,6 +37,12 @@ class CatanSocketClient:
                 self._latest_state = state
             self._state_event.set()
 
+        @self.sio.on("observerGameState")
+        def on_observer_game_state(state: Dict[str, Any]):
+            with self._state_lock:
+                self._latest_state = state
+            self._state_event.set()
+
         # ── broadcast event listeners for history tracking ──
         for evt in (
             "diceRolled", "settlementPlaced", "roadPlaced", "cityBuilt",
@@ -57,15 +63,24 @@ class CatanSocketClient:
         except Exception:
             pass
 
-    def create_game(self, player_name: str, is_extended: bool = False, enable_special_build: bool = True):
+    def create_game(
+        self,
+        player_name: str,
+        is_extended: bool = False,
+        enable_special_build: bool = True,
+        benchmark_config: Optional[Dict[str, Any]] = None,
+    ):
         """
         Mirrors server: socket.on('createGame', ({ playerName, isExtended, enableSpecialBuild }, callback) => ...)
         """
-        ack = self.sio.call(
-            "createGame",
-            {"playerName": player_name, "isExtended": is_extended, "enableSpecialBuild": enable_special_build},
-            timeout=10,
-        )
+        payload: Dict[str, Any] = {
+            "playerName": player_name,
+            "isExtended": is_extended,
+            "enableSpecialBuild": enable_special_build,
+        }
+        if isinstance(benchmark_config, dict):
+            payload["benchmarkConfig"] = benchmark_config
+        ack = self.sio.call("createGame", payload, timeout=10)
         if not ack.get("success"):
             raise RuntimeError(f"createGame failed: {ack}")
         self.game_code = ack["gameCode"]
@@ -75,15 +90,37 @@ class CatanSocketClient:
         self._state_event.set()
         return ack
 
-    def join_game(self, game_code: str, player_name: str):
+    def join_game(
+        self,
+        game_code: str,
+        player_name: str,
+        benchmark_config: Optional[Dict[str, Any]] = None,
+    ):
         """
         Mirrors server: socket.on('joinGame', ({ gameCode, playerName }, callback) => ...)
         """
-        ack = self.sio.call("joinGame", {"gameCode": game_code, "playerName": player_name}, timeout=10)
+        payload: Dict[str, Any] = {"gameCode": game_code, "playerName": player_name}
+        if isinstance(benchmark_config, dict):
+            payload["benchmarkConfig"] = benchmark_config
+        ack = self.sio.call("joinGame", payload, timeout=10)
         if not ack.get("success"):
             raise RuntimeError(f"joinGame failed: {ack}")
         self.game_code = ack["gameCode"]
         self.player_id = ack["playerId"]
+        with self._state_lock:
+            self._latest_state = ack.get("gameState")
+        self._state_event.set()
+        return ack
+
+    def reconnect_game(self, game_code: str, player_id: str):
+        """
+        Mirrors server: socket.on('reconnect', ({ gameCode, playerId }, callback) => ...)
+        """
+        ack = self.sio.call("reconnect", {"gameCode": game_code, "playerId": player_id}, timeout=10)
+        if not ack.get("success"):
+            raise RuntimeError(f"reconnect failed: {ack}")
+        self.game_code = game_code
+        self.player_id = player_id
         with self._state_lock:
             self._latest_state = ack.get("gameState")
         self._state_event.set()
@@ -104,6 +141,17 @@ class CatanSocketClient:
 
     def end_turn(self):
         return self.sio.call("endTurn", timeout=10)
+
+    def observe_game(self, game_code: str) -> Dict[str, Any]:
+        """Join a game in read-only spectator mode."""
+        ack = self.sio.call("observeGame", {"gameCode": game_code}, timeout=10)
+        if not ack.get("success"):
+            raise RuntimeError(f"observeGame failed: {ack}")
+        self.game_code = ack["gameCode"]
+        with self._state_lock:
+            self._latest_state = ack.get("gameState")
+        self._state_event.set()
+        return ack
 
     def call(self, event: str, payload: Optional[Dict[str, Any]] = None, timeout: float = 10):
         return self.sio.call(event, payload or {}, timeout=timeout)

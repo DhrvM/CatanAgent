@@ -221,6 +221,8 @@ const games = new Map();
 
 /** Map of socketId -> { gameId, playerId } for tracking player connections */
 const playerSockets = new Map();
+/** Map of socketId -> gameId for read-only spectators */
+const observerSockets = new Map();
 
 // Connection limits for free tier hosting (Render, Heroku, etc.)
 const MAX_CONCURRENT_GAMES = 10;
@@ -278,6 +280,11 @@ function broadcastGameState(gameId) {
     }
   });
 
+  observerSockets.forEach((observerGameId, socketId) => {
+    if (observerGameId !== gameId) return;
+    io.to(socketId).emit('observerGameState', buildObserverView(game));
+  });
+
   scheduleHeuristicBots(gameId);
 }
 
@@ -293,6 +300,11 @@ function broadcastToGame(gameId, event, data) {
     if (socketId) {
       io.to(socketId).emit(event, data);
     }
+  });
+
+  observerSockets.forEach((observerGameId, socketId) => {
+    if (observerGameId !== gameId) return;
+    io.to(socketId).emit(event, data);
   });
 }
 
@@ -322,6 +334,27 @@ function buildBenchmarkPlayer(game, playerId, playerName, seatIndex, overrides =
   };
 }
 
+function buildObserverView(game) {
+  const isGameOver = game.phase === 'finished';
+  return {
+    ...game,
+    players: (game.players || []).map(player => ({
+      ...player,
+      developmentCards: isGameOver ? player.developmentCards : player.developmentCards?.length || 0,
+      newDevCards: isGameOver ? player.newDevCards : player.newDevCards?.length || 0,
+      resources: isGameOver
+        ? player.resources
+        : Object.values(player.resources || {}).reduce((sum, amount) => sum + Number(amount || 0), 0),
+      hiddenVictoryPoints: isGameOver ? player.hiddenVictoryPoints : 0,
+    })),
+    devCardDeck: Array.isArray(game.devCardDeck) ? game.devCardDeck.length : game.devCardDeck,
+    myIndex: -1,
+    myPorts: [],
+    tradeRatios: {},
+    observerMode: true,
+  };
+}
+
 async function ensureBenchmarkEnabled(game, playerId, playerName, seatIndex = 0, overrides = {}) {
   if (!game.benchmark?.enabled) {
     const runId = overrides.runId || uuidv4();
@@ -332,10 +365,10 @@ async function ensureBenchmarkEnabled(game, playerId, playerName, seatIndex = 0,
       taskId: null,
       gameType: 'full-game',
       mapLayoutId: null,
-      opponentPolicySet: 'random-opponents',
-      scenarioTags: [],
-      baselineAgentId: null,
-      metadata: {},
+      opponentPolicySet: overrides.opponentPolicySet || 'random-opponents',
+      scenarioTags: Array.isArray(overrides.scenarioTags) ? [...new Set(overrides.scenarioTags.filter(Boolean))] : [],
+      baselineAgentId: overrides.baselineAgentId || null,
+      metadata: (overrides.metadata && typeof overrides.metadata === 'object') ? { ...overrides.metadata } : {},
       players: [],
     };
   }
@@ -2369,7 +2402,7 @@ io.on('connection', (socket) => {
   // --------------------------------------------------------------------
   
   /** Create a new game room as the host */
-  socket.on('createGame', async ({ playerName, isExtended = false, enableSpecialBuild = true }, callback) => {
+  socket.on('createGame', async ({ playerName, isExtended = false, enableSpecialBuild = true, benchmarkConfig = null }, callback) => {
     // Check game limit
     if (games.size >= MAX_CONCURRENT_GAMES) {
       callback({ 
@@ -2387,7 +2420,15 @@ io.on('connection', (socket) => {
       name: playerName
     }, isExtended, enableSpecialBuild);
 
-    await ensureBenchmarkEnabled(game, playerId, playerName, 0);
+    await ensureBenchmarkEnabled(game, playerId, playerName, 0, {
+      ...(benchmarkConfig && typeof benchmarkConfig === 'object' ? benchmarkConfig : {}),
+      runId: benchmarkConfig?.runId || null,
+      benchmarkId: benchmarkConfig?.benchmarkId || undefined,
+      baseline: Boolean(benchmarkConfig?.baseline),
+      baselineAgentId: benchmarkConfig?.baselineAgentId || null,
+      agentId: benchmarkConfig?.agentId || undefined,
+      agentVersion: benchmarkConfig?.agentVersion || undefined,
+    });
     
     // Add timestamp for cleanup
     game.createdAt = Date.now();
@@ -2407,7 +2448,7 @@ io.on('connection', (socket) => {
   });
   
   /** Join an existing game room using a game code */
-  socket.on('joinGame', async ({ gameCode, playerName }, callback) => {
+  socket.on('joinGame', async ({ gameCode, playerName, benchmarkConfig = null }, callback) => {
     const game = games.get(gameCode.toUpperCase());
     
     if (!game) {
@@ -2426,7 +2467,12 @@ io.on('connection', (socket) => {
     playerSockets.set(socket.id, { gameId: gameCode.toUpperCase(), playerId });
     socket.join(gameCode.toUpperCase());
 
-    await ensureBenchmarkEnabled(game, playerId, playerName, game.players.length - 1);
+    await ensureBenchmarkEnabled(game, playerId, playerName, game.players.length - 1, {
+      ...(benchmarkConfig && typeof benchmarkConfig === 'object' ? benchmarkConfig : {}),
+      baseline: Boolean(benchmarkConfig?.baseline),
+      agentId: benchmarkConfig?.agentId || undefined,
+      agentVersion: benchmarkConfig?.agentVersion || undefined,
+    });
     
     console.log(`${playerName} joined game ${gameCode}`);
     
@@ -2505,13 +2551,86 @@ io.on('connection', (socket) => {
     broadcastGameState(playerInfo.gameId);
     callback({ success: true, addedAgents, gameState: GameLogic.getPlayerView(game, playerInfo.playerId) });
   });
+
+  /** Convert the host seat into a server-controlled heuristic bot. */
+  socket.on('convertSelfToHeuristicAgent', async (_payload = {}, callback) => {
+    const playerInfo = playerSockets.get(socket.id);
+    if (!playerInfo) {
+      callback({ success: false, error: 'Not in a game' });
+      return;
+    }
+
+    const game = games.get(playerInfo.gameId);
+    if (!game) {
+      callback({ success: false, error: 'Game not found' });
+      return;
+    }
+
+    const playerIndex = game.players.findIndex(player => player.id === playerInfo.playerId);
+    if (playerIndex !== 0) {
+      callback({ success: false, error: 'Only host can convert to heuristic agent' });
+      return;
+    }
+    if (game.phase !== 'waiting') {
+      callback({ success: false, error: 'Can only convert before the game starts' });
+      return;
+    }
+
+    const player = game.players[playerIndex];
+    if (!player) {
+      callback({ success: false, error: 'Host player not found' });
+      return;
+    }
+
+    player.isBot = true;
+    player.botType = 'heuristic';
+    player.disconnected = false;
+    if (!/^Heuristic Agent/i.test(player.name || '')) {
+      player.name = `Heuristic Agent Host`;
+    }
+
+    const benchmarkPlayer = game.benchmark?.players?.find(candidate => candidate.playerId === player.id);
+    if (benchmarkPlayer) {
+      benchmarkPlayer.agentId = 'heuristic-agent';
+      benchmarkPlayer.agentVersion = 'server-js';
+      benchmarkPlayer.playerName = player.name;
+      benchmarkPlayer.baseline = true;
+    }
+    player.benchmarkAgentId = 'heuristic-agent';
+    player.benchmarkAgentVersion = 'server-js';
+    player.benchmarkBaseline = true;
+    if (game.benchmark) {
+      game.benchmark.baselineAgentId = 'heuristic-agent';
+    }
+
+    await registerBenchmarkGameIfNeeded(game);
+    broadcastGameState(playerInfo.gameId);
+    callback({ success: true, gameState: GameLogic.getPlayerView(game, playerInfo.playerId) });
+  });
+
+  /** Join a game as a read-only spectator. */
+  socket.on('observeGame', ({ gameCode }, callback) => {
+    const normalizedCode = String(gameCode || '').trim().toUpperCase();
+    const game = games.get(normalizedCode);
+    if (!game) {
+      callback({ success: false, error: 'Game not found' });
+      return;
+    }
+    observerSockets.set(socket.id, normalizedCode);
+    socket.join(normalizedCode);
+    callback({
+      success: true,
+      gameCode: normalizedCode,
+      gameState: buildObserverView(game),
+    });
+  });
   
   // --------------------------------------------------------------------
   // GAME FLOW CONTROLS
   // --------------------------------------------------------------------
   
   /** Start the game (host only) - randomizes player order and begins setup */
-  socket.on('startGame', async (callback) => {
+  socket.on('startGame', async (_payload = {}, callback) => {
     const playerInfo = playerSockets.get(socket.id);
     if (!playerInfo) {
       callback({ success: false, error: 'Not in a game' });
@@ -2726,7 +2845,11 @@ io.on('connection', (socket) => {
     const result = GameLogic.moveRobber(game, playerInfo.playerId, hexKey, stealFromPlayerId);
     
     if (result.success) {
-      broadcastToGame(playerInfo.gameId, 'robberMoved', { hexKey });
+      broadcastToGame(playerInfo.gameId, 'robberMoved', {
+        hexKey,
+        by: playerInfo.playerId,
+        stealFromPlayerId: stealFromPlayerId || null,
+      });
       
       // Send steal notifications to both players
       if (result.stolenInfo) {
@@ -2753,6 +2876,25 @@ io.on('connection', (socket) => {
             otherPlayer: thiefName
           });
         }
+
+        // Public feed event for players/spectators without revealing hidden state beyond result.
+        broadcastToGame(playerInfo.gameId, 'robberResolved', {
+          thief,
+          thiefName,
+          victim,
+          victimName,
+          stolen: true,
+          resource,
+        });
+      } else {
+        broadcastToGame(playerInfo.gameId, 'robberResolved', {
+          thief: playerInfo.playerId,
+          thiefName: game.players.find((p) => p.id === playerInfo.playerId)?.name || 'Unknown',
+          victim: stealFromPlayerId || null,
+          victimName: game.players.find((p) => p.id === stealFromPlayerId)?.name || null,
+          stolen: false,
+          resource: null,
+        });
       }
       
       broadcastGameState(playerInfo.gameId);
@@ -2938,6 +3080,9 @@ io.on('connection', (socket) => {
     const result = GameLogic.buyDevCard(game, playerInfo.playerId);
     
     if (result.success) {
+      broadcastToGame(playerInfo.gameId, 'devCardBought', {
+        playerId: playerInfo.playerId,
+      });
       broadcastGameState(playerInfo.gameId);
     }
     await recordBenchmarkAction(game, playerInfo.playerId, 'buyDevCard', {}, result, requestStartedAt, benchmarkTaskPayload);
@@ -3529,6 +3674,8 @@ io.on('connection', (socket) => {
       
       playerSockets.delete(socket.id);
     }
+
+    observerSockets.delete(socket.id);
     
     console.log(`Player disconnected: ${socket.id} (Total: ${totalConnectedPlayers}/${MAX_TOTAL_PLAYERS})`);
   });

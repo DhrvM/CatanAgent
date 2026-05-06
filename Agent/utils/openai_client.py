@@ -62,9 +62,13 @@ class OpenAIClient:
         kwargs: Dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "temperature": temperature if temperature is not None else self.temperature,
-            "max_tokens": self.max_tokens,
         }
+        if self._supports_temperature():
+            kwargs["temperature"] = temperature if temperature is not None else self.temperature
+        if self._uses_max_completion_tokens():
+            kwargs["max_completion_tokens"] = self.max_tokens
+        else:
+            kwargs["max_tokens"] = self.max_tokens
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
@@ -85,6 +89,16 @@ class OpenAIClient:
             return True
         body = str(exc).lower()
         return "429" in body or "rate limit" in body or "too many requests" in body
+
+    def _uses_max_completion_tokens(self) -> bool:
+        """Newer reasoning models reject the legacy max_tokens parameter."""
+        model = (self.model or "").lower()
+        return model.startswith(("gpt-5", "o1", "o3", "o4"))
+
+    def _supports_temperature(self) -> bool:
+        """Reasoning models only accept their default temperature."""
+        model = (self.model or "").lower()
+        return not model.startswith(("gpt-5", "o1", "o3", "o4"))
 
     # ----------------------------------------------------------------
     # helpers

@@ -4,9 +4,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from Agent.utils.game_state_processor import _adjacent_hex_coords
-
-
 @dataclass(frozen=True)
 class Action:
     type: str
@@ -166,6 +163,36 @@ def _adjacent_vertices(vk: str) -> List[str]:
     return out
 
 
+def _equivalent_vertex_keys(vk: str) -> List[str]:
+    """
+    Port of server-side equivalent-vertex logic.
+    One physical vertex may be referenced by up to 3 keys.
+    """
+    parsed = _parse_vertex_key(vk)
+    if not parsed:
+        return [vk]
+    q, r, d = parsed
+    coords = [(q, r, d)]
+    if d == 0:
+        coords += [(q, r - 1, 2), (q + 1, r - 1, 4)]
+    elif d == 1:
+        coords += [(q + 1, r - 1, 3), (q + 1, r, 5)]
+    elif d == 2:
+        coords += [(q + 1, r, 4), (q, r + 1, 0)]
+    elif d == 3:
+        coords += [(q, r + 1, 5), (q - 1, r + 1, 1)]
+    elif d == 4:
+        coords += [(q - 1, r + 1, 0), (q - 1, r, 2)]
+    elif d == 5:
+        coords += [(q - 1, r, 1), (q, r - 1, 3)]
+    return [_vertex_key(aq, ar, ad) for aq, ar, ad in coords]
+
+
+def _canonical_vertex_key(vk: str) -> str:
+    keys = sorted(set(_equivalent_vertex_keys(vk)))
+    return keys[0] if keys else vk
+
+
 def _edge_vertices(q: int, r: int, d: int) -> List[str]:
     # Port of gameLogic.getEdgeVertices
     if d == 0:
@@ -217,11 +244,97 @@ def _player_has_building_at_vertex(vertices: Dict[str, Any], vk: str, myi: int) 
     return v.get("owner") == myi and bool(v.get("building"))
 
 
+def _has_any_building_at_vertex(state: Dict[str, Any], vk: str) -> bool:
+    vertices = state.get("vertices") or {}
+    for evk in _equivalent_vertex_keys(vk):
+        v = vertices.get(evk)
+        if isinstance(v, dict) and bool(v.get("building")):
+            return True
+    return False
+
+
+def _has_adjacent_building(state: Dict[str, Any], vk: str) -> bool:
+    for adj in _adjacent_vertices(vk):
+        if _has_any_building_at_vertex(state, adj):
+            return True
+    return False
+
+
 def _player_has_road_on_edge(edges: Dict[str, Any], ek: str, myi: int) -> bool:
     e = edges.get(ek)
     if not isinstance(e, dict):
         return False
     return bool(e.get("road")) and e.get("owner") == myi
+
+
+def _settlement_connected_to_my_road(state: Dict[str, Any], vk: str, myi: int) -> bool:
+    edges = state.get("edges") or {}
+    for evk in _equivalent_vertex_keys(vk):
+        for ek in _edges_touching_vertex(state, evk):
+            if _player_has_road_on_edge(edges, ek, myi):
+                return True
+    return False
+
+
+def _can_afford_settlement(state: Dict[str, Any], myi: int) -> bool:
+    players = state.get("players")
+    if not isinstance(players, list) or not (0 <= myi < len(players)):
+        return False
+    me = players[myi] if isinstance(players[myi], dict) else {}
+    res = me.get("resources") if isinstance(me.get("resources"), dict) else {}
+    return (
+        int(res.get("brick", 0) or 0) >= 1
+        and int(res.get("lumber", 0) or 0) >= 1
+        and int(res.get("wool", 0) or 0) >= 1
+        and int(res.get("grain", 0) or 0) >= 1
+    )
+
+
+def _future_settlement_vertices_one_road_away(state: Dict[str, Any], vk: str) -> List[str]:
+    """
+    Lightweight horizon proxy:
+    settlement at vk, then one road from vk, then candidate settlement endpoint.
+    """
+    edges = state.get("edges") or {}
+    future: List[str] = []
+    seen: set = set()
+    for from_vk in _equivalent_vertex_keys(vk):
+        for ek in _edges_touching_vertex(state, from_vk):
+            e = edges.get(ek)
+            if not _edge_is_unoccupied(e):
+                continue
+            parsed = _parse_edge_key(ek)
+            if not parsed:
+                continue
+            q, r, d = parsed
+            for end_vk in _edge_vertices(q, r, d):
+                canon_end = _canonical_vertex_key(end_vk)
+                if canon_end == _canonical_vertex_key(vk):
+                    continue
+                if canon_end in seen:
+                    continue
+                seen.add(canon_end)
+                if _has_any_building_at_vertex(state, canon_end):
+                    continue
+                if _has_adjacent_building(state, canon_end):
+                    continue
+                future.append(canon_end)
+    return future
+
+
+def _settlement_horizon_score(state: Dict[str, Any], vk: str) -> float:
+    """
+    Expansion lookahead:
+    reward placements that open many strong one-road-away settlement targets.
+    """
+    future = _future_settlement_vertices_one_road_away(state, vk)
+    if not future:
+        return 0.0
+    scored = [_score_vertex_for_setup(state, fv) for fv in future]
+    best = max(scored) if scored else 0.0
+    avg = sum(scored) / max(1, len(scored))
+    # Keep horizon contribution moderate vs immediate production score.
+    return 0.25 * len(future) + 0.20 * avg + 0.15 * best
 
 
 def _main_road_connects_to_network(
@@ -245,42 +358,12 @@ def _main_road_connects_to_network(
     return False
 
 
-def _score_edge_expansion(state: Dict[str, Any], edge_key: str) -> float:
-    """Heuristic: sum pip weights of hexes adjacent to this edge's endpoints."""
-    hexes = _hexes_dict(state)
-    parsed = _parse_edge_key(edge_key)
-    if not parsed:
-        return 0.0
-    q, r, d = parsed
-    seen = set()
-    total = 0.0
-    for vk in _edge_vertices(q, r, d):
-        pv = _parse_vertex_key(vk)
-        if not pv:
-            continue
-        hq, hr, hd = pv
-        for cq, cr in _adjacent_hex_coords(hq, hr, hd):
-            hk = f"{cq},{cr}"
-            if hk in seen:
-                continue
-            seen.add(hk)
-            h = hexes.get(hk)
-            if not isinstance(h, dict):
-                continue
-            if h.get("resource") == "desert":
-                continue
-            num = h.get("number")
-            if num is not None:
-                total += float(_pip_value(num))
-    return total
-
-
 def ranked_main_road_edges(
     state: Dict[str, Any], myi: int, top_k: int = 40,
 ) -> List[Dict[str, Any]]:
     """
-    Rank candidate edges for place_road in main phase (heuristic legality + score).
-    Server still validates the final placement.
+    Return legal candidate edges for place_road in main phase.
+    No scoring/ranking heuristic is applied; server still validates placement.
     """
     edges = state.get("edges") or {}
     out: List[Dict[str, Any]] = []
@@ -290,10 +373,94 @@ def ranked_main_road_edges(
             continue
         if not _main_road_connects_to_network(state, ek, myi):
             continue
-        score = _score_edge_expansion(state, ek)
-        out.append({"edge": ek, "score": round(score, 2)})
-    out.sort(key=lambda x: x["score"], reverse=True)
+        out.append({"edge": ek})
+    out.sort(key=lambda x: str(x.get("edge", "")))
     return out[:top_k]
+
+
+def ranked_main_settlement_vertices(
+    state: Dict[str, Any], myi: int, top_k: int = 20,
+) -> List[Dict[str, Any]]:
+    """
+    Return legal-now settlement candidates in main phase, then rank by:
+      immediate production score + horizon expansion score.
+    """
+    candidates = _all_vertex_keys_from_state(state)
+    out: List[Dict[str, Any]] = []
+    seen_canon: set = set()
+    for vk in candidates:
+        canon = _canonical_vertex_key(vk)
+        if canon in seen_canon:
+            continue
+        seen_canon.add(canon)
+
+        if _has_any_building_at_vertex(state, canon):
+            continue
+        if _has_adjacent_building(state, canon):
+            continue
+        if not _settlement_connected_to_my_road(state, canon, myi):
+            continue
+
+        base_score = _score_vertex_for_setup(state, canon)
+        horizon_score = _settlement_horizon_score(state, canon)
+        total_score = base_score + horizon_score
+        out.append({
+            "vertex": canon,
+            "score": round(total_score, 2),
+            "base_score": round(base_score, 2),
+            "horizon_score": round(horizon_score, 2),
+        })
+
+    out.sort(key=lambda x: (x["score"], x["base_score"]), reverse=True)
+    return out[:top_k]
+
+
+def projected_settlement_vertices_after_one_road(
+    state: Dict[str, Any], myi: int, top_k: int = 20,
+) -> List[Dict[str, Any]]:
+    """
+    If no legal settlement exists *right now*, surface strong settlement vertices that
+    become reachable after placing one legal road.
+    """
+    road_spots = ranked_main_road_edges(state, myi, top_k=200)
+    edges = state.get("edges") or {}
+    out: Dict[str, Dict[str, Any]] = {}
+
+    for item in road_spots:
+        ek = item.get("edge")
+        if not isinstance(ek, str):
+            continue
+        parsed = _parse_edge_key(ek)
+        if not parsed:
+            continue
+        q, r, d = parsed
+        for end_vk in _edge_vertices(q, r, d):
+            canon = _canonical_vertex_key(end_vk)
+            if _has_any_building_at_vertex(state, canon):
+                continue
+            if _has_adjacent_building(state, canon):
+                continue
+            base = _score_vertex_for_setup(state, canon)
+            if canon not in out:
+                out[canon] = {
+                    "vertex": canon,
+                    "score": round(base, 2),
+                    "reachable_via_edges": [ek],
+                }
+            else:
+                rv = out[canon].get("reachable_via_edges")
+                if isinstance(rv, list) and ek not in rv:
+                    rv.append(ek)
+
+    ranked = list(out.values())
+    ranked.sort(
+        key=lambda x: (
+            float(x.get("score", 0.0)),
+            len(x.get("reachable_via_edges", [])) if isinstance(x.get("reachable_via_edges"), list) else 0,
+        ),
+        reverse=True,
+    )
+    return ranked[:top_k]
 
 
 # ------------------------------------------------------------

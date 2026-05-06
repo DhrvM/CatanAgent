@@ -83,8 +83,11 @@ class GameStateProcessor:
             "year_of_plenty_picks": state.get("yearOfPlentyPicks", 0),
         }
 
-    def format_for_llm(self, processed: Dict[str, Any]) -> str:
+    def format_for_llm(
+        self, processed: Dict[str, Any], detail: str = "full"
+    ) -> str:
         """Produce a concise natural-language summary of the board state."""
+        _ = detail  # Backward-compatible arg used by existing callers.
         lines: List[str] = []
         p = processed
 

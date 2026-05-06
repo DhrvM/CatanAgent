@@ -6,13 +6,14 @@ Supports modes:
   --mode react    →  Single ReAct agent (default)
   --mode multi    →  Multi-agent system (Strategy + Development + Trading + Risk)
   --mode benchmark → Deterministic benchmark-calibration agent
+  --mode benchmark-suite → React/Strategy vs heuristic matchup runner
   --mode harness  →  Offline agent harness: Trading + Development scenarios
 
 Usage:
     # Local server (default)
     python -m Agent.main --game-code ABCDEF --name ReactBot
     python -m Agent.main --mode multi --game-code ABCDEF --name StrategyBot
-    python -m Agent.main --mode benchmark --game-code ABCDEF --name BenchmarkBot
+    python -m Agent.main --mode multi --strategy-model gpt-5 --game-code ABCDEF
 
     # Hosted server on Render (https://catanagent.onrender.com)
     python -m Agent.main --prod --game-code ABCDEF --name ReactBot
@@ -41,6 +42,18 @@ try:
     load_dotenv(os.path.join(current_dir, ".env"))
 except ImportError:
     pass
+
+
+def _configure_console_output() -> None:
+    """Avoid Windows cp1252 crashes when agent logs include arrows or symbols."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+_configure_console_output()
 
 
 LOCAL_SERVER_URL = "http://localhost:3001"
@@ -81,14 +94,28 @@ def main() -> None:
         help=f"Shortcut for --server {HOSTED_SERVER_URL} (the hosted Render server).",
     )
     parser.add_argument("--game-code", default=None, help="Game code to join (omit to create)")
+    parser.add_argument(
+        "--reconnect-player-id",
+        default=None,
+        help="Optional player ID to reclaim via socket reconnect (used by benchmark automation).",
+    )
     parser.add_argument("--name", default="ReactBot", help="Player name")
-    parser.add_argument("--model", default="gpt-4o", help="OpenAI model")
+    parser.add_argument(
+        "--react-provider",
+        choices=["openai", "anthropic"],
+        default="openai",
+        help="LLM backend for --mode react tool-calling decisions.",
+    )
+    parser.add_argument("--model", default="gpt-4o", help="OpenAI model for non-Strategy agents and react mode")
+    parser.add_argument("--anthropic-model", default="claude-3-5-sonnet-latest", help="Anthropic model for react mode when --react-provider anthropic")
+    parser.add_argument("--strategy-model", default="gpt-5", help="OpenAI model for Strategy Agent in multi-agent mode")
     parser.add_argument("--ollama-model", default="qwen3:8b", help="Ollama model for summarization")
     parser.add_argument(
-        "--mode", choices=["react", "multi", "benchmark", "harness"], default="react",
+        "--mode", choices=["react", "multi", "benchmark", "benchmark-suite", "harness"], default="react",
         help=(
             "'react' single agent | 'multi' multi-agent | "
             "'benchmark' deterministic calibration agent | "
+            "'benchmark-suite' runs React/Strategy vs heuristic benchmark games | "
             "'harness' offline agent harness (Trading + Development)"
         ),
     )
@@ -142,6 +169,8 @@ def main() -> None:
         _run_react(args)
     elif args.mode == "multi":
         _run_multi(args)
+    elif args.mode == "benchmark-suite":
+        _run_benchmark_suite(args)
     else:
         _run_benchmark(args)
 
@@ -154,7 +183,9 @@ def _run_react(args) -> None:
         server_url=args.server,
         game_code=args.game_code,
         player_name=args.name,
+        llm_provider=args.react_provider,
         openai_model=args.model,
+        anthropic_model=args.anthropic_model,
         ollama_model=args.ollama_model,
     )
     agent.run()
@@ -178,7 +209,7 @@ def _run_multi(args) -> None:
     from Agent.utils.openai_client import OpenAIClient
     from Agent.utils.ollama_client import OllamaChat, OllamaConfig
     from Agent.utils.stats_tracker import AgentStatsTracker
-    from Agent.Tools.registry import build_tool_registry
+    from Agent.tools.registry import build_tool_registry
 
     # ── Core infrastructure ───────────────────────────────────────
     scratchpad = Scratchpad()
@@ -189,12 +220,13 @@ def _run_multi(args) -> None:
 
     # ── LLM clients ───────────────────────────────────────────────
     openai = OpenAIClient(model=args.model)
+    strategy_openai = OpenAIClient(model=args.strategy_model)
     ollama = OllamaChat(OllamaConfig(model=args.ollama_model))
 
     # ── Create agents ─────────────────────────────────────────────
     risk = RiskAgent(scratchpad, openai=openai)
     strategy = StrategyAgent(
-        scratchpad, openai, client, processor, registry, stats,
+        scratchpad, strategy_openai, client, processor, registry, stats,
         game_code=args.game_code,
         player_name=args.name,
     )
@@ -215,6 +247,7 @@ def _run_multi(args) -> None:
     trading.register_peer(strategy)
 
     print(f"🔗 Multi-agent system wired:")
+    print(f"   Models    → strategy={strategy_openai.model}, others={openai.model}")
     print(f"   Strategy  → peers: {list(strategy._peers.keys())}")
     print(f"   Development → peers: {list(development._peers.keys())}")
     print(f"   Risk      → peers: {list(risk._peers.keys())}")
@@ -232,8 +265,31 @@ def _run_benchmark(args) -> None:
         server_url=args.server,
         game_code=args.game_code,
         player_name=args.name,
+        reconnect_player_id=args.reconnect_player_id,
     )
     agent.run()
+
+
+def _run_benchmark_suite(args) -> None:
+    """Run the automated React/Strategy vs heuristic benchmark suite."""
+    import subprocess
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "Agent.benchmark_agent.run_matchups",
+        "--server",
+        args.server,
+        "--model",
+        args.model,
+        "--react-provider",
+        args.react_provider,
+        "--anthropic-model",
+        args.anthropic_model,
+        "--strategy-model",
+        args.strategy_model,
+    ]
+    raise SystemExit(subprocess.call(cmd))
 
 
 if __name__ == "__main__":
