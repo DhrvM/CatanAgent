@@ -1272,4 +1272,157 @@ The task is only instantiated when there is a real army-race signal: either play
 \\
 The threshold for \texttt{decide-pursue-largest-army} is $0.30$ because Largest Army pursuit is a long-horizon commitment and should be scored with delayed outcome evidence without over-penalizing reasonable defer-versus-pursue choices. This task uses the larger of the selected-to-best ratio and a margin-aware score $1-(\texttt{bestScore}-\texttt{selectedScore})$ so that moderate snapshot-plus-outcome differences do not cause the benchmark's own reference heuristic to fail.
 
+\section{Benchmark Usage and Evaluation Documentation}
+\label{app:benchmark-usage-documentation}
+
+This appendix documents how to use CatanBench outside the paper. The same runnable instructions are provided in \texttt{evaluation/README.md}; this appendix records the benchmark interface, required resources, evaluation scripts, and result interpretation in the paper itself.
+All code for the agent and benchmark is found in: https://github.com/DhrvM/CatanAgent
+
+\subsection{What the Benchmark Evaluates}
+
+CatanBench records both full-game outcomes and task-level decisions. Full-game outcomes include win rate, final victory points, rounds to win, and average turn latency. Task-level outcomes include task score, task success/failure, task category, selected action, legal alternatives, and benchmark explanation. The benchmark covers spatial placement, road direction, robber decisions, trade generation/response, build prioritization, development-card timing, discard strategy, bank trades, and long-horizon Longest Road/Largest Army commitments.
+
+The live task definitions, metric directions, and metric weights are implemented in \texttt{Environment/server/benchmarkDefinitions.js}. Task scoring logic is implemented in \texttt{Environment/server/benchmarkEvaluation.js}. Persistent benchmark storage, leaderboards, slices, and live logs are implemented in \texttt{Environment/server/benchmarkStore.js}.
+\subsection{Required Resources}
+
+No external dataset is required. The benchmark is generated from live Catan games and server-side task evaluators. Required local resources are:
+\begin{itemize}
+    \item \texttt{Environment/server/benchmarkDefinitions.js}: task descriptions, metric directions, and metric weights.
+    \item \texttt{Environment/server/benchmarkEvaluation.js}: task scoring and benchmark payload evaluation.
+    \item \texttt{Environment/server/benchmarkStore.js}: benchmark data storage, leaderboards, slice comparisons, and logs.
+    \item \texttt{Agent/training/run\_self\_play.py}: automated heuristic self-play baseline runner.
+    \item \texttt{evaluation/}: runnable evaluation scripts and result-export utilities.
+    \item \texttt{benchmark\_paper/Result Images/}: validation evidence images used in this paper.
+\end{itemize}
+
+Generated resources are written locally:
+\begin{itemize}
+    \item \texttt{Agent/training/results/*.json}: self-play baseline outputs.
+    \item \texttt{Environment/server/benchmark-data/}: benchmark records written by the local server.
+    \item \texttt{evaluation/results/<timestamp>/}: exported benchmark API snapshots.
+\end{itemize}
+
+OpenAI API access is optional. It is needed only for ReAct or multi-agent strategy evaluations that call GPT models. The heuristic baseline and server-side benchmark tests do not require an external API key.
+
+\subsection{Dependencies and Setup}
+
+The benchmark requires Python 3.10 or later, Node.js 18 or later, npm, Python packages from \texttt{requirements.txt}, and server packages from \texttt{Environment/server/package.json}. From the repository root:
+
+\begin{verbatim}
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+
+cd Environment/server
+npm install
+cd ../..
+\end{verbatim}
+
+The browser client is optional for evaluation but useful for inspecting games and dashboards:
+
+\begin{verbatim}
+cd Environment/client
+npm install
+cd ../..
+\end{verbatim}
+
+\subsection{Running the Benchmark Server}
+
+Start the local server in a separate terminal:
+
+\begin{verbatim}
+cd Environment/server
+npm start
+\end{verbatim}
+
+The default local server is \texttt{http://localhost:3001}. To clear previous local benchmark records before a fresh run:
+
+\begin{verbatim}
+cd Environment/server
+npm run benchmark:clear
+\end{verbatim}
+
+\subsection{Validating Benchmark Code}
+
+The server includes benchmark unit and observation tests. From the repository root:
+
+\begin{verbatim}
+./evaluation/run_benchmark_tests.sh
+\end{verbatim}
+
+This runs benchmark observation tests, benchmark evaluation tests, resource heuristic tests, and longest-road cycle tests.
+
+\subsection{Running the Heuristic Agent Baseline}
+
+The paper uses ten games of heuristic bot instances as the simple agent baseline. With the server running:
+
+\begin{verbatim}
+./evaluation/run_heuristic_baseline.sh \
+  --games 10 --players 3 --parallel 1
+\end{verbatim}
+
+The output is written to:
+
+\begin{verbatim}
+Agent/training/results/heuristic_baseline_10_games.json
+\end{verbatim}
+
+For a shorter debugging run:
+
+\begin{verbatim}
+./evaluation/run_heuristic_baseline.sh \
+  --games 1 --players 3 --timeout-s 600
+\end{verbatim}
+
+\subsection{Running LLM Agent Evaluations}
+
+For ReAct or multi-agent strategy evaluations, start or join a benchmark-enabled game and launch agents against the same game code:
+
+\begin{verbatim}
+python -m Agent.main --mode react --server http://localhost:3001 \
+  --game-code ABCDEF --name ReactAgent
+
+python -m Agent.main --mode multi --server http://localhost:3001 \
+  --game-code ABCDEF --name StrategyAgent
+\end{verbatim}
+
+The benchmark-enabled server records task telemetry when benchmark mode is active for the game. The heuristic self-play runner is the most reproducible baseline path because it programmatically creates games, launches benchmark calibration agents, starts the game, waits for completion, computes rewards, and writes JSON summaries.
+
+\subsection{Exporting Results}
+
+With the server running, export benchmark API state from the repository root:
+
+\begin{verbatim}
+./evaluation/export_benchmark_results.py \
+  --server http://localhost:3001
+\end{verbatim}
+
+This creates a timestamped directory under \texttt{evaluation/results/} with:
+\begin{itemize}
+    \item \texttt{definitions.json}: task definitions, categories, metric directions, and metric weights.
+    \item \texttt{overview.json}: aggregate benchmark overview and top entities.
+    \item \texttt{leaderboard\_agents.json}: agent-level leaderboard.
+    \item \texttt{leaderboard\_players.json}: player-level leaderboard.
+    \item \texttt{slices.json}: comparisons by benchmark, map, opponent policy, scenario tags, and task category.
+    \item \texttt{live\_log.json}: recent task/action events with score and pass/fail metadata.
+    \item \texttt{manifest.json}: export metadata and endpoint mapping.
+\end{itemize}
+
+To choose a specific output directory:
+
+\begin{verbatim}
+./evaluation/export_benchmark_results.py \
+  --out evaluation/results/my_run
+\end{verbatim}
+
+\subsection{Interpreting Results}
+
+Start with \texttt{overview.json}. Its \texttt{totals.runs}, \texttt{totals.games}, \texttt{totals.tasks}, and \texttt{totals.telemetryRecords} fields show how much data has been collected. \texttt{topAgents} and \texttt{topPlayers} show the highest aggregate benchmark entries.
+
+Then inspect \texttt{leaderboard\_agents.json}. The \texttt{overallScore} field is the weighted score used for ranking. \texttt{rawMetrics} contains direct values such as win rate, average final victory points, task success rate, and latency. \texttt{normalizedMetrics} contains direction-normalized scores in which higher is better. \texttt{taskBreakdown} and \texttt{taskResults} identify which benchmark tasks passed or failed.
+
+Use \texttt{slices.json} to check robustness across task category, map layout, opponent policy set, and scenario tags. A useful benchmark should expose strengths and weaknesses across these slices rather than only producing one undifferentiated score. Use \texttt{live\_log.json} for auditability: each entry links an observed action to its benchmark task, score, pass/fail result, and explanation.
+
+Evaluation reports should include overall score, gameplay/reasoning/operations scores, win rate, average final victory points, average rounds to win, task success rate, average task score, per-task breakdowns, average latency per turn, number of games, number of task events, agent version, and any map/opponent/scenario filters used.
+
 \end{document}
