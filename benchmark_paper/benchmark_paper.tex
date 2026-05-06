@@ -77,10 +77,13 @@ The input is a setup-phase snapshot including board layout, legal settlement ver
 
 Each candidate is scored as:
 \begin{equation}
-\text{score} = 0.40 \cdot \texttt{production}
-+ 0.25 \cdot \texttt{diversity}
-+ 0.20 \cdot \texttt{expansionAccess}
+\begin{aligned}
+\text{score}
+&= 0.40 \cdot \texttt{production}
++ 0.25 \cdot \texttt{diversity} \\
+&\quad + 0.20 \cdot \texttt{expansionAccess}
 + 0.15 \cdot \texttt{portSynergy}.
+\end{aligned}
 \end{equation}
 
 Production uses dice probability weights; diversity measures resource variety; expansion access counts future road options; and port synergy captures trade efficiency. The selected vertex is compared to the best legal alternative with success threshold 0.75. Early placements determine long-term resource flow, expansion potential, and trade structure before any gameplay outcomes are observed.
@@ -444,7 +447,14 @@ Several tasks construct plan candidates for \texttt{road}, \texttt{settlement}, 
     \item \texttt{city}: the maximum score among legal city upgrades using $0.65 \cdot \texttt{production} + 0.10 \cdot \texttt{diversity} + 0.05 \cdot \texttt{portSynergy} + 0.20$.
     \item \texttt{devCard}: $0$ if the development-card deck is unavailable; otherwise
     \[
-    \texttt{clamp}\bigl(\max(0.15,\ 0.45 \cdot (0.5 + 0.5 \cdot \texttt{cityPlanScore}) + \texttt{armyRaceBonus} - \texttt{devCardCongestionPenalty} - \texttt{expansionPressurePenalty})\bigr).
+    \begin{aligned}
+    \texttt{devCardBaseScore}
+    &= \texttt{clamp}\bigl(\max(0.15, \\
+    &\quad 0.45 \cdot (0.5 + 0.5 \cdot \texttt{cityPlanScore})
+    + \texttt{armyRaceBonus} \\
+    &\quad - \texttt{devCardCongestionPenalty} \\
+    &\quad - \texttt{expansionPressurePenalty})\bigr).
+    \end{aligned}
     \]
     Here \texttt{armyRaceBonus} is $0.20$ when another development-card purchase could plausibly complete or contest Largest Army; \texttt{devCardCongestionPenalty} increases with held unplayed development cards and is $0.35$ at three or more held cards; and \texttt{expansionPressurePenalty} is $0.18$ when road, settlement, or city plans have strong current value. This prevents the evaluator from treating repeated card buying as optimal while the player is sitting on playable cards or clear board-development opportunities.
 \end{itemize}
@@ -487,11 +497,13 @@ where $s$ ranges over all resource types. This avoids earlier failure modes wher
 \subsubsection{\texttt{initial-settlement-location-selection}}
 \label{app:task-initial-settlement-location-selection}
 \[
-\text{Score} = 
-0.40 \cdot \texttt{production} +
-0.25 \cdot \texttt{diversity} +
-0.20 \cdot \texttt{expansionAccess} +
-0.15 \cdot \texttt{portSynergy}.
+\begin{aligned}
+\text{Score} &=
+0.40 \cdot \texttt{production}
++ 0.25 \cdot \texttt{diversity} \\
+&\quad + 0.20 \cdot \texttt{expansionAccess}
++ 0.15 \cdot \texttt{portSynergy}.
+\end{aligned}
 \]
 
 This rubric uses the shared \texttt{production}, \texttt{diversity}, \texttt{expansionAccess}, and \texttt{portSynergy} definitions from Sections~\ref{app:production-expectancy}--\ref{app:port-synergy}. Production receives the highest weight because early income determines the opening trajectory, while the other terms preserve resource mix, expansion geometry, and port upside.
@@ -513,10 +525,10 @@ The threshold for \texttt{settlement-location-selection} is $0.90$ because later
 \begin{aligned}
 \text{Score} &=
 0.25 \cdot \texttt{futureReachability}
-+ 0.20 \cdot \texttt{reachableValue}
-+ 0.10 \cdot \texttt{blockingValue} \\
-&\quad + 0.25 \cdot \texttt{settlementTargetValue}
-+ 0.15 \cdot \texttt{extensionValue}
++ 0.20 \cdot \texttt{reachableValue} \\
+&\quad + 0.10 \cdot \texttt{blockingValue}
++ 0.25 \cdot \texttt{settlementTargetValue} \\
+&\quad + 0.15 \cdot \texttt{extensionValue}
 + 0.05 \cdot \texttt{cycleAvoidance}.
 \end{aligned}
 \]
@@ -599,7 +611,7 @@ Define:
 \[
 \texttt{robberThreatLevel} =
 \begin{cases}
-\texttt{clamp}(\texttt{robberNumberWeight} / 5), & \text{if the robber blocks the player}\\
+\texttt{clamp}(\texttt{robberNumberWeight} / 5), & \text{if blocked}\\
 0.15, & \text{otherwise}
 \end{cases}
 \]
@@ -721,9 +733,9 @@ The resource score is
 \begin{aligned}
 \texttt{resourceScore}
 &= \texttt{clamp}(
-0.55 \cdot \texttt{estimatedOpponentHoldings}
-+ 0.30 \cdot \texttt{personalResourceNeed} \\
-&\quad + 0.15 \cdot \texttt{buildUnlock}).
+0.55 \cdot \texttt{estimatedOpponentHoldings} \\
+&\quad + 0.30 \cdot \texttt{personalResourceNeed}
++ 0.15 \cdot \texttt{buildUnlock}).
 \end{aligned}
 \]
 Monopoly plays emit a benchmark payload over the five possible resource calls. The implementation uses actual hidden-opponent holdings available on the server.
@@ -774,12 +786,14 @@ The visible leader is the player with the highest public score:
 If multiple players tie, the implementation keeps the first tied player in turn-order/index order.
 For each legal victim $v$, the score is
 \[
-\texttt{victimScore}(v) =
-\texttt{clamp}\left(
+\begin{aligned}
+\texttt{victimScore}(v)
+&= \texttt{clamp}\bigl(
 \texttt{leaderBase}(v)
-+ \texttt{handValue}(v)
-+ \texttt{visibleStrength}(v)
-\right),
++ \texttt{handValue}(v) \\
+&\quad + \texttt{visibleStrength}(v)
+\bigr),
+\end{aligned}
 \]
 where
 \[
@@ -856,11 +870,13 @@ The response task uses the same plan-aware trade-quality score as generated trad
 
 The plan-aware self-gain term is:
 \[
+\begin{aligned}
 \texttt{selfGain}
-= 0.45 \cdot \texttt{requestValue}
-+ 0.35 \cdot \texttt{planGain}
-+ 0.20 \cdot \texttt{settlementGain}
+&= 0.45 \cdot \texttt{requestValue}
++ 0.35 \cdot \texttt{planGain} \\
+&\quad + 0.20 \cdot \texttt{settlementGain}
 - 0.35 \cdot \texttt{giveCost},
+\end{aligned}
 \]
 clamped to $[0,1]$. Here \texttt{requestValue} uses the responder's goal-aware need map, \texttt{giveCost} uses the responder's surplus map, \texttt{planGain} is the improvement in the best affordable weighted build plan after the trade, and \texttt{settlementGain} is the reduction in missing settlement resources when a legal settlement target exists.
 \\
@@ -880,11 +896,13 @@ The threshold for \texttt{accept-or-reject-trade-offers} is $0.95$ because accep
 A trade must first be legal. Its main purpose is to improve the acting player's position. Helping the leader is strategically risky, and highly unfair offers are less plausible and less likely to be accepted.
 The components are:
 \[
+\begin{aligned}
 \texttt{selfGain}
-= \texttt{clamp}(0.45 \cdot \texttt{requestValue}
-+ 0.35 \cdot \texttt{planGain}
-+ 0.20 \cdot \texttt{settlementGain}
+&= \texttt{clamp}(0.45 \cdot \texttt{requestValue}
++ 0.35 \cdot \texttt{planGain} \\
+&\quad + 0.20 \cdot \texttt{settlementGain}
 - 0.35 \cdot \texttt{giveCost}),
+\end{aligned}
 \]
 \[
 \texttt{fairnessPenalty}
@@ -944,17 +962,21 @@ The threshold for \texttt{select-targeted-trade-partner} is $0.90$ because targe
 \texttt{counterTradeScore}
 &= 0.35 \cdot \texttt{legality}
 + 0.45 \cdot \texttt{selfGain} \\
-&\quad + 0.15 \cdot (1 - \texttt{leaderPenalty})
+&\quad + 0.15 \cdot (1 - \texttt{leaderPenalty}) \\
+&\quad
 + 0.05 \cdot (1 - \texttt{fairnessPenalty}).
 \end{aligned}
 \]
 The structural reasoning follows the generated-trade-offer task from Section~\ref{app:task-generate-trade-offers}, but now from the responder's perspective relative to an incoming offer.
 The payload reuses the same plan-aware trade-quality subscores as Section~\ref{app:task-generate-trade-offers}:
 \[
-\texttt{selfGain} = \texttt{clamp}(0.45 \cdot \texttt{requestValue}
-+ 0.35 \cdot \texttt{planGain}
-+ 0.20 \cdot \texttt{settlementGain}
+\begin{aligned}
+\texttt{selfGain}
+&= \texttt{clamp}(0.45 \cdot \texttt{requestValue}
++ 0.35 \cdot \texttt{planGain} \\
+&\quad + 0.20 \cdot \texttt{settlementGain}
 - 0.35 \cdot \texttt{giveCost}),
+\end{aligned}
 \]
 \[
 \texttt{fairnessPenalty}
@@ -1007,8 +1029,14 @@ This task is evaluated as an option ratio.
 Buying a development card is an investment choice against competing uses of resources and should be favored when hidden VP, Knight access, or tactical flexibility outweigh immediate board development.
 This decision is derived from the shared \texttt{devCard} plan \texttt{baseScore} from Section~\ref{app:build-plan-base-scores}:
 \[
+\begin{aligned}
 \texttt{devCardBaseScore}
-= \texttt{clamp}\bigl(\max(0.15,\ 0.45 \cdot (0.5 + 0.5 \cdot \texttt{cityPlanScore}) + \texttt{armyRaceBonus} - \texttt{devCardCongestionPenalty} - \texttt{expansionPressurePenalty})\bigr)
+&= \texttt{clamp}\bigl(\max(0.15, \\
+&\quad 0.45 \cdot (0.5 + 0.5 \cdot \texttt{cityPlanScore})
++ \texttt{armyRaceBonus} \\
+&\quad - \texttt{devCardCongestionPenalty} \\
+&\quad - \texttt{expansionPressurePenalty})\bigr)
+\end{aligned}
 \]
 if the development deck is available, otherwise $0$. The congestion and expansion penalties are the same as those in Section~\ref{app:build-plan-base-scores}. The two options are
 \[
@@ -1097,9 +1125,10 @@ The stronger formulation is to record a pending task episode, wait $4$--$6$ turn
 \[
 \begin{aligned}
 \texttt{pursueScore}
-&= 0.45 \cdot \texttt{blockingEffectiveness}
-+ 0.30 \cdot \texttt{opponentProgressThreat} \\
-&\quad + 0.15 \cdot \texttt{selfRoadSynergy}
+&= 0.45 \cdot \texttt{blockingEffectiveness} \\
+&\quad + 0.30 \cdot \texttt{opponentProgressThreat}
++ 0.15 \cdot \texttt{selfRoadSynergy} \\
+&\quad
 + 0.10 \cdot \texttt{resourceCost}.
 \end{aligned}
 \]
@@ -1144,9 +1173,10 @@ The final alternatives are
 \begin{aligned}
 \texttt{pursueScore}
 &= \texttt{clamp}(
-0.45 \cdot \texttt{blockingEffectiveness}
-+ 0.30 \cdot \texttt{opponentProgressThreat} \\
-&\quad + 0.15 \cdot \texttt{selfRoadSynergy}
+0.45 \cdot \texttt{blockingEffectiveness} \\
+&\quad + 0.30 \cdot \texttt{opponentProgressThreat}
++ 0.15 \cdot \texttt{selfRoadSynergy} \\
+&\quad
 + 0.10 \cdot \texttt{resourceCost}),
 \end{aligned}
 \]
@@ -1229,9 +1259,10 @@ The final alternatives are
 \begin{aligned}
 \texttt{deferScore}
 &= \texttt{clamp}\bigl(
-0.35 \cdot (1 - \texttt{opponentArmyGap})
-+ 0.25 \cdot (1 - \texttt{knightCardRatio}) \\
-&\quad + 0.20 \cdot R_{\text{safe}}
+0.35 \cdot (1 - \texttt{opponentArmyGap}) \\
+&\quad + 0.25 \cdot (1 - \texttt{knightCardRatio})
++ 0.20 \cdot R_{\text{safe}} \\
+&\quad
 + 0.20 \cdot (1 - H_{\text{army,end}})\bigr).
 \end{aligned}
 \]

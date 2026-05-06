@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026) (preloaded format=pdflatex 2026.3.22)  5 MAY 2026 18:42
+This is pdfTeX, Version 3.141592653-2.6-1.40.29 (TeX Live 2026) (preloaded format=pdflatex 2026.3.22)  5 MAY 2026 18:53
 entering extended mode
  restricted \write18 enabled.
  file:line:error style messages enabled.
@@ -388,139 +388,64 @@ Underfull \hbox (badness 2894) in paragraph at lines 40--40
 [1{/usr/local/texlive/2026/texmf-var/fonts/map/pdftex/updmap/pdftex.map}{/usr/local/texlive/2026/texmf-dist/fonts/enc/dvips/base/8r.enc}
 
 ]
-LaTeX Font Info:    Trying to load font information for OT1+pcr on input line 80.
+LaTeX Font Info:    Trying to load font information for OT1+pcr on input line 82.
  (/usr/local/texlive/2026/texmf-dist/tex/latex/psnfss/ot1pcr.fd
 File: ot1pcr.fd 2001/06/04 font definitions for OT1/pcr.
-)
-Overfull \hbox (15.28163pt too wide) detected at line 84
-[][][][] \OT1/cmr/m/n/10 = 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 40 \OMS/cmsy/m/n/10 ^^A [] \OT1/cmr/m/n/10 + 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 25 \OMS/cmsy/m/n/10 ^^A [] \OT1/cmr/m/n/10 + 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 20 \OMS/cmsy/m/n/10 ^^A [] \OT1/cmr/m/n/10 + 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 15 \OMS/cmsy/m/n/10 ^^A []\OML/cmm/m/it/10 :
- []
-
-[2]
+) [2]
 <Result Images/WhatsApp Image 2026-05-05 at 17.05.59.jpeg, id=206, 1284.8pt x 986.68625pt>
 File: Result Images/WhatsApp Image 2026-05-05 at 17.05.59.jpeg Graphic file (type jpg)
 <use Result Images/WhatsApp Image 2026-05-05 at 17.05.59.jpeg>
-Package pdftex.def Info: Result Images/WhatsApp Image 2026-05-05 at 17.05.59.jpeg  used on input line 162.
+Package pdftex.def Info: Result Images/WhatsApp Image 2026-05-05 at 17.05.59.jpeg  used on input line 165.
 (pdftex.def)             Requested size: 194.76982pt x 149.56233pt.
 <Result Images/WhatsApp Image 2026-05-05 at 17.07.35.jpeg, id=207, 1284.8pt x 363.3575pt>
 File: Result Images/WhatsApp Image 2026-05-05 at 17.07.35.jpeg Graphic file (type jpg)
 <use Result Images/WhatsApp Image 2026-05-05 at 17.07.35.jpeg>
-Package pdftex.def Info: Result Images/WhatsApp Image 2026-05-05 at 17.07.35.jpeg  used on input line 169.
+Package pdftex.def Info: Result Images/WhatsApp Image 2026-05-05 at 17.07.35.jpeg  used on input line 172.
 (pdftex.def)             Requested size: 194.76982pt x 55.07788pt.
 <Result Images/WhatsApp Image 2026-05-05 at 16.21.45.jpeg, id=208, 2009.5075pt x 1376.14125pt>
 File: Result Images/WhatsApp Image 2026-05-05 at 16.21.45.jpeg Graphic file (type jpg)
 <use Result Images/WhatsApp Image 2026-05-05 at 16.21.45.jpeg>
-Package pdftex.def Info: Result Images/WhatsApp Image 2026-05-05 at 16.21.45.jpeg  used on input line 181.
+Package pdftex.def Info: Result Images/WhatsApp Image 2026-05-05 at 16.21.45.jpeg  used on input line 184.
 (pdftex.def)             Requested size: 218.61795pt x 149.69615pt.
 <Result Images/WhatsApp Image 2026-05-05 at 16.21.51.jpeg, id=209, 1005.7575pt x 223.83624pt>
 File: Result Images/WhatsApp Image 2026-05-05 at 16.21.51.jpeg Graphic file (type jpg)
 <use Result Images/WhatsApp Image 2026-05-05 at 16.21.51.jpeg>
-Package pdftex.def Info: Result Images/WhatsApp Image 2026-05-05 at 16.21.51.jpeg  used on input line 188.
+Package pdftex.def Info: Result Images/WhatsApp Image 2026-05-05 at 16.21.51.jpeg  used on input line 191.
 (pdftex.def)             Requested size: 174.89436pt x 38.92259pt.
  [3 <./Result Images/WhatsApp Image 2026-05-05 at 17.05.59.jpeg> <./Result Images/WhatsApp Image 2026-05-05 at 17.07.35.jpeg>]
 <Result Images/WhatsApp Image 2026-05-05 at 16.28.27.jpeg, id=217, 1284.8pt x 750.805pt>
 File: Result Images/WhatsApp Image 2026-05-05 at 16.28.27.jpeg Graphic file (type jpg)
 <use Result Images/WhatsApp Image 2026-05-05 at 16.28.27.jpeg>
-Package pdftex.def Info: Result Images/WhatsApp Image 2026-05-05 at 16.28.27.jpeg  used on input line 200.
+Package pdftex.def Info: Result Images/WhatsApp Image 2026-05-05 at 16.28.27.jpeg  used on input line 203.
 (pdftex.def)             Requested size: 194.76982pt x 113.80734pt.
 <Result Images/WhatsApp Image 2026-05-05 at 16.29.04.jpeg, id=218, 2892.8075pt x 1336.995pt>
 File: Result Images/WhatsApp Image 2026-05-05 at 16.29.04.jpeg Graphic file (type jpg)
 <use Result Images/WhatsApp Image 2026-05-05 at 16.29.04.jpeg>
-Package pdftex.def Info: Result Images/WhatsApp Image 2026-05-05 at 16.29.04.jpeg  used on input line 207.
-(pdftex.def)             Requested size: 194.76982pt x 90.00865pt.
+Package pdftex.def Info: Result Images/WhatsApp Image 2026-05-05 at 16.29.04.jpeg  used on input line 210.
+(pdftex.def)             Requested size: 178.86702pt x 82.66434pt.
  [4 <./Result Images/WhatsApp Image 2026-05-05 at 16.21.45.jpeg> <./Result Images/WhatsApp Image 2026-05-05 at 16.21.51.jpeg> <./Result Images/WhatsApp Image 2026-05-05 at 16.28.27.jpeg> <./Result Images/WhatsApp Image 2026-05-05 at 16.29.04.jpeg>] [5]
-LaTeX Font Info:    Trying to load font information for TS1+ptm on input line 263.
+LaTeX Font Info:    Trying to load font information for TS1+ptm on input line 266.
  (/usr/local/texlive/2026/texmf-dist/tex/latex/psnfss/ts1ptm.fd
 File: ts1ptm.fd 2001/06/04 font definitions for TS1/ptm.
 )
 ignored: Infinite glue shrinkage found in box being split [6
 
-] [7]
-Overfull \hbox (262.74881pt too wide) detected at line 448
-[][][]\OT1/cmr/m/n/10 (0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 15\OML/cmm/m/it/10 ;  \OT1/cmr/m/n/10 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 45 \OMS/cmsy/m/n/10 ^^A \OT1/cmr/m/n/10 (0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 5 + 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 5 \OMS/cmsy/m/n/10 ^^A []\OT1/cmr/m/n/10 ) + [] \OMS/cmsy/m/n/10 ^^@ [] ^^@ []\OT1/cmr/m/n/10 )[]\OML/cmm/m/it/10 :
- []
-
-[8]
-Overfull \hbox (16.95168pt too wide) detected at line 495
-[] \OT1/cmr/m/n/10 = 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 40 \OMS/cmsy/m/n/10 ^^A [] \OT1/cmr/m/n/10 + 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 25 \OMS/cmsy/m/n/10 ^^A [] \OT1/cmr/m/n/10 + 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 20 \OMS/cmsy/m/n/10 ^^A [] \OT1/cmr/m/n/10 + 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 15 \OMS/cmsy/m/n/10 ^^A []\OML/cmm/m/it/10 :
- []
-
-
-Underfull \hbox (badness 7081) in paragraph at lines 497--501
+] [7] [8]
+Underfull \hbox (badness 7081) in paragraph at lines 509--513
 []\OT1/ptm/m/n/10 This rubric uses the shared \OT1/pcr/m/n/10 production\OT1/ptm/m/n/10 , \OT1/pcr/m/n/10 diversity\OT1/ptm/m/n/10 , \OT1/pcr/m/n/10 expansionAccess\OT1/ptm/m/n/10 , and
  []
 
-
-Overfull \hbox (43.72885pt too wide) detected at line 522
-[][]
- []
-
 [9]
-Underfull \hbox (badness 1173) in paragraph at lines 597--598
+Underfull \hbox (badness 1173) in paragraph at lines 609--610
 []\OT1/pcr/m/n/10 armyProgressRatio \OT1/ptm/m/n/10 mea-sures progress to-ward Largest Army af-ter play-ing the
  []
 
-
-Overfull \hbox (15.35272pt too wide) detected at line 605
-[] \OT1/cmr/m/n/10 = []
- []
-
-[10] [11]
-Overfull \hbox (59.95918pt too wide) detected at line 728
-[][]
- []
-
-[12]
-Overfull \hbox (6.1166pt too wide) detected at line 783
-[]\OT1/cmr/m/n/10 (\OML/cmm/m/it/10 v\OT1/cmr/m/n/10 ) = [] [] \OML/cmm/m/it/10 ;
- []
-
-[13]
-Overfull \hbox (24.1819pt too wide) detected at line 864
-[] \OT1/cmr/m/n/10 = 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 45 \OMS/cmsy/m/n/10 ^^A [] \OT1/cmr/m/n/10 + 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 35 \OMS/cmsy/m/n/10 ^^A [] \OT1/cmr/m/n/10 + 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 20 \OMS/cmsy/m/n/10 ^^A [] ^^@ \OT1/cmr/m/n/10 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 35 \OMS/cmsy/m/n/10 ^^A []\OML/cmm/m/it/10 ;
- []
-
-
-Overfull \hbox (61.9597pt too wide) detected at line 888
-[] \OT1/cmr/m/n/10 = [](0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 45 \OMS/cmsy/m/n/10 ^^A [] \OT1/cmr/m/n/10 + 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 35 \OMS/cmsy/m/n/10 ^^A [] \OT1/cmr/m/n/10 + 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 20 \OMS/cmsy/m/n/10 ^^A [] ^^@ \OT1/cmr/m/n/10 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 35 \OMS/cmsy/m/n/10 ^^A []\OT1/cmr/m/n/10 )\OML/cmm/m/it/10 ;
- []
-
-
-Overfull \hbox (9.7369pt too wide) detected at line 950
-[][]
- []
-
-[14]
-Overfull \hbox (61.9597pt too wide) detected at line 958
-[] \OT1/cmr/m/n/10 = [](0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 45 \OMS/cmsy/m/n/10 ^^A [] \OT1/cmr/m/n/10 + 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 35 \OMS/cmsy/m/n/10 ^^A [] \OT1/cmr/m/n/10 + 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 20 \OMS/cmsy/m/n/10 ^^A [] ^^@ \OT1/cmr/m/n/10 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 35 \OMS/cmsy/m/n/10 ^^A []\OT1/cmr/m/n/10 )\OML/cmm/m/it/10 ;
- []
-
-
-Overfull \hbox (333.30424pt too wide) detected at line 1012
-[] \OT1/cmr/m/n/10 = [][][](0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 15\OML/cmm/m/it/10 ;  \OT1/cmr/m/n/10 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 45 \OMS/cmsy/m/n/10 ^^A \OT1/cmr/m/n/10 (0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 5 + 0\OML/cmm/m/it/10 :\OT1/cmr/m/n/10 5 \OMS/cmsy/m/n/10 ^^A []\OT1/cmr/m/n/10 ) + [] \OMS/cmsy/m/n/10 ^^@ [] ^^@ []\OT1/cmr/m/n/10 )[]
- []
-
-[15]
-Underfull \hbox (badness 10000) in paragraph at lines 1075--1077
+[10] [11] [12] [13] [14] [15] [16]
+Underfull \hbox (badness 10000) in paragraph at lines 1103--1105
 \OT1/ptm/m/n/10 where $\OML/cmm/m/it/10 P[]$ \OT1/ptm/m/n/10 is the same above-seven-card discard-risk penalty used in
  []
 
-
-Overfull \hbox (2.07028pt too wide) detected at line 1105
-[][]
- []
-
-[16]
-Overfull \hbox (35.95918pt too wide) detected at line 1152
-[][]
- []
-
-[17]
-Overfull \hbox (2.65355pt too wide) detected at line 1237
-[][]
- []
-
-[18] (./benchmark_paper.aux)
+[17] [18] [19] (./benchmark_paper.aux)
  ***********
 LaTeX2e <2025-11-01>
 L3 programming layer <2026-01-19>
@@ -529,18 +454,18 @@ Package rerunfilecheck Info: File `benchmark_paper.out' has not changed.
 (rerunfilecheck)             Checksum: F2C64C491A1E9019C1232FCB42596212;7434.
  ) 
 Here is how much of TeX's memory you used:
- 12515 strings out of 467525
- 200992 string characters out of 5418982
- 654422 words of memory out of 5000000
+ 12516 strings out of 467525
+ 200999 string characters out of 5418982
+ 653422 words of memory out of 5000000
  41194 multiletter control sequences out of 15000+600000
  651517 words of font info for 76 fonts, out of 8000000 for 9000
  1141 hyphenation exceptions out of 8191
  75i,13n,90p,1053b,600s stack positions out of 10000i,1000n,20000p,200000b,200000s
 </usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmex10.pfb></usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi10.pfb></usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi7.pfb></usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr10.pfb></usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr5.pfb></usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmr7.pfb></usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy10.pfb></usr/local/texlive/2026/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy7.pfb></usr/local/texlive/2026/texmf-dist/fonts/type1/urw/courier/ucrr8a.pfb></usr/local/texlive/2026/texmf-dist/fonts/type1/urw/helvetic/uhvb8a.pfb></usr/local/texlive/2026/texmf-dist/fonts/type1/urw/times/utmb8a.pfb></usr/local/texlive/2026/texmf-dist/fonts/type1/urw/times/utmr8a.pfb></usr/local/texlive/2026/texmf-dist/fonts/type1/urw/times/utmri8a.pfb>
-Output written on benchmark_paper.pdf (18 pages, 1045632 bytes).
+Output written on benchmark_paper.pdf (19 pages, 1046917 bytes).
 PDF statistics:
- 394 PDF objects out of 1000 (max. 8388607)
- 338 compressed objects within 4 object streams
- 76 named destinations out of 1000 (max. 500000)
+ 399 PDF objects out of 1000 (max. 8388607)
+ 342 compressed objects within 4 object streams
+ 77 named destinations out of 1000 (max. 500000)
  359 words of extra memory for PDF output out of 10000 (max. 10000000)
 

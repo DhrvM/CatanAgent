@@ -1,6 +1,6 @@
 # Catan Benchmark Evaluation
 
-This directory contains the runnable evaluation workflow for the Catan benchmark. It is intended to make the benchmark reproducible for another reader: install the server and agent dependencies, run a baseline, export benchmark records, and interpret the generated JSON.
+This directory contains the runnable evaluation workflow for the Catan benchmark. It is intended to make the benchmark reproducible for another reader: install the server and agent dependencies, run a baseline, export benchmark records, and interpret the generated JSON. All code is found in: https://github.com/DhrvM/CatanAgent
 
 ## What Is Evaluated
 
